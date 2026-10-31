@@ -786,7 +786,15 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             cli.write(state_path, state)
 
         if state['phase'] in ('implement', 'adopting') and data.get('adoption'):
-            adoption = data['adoption']
+            # Baseline checks append evidence to the persisted task. Re-read it
+            # before recording adoption, or this earlier snapshot would erase it.
+            data = cli.read(task)
+            _remaining(data)
+            _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
+                               build_source_image, memory_mb)
+            adoption = data.get('adoption')
+            if not isinstance(adoption, dict):
+                raise AutopilotError('adopted candidate provenance or acceptance changed')
             candidate = adoption.get('candidate_commit')
             if (not isinstance(candidate, str) or not re.fullmatch(r'[0-9a-f]{40}', candidate) or
                     adoption.get('base_commit') != data['base_commit'] or

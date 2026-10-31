@@ -453,6 +453,49 @@ class AutopilotTests(unittest.TestCase):
         self.assertNotIn('implement', self.calls)
         self.assertEqual(cli.sha(self.workspace, 'HEAD'), candidate)
 
+    def test_adoption_preserves_persisted_baseline_evidence_through_delivery(self):
+        base, candidate = self.prepare_adoption()
+        baseline_evidence = []
+        def checked(**kwargs):
+            if kwargs['kind'] != 'reproduction':
+                retained = [entry for entry in cli.read(self.task)['evidence']
+                            if entry['kind'] == 'reproduction']
+                self.assertEqual(retained, baseline_evidence)
+            result = self.check(**kwargs)
+            if kwargs['kind'] == 'reproduction':
+                baseline_evidence[:] = [entry for entry in cli.read(self.task)['evidence']
+                                        if entry['kind'] == 'reproduction']
+            return result
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):
+            self.run_adoption(check=checked)
+        state = cli.read(self.task.parent / 'autopilot.json')
+        self.assertEqual(state['phase'], 'delivery')
+        self.assertEqual(len(baseline_evidence), 2)
+        self.assertEqual({entry['actor'] for entry in baseline_evidence},
+                         {'implementer', 'independent-verifier'})
+        self.assertTrue(all(entry['commit'] == base for entry in baseline_evidence))
+        retained = [entry for entry in cli.read(self.task)['evidence']
+                    if entry['kind'] == 'reproduction']
+        self.assertEqual(retained, baseline_evidence)
+        self.assertEqual([entry['path'] for entry in retained], state['baseline_reports'])
+        self.assertTrue(all(cli.digest(Path(entry['path'])) == entry['sha256'] for entry in retained))
+        self.assertEqual(state['candidate_commit'], candidate)
+
+    def test_adoption_rechecks_authoritative_acceptance_before_switching_candidate(self):
+        base, _ = self.prepare_adoption()
+        def checked(**kwargs):
+            result = self.check(**kwargs)
+            if kwargs['kind'] == 'reproduction' and kwargs['actor'] == 'independent-verifier':
+                data = cli.read(self.task)
+                data['criteria'][0]['text'] = 'changed during reproduction'
+                cli.write(self.task, data)
+            return result
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'acceptance changed'):
+            self.run_adoption(check=checked)
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), base)
+        self.assertFalse(any(event['type'] == 'candidate-adopted'
+                             for event in cli.read(self.task)['events']))
+
     def test_adoption_does_not_switch_candidate_when_reproduction_fails(self):
         base, _ = self.prepare_adoption()
         def fail(**kwargs):
