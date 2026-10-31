@@ -34,4 +34,6 @@
 
 ## CI 与检查安排
 
+个人 fork `leewbl/myopenclaw` 的 Actions 仓库设置已按本地验证要求关闭，并通过权限 API 回读确认 `enabled=false`。这是该个人仓库的设置，不涉及上游；发布时仍必须重新核验，不能信任这条历史记录。
+
 用户要求不再依赖远端 CI。此前为定位失败而创建的 GitHub Actions 对照运行是 [基线运行](https://github.com/leewbl/myopenclaw/actions/runs/41214249208) 和 [原候选运行](https://github.com/leewbl/myopenclaw/actions/runs/41214258109)；它们不能证明提交 `54710b123` 已通过。运行状态可能随时间变化，不要仅凭旧状态决定合并。用户此前将状态检查频率设为每 30 分钟；按最新意愿优先本地验证。
