@@ -103,8 +103,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("a command with a valid executable is required")
     if not 0 < timeout <= 86400:
         raise SandboxError("timeout must be in (0, 86400] seconds")
-    if not isinstance(memory_mb, int) or not 128 <= memory_mb <= 6144:
-        raise SandboxError("memory limit must be between 128 and 6144 MiB")
+    if type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
+        raise SandboxError("memory limit must be between 128 and 8192 MiB")
     relative = PurePosixPath(workdir)
     if relative.is_absolute() or ".." in relative.parts:
         raise SandboxError("workdir must be relative to the mounted workspace")

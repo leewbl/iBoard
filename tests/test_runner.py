@@ -61,6 +61,25 @@ class SandboxTests(unittest.TestCase):
         self.assertTrue(report["cleanup_confirmed"])
         self.assertEqual(self.calls[-1][0][1:3], ["rm", "--force"])
 
+    def test_explicit_seven_gib_and_upper_bound_preserve_container_controls(self):
+        for memory in (7168, 8192):
+            with self.subTest(memory=memory):
+                self.calls.clear()
+                report = self.run_it(memory_mb=memory)
+                args = next(args for args, _ in self.calls if args[1] == 'create')
+                self.assertIn(f'--memory={memory}m', args)
+                self.assertIn('--network=none', args)
+                self.assertIn('--pids-limit=256', args)
+                self.assertEqual(report['memory_mb'], memory)
+
+    def test_invalid_memory_is_rejected_before_any_docker_operation(self):
+        for memory in (True, False, 127, 8193, 7168.0, '7168', None):
+            with self.subTest(memory=memory):
+                self.calls.clear()
+                with self.assertRaises(SandboxError):
+                    self.run_it(memory_mb=memory)
+                self.assertEqual(self.calls, [])
+
     def test_timeout_attempts_to_force_remove_container(self):
         def timeout(args, **kwargs):
             if args[1] == "start":

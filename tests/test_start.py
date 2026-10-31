@@ -37,6 +37,25 @@ class StartTests(unittest.TestCase):
         self.called.append(('run', request.read_text(), image, kwargs))
         return {'phase': 'delivery'}
 
+    def test_invalid_memory_is_rejected_before_task_preparation(self):
+        for memory in (True, False, 127, 8193, 7168.0, '7168', None):
+            with self.subTest(memory=memory):
+                with self.assertRaises(start.StartError):
+                    start.start(**self.kwargs, memory_mb=memory, prepare=self.prepare, run=self.drive)
+                self.assertEqual(self.called, [])
+
+    @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
+    @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
+    def test_explicit_seven_gib_is_retained_for_resume(self, process, which):
+        def fail(*args, **kwargs):
+            raise autopilot.AutopilotError('temporary failure')
+        with self.assertRaises(start.StartError):
+            start.start(**self.kwargs, memory_mb=7168, prepare=self.prepare, run=fail)
+        task = self.root / 'tasks/case/task.json'
+        self.assertEqual(cli.read(task.parent / 'input-stage.json')['run_settings']['memory_mb'], 7168)
+        start.resume_task(task, run=self.drive)
+        self.assertEqual(self.called[-1][3]['memory_mb'], 7168)
+
     @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
     @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
     def test_snapshots_request_and_runs_on_prepared_task(self, process, which):

@@ -49,10 +49,10 @@ class AdoptionTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, json.dumps([{'Id': 'sha256:' + 'a' * 64}]), '')
         return self.original_run(command, **kwargs)
 
-    def create(self):
+    def create(self, **kwargs):
         with patch('workbench.adopt.subprocess.run', side_effect=self.fake_run):
             return adopt.create(legacy_task=self.old, task_id='new', tasks_root=self.root / 'tasks',
-                workspaces_root=self.root / 'workspaces', image='baseline', pr_repo='alice/fork')
+                workspaces_root=self.root / 'workspaces', image='baseline', pr_repo='alice/fork', **kwargs)
 
     def test_rebinds_input_and_preserves_baseline_candidate_and_old_task(self):
         old_bytes = self.old.read_bytes()
@@ -69,6 +69,25 @@ class AdoptionTests(unittest.TestCase):
         self.assertFalse((Path(result['task']).parent / 'autopilot.json').exists())
         self.assertEqual((Path(result['task']).parent / 'issue.txt').read_text(), 'reported bug and logs')
         self.assertIn('unavailable', data['adoption']['provenance'])
+
+    def test_seven_gib_is_persisted_and_passed_to_resume(self):
+        result = self.create(memory_mb=7168)
+        task = Path(result['task'])
+        self.assertEqual(cli.read(task)['adoption']['memory_mb'], 7168)
+        self.assertEqual(cli.read(task.parent / 'input-stage.json')['run_settings']['memory_mb'], 7168)
+        seen = {}
+        def run(*args, **kwargs):
+            seen.update(kwargs)
+            return {'phase': 'plan'}
+        start.resume_task(task, run=run)
+        self.assertEqual(seen['memory_mb'], 7168)
+
+    def test_invalid_memory_is_rejected_before_creating_task(self):
+        for memory in (True, False, 127, 8193, 7168.0, '7168', None):
+            with self.subTest(memory=memory):
+                with self.assertRaises(adopt.AdoptionError):
+                    self.create(memory_mb=memory)
+                self.assertFalse((self.root / 'tasks/new').exists())
 
     def test_dirty_legacy_is_rejected_before_new_task_creation(self):
         (self.workspace / 'code').write_text('uncommitted')

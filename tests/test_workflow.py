@@ -29,6 +29,31 @@ class WorkflowTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_source_build_failure_retains_owner_only_tool_output(self):
+        import json
+        import stat
+        real_run = subprocess.run
+        def run(command, **kwargs):
+            if command[:3] == ['docker', 'image', 'inspect']:
+                return subprocess.CompletedProcess(command, 0, json.dumps([{'Config': {}}]), '')
+            if command[:2] == ['docker', 'build']:
+                kwargs['stdout'].write(b'diagnostic: local build failed\n')
+                kwargs['stdout'].flush()
+                raise subprocess.CalledProcessError(42, command)
+            return real_run(command, **kwargs)
+        base = cli.sha(self.repo, 'HEAD')
+        with patch.object(workflow, '_verified_image', return_value='sha256:' + 'a' * 64), \
+                patch.object(workflow.subprocess, 'run', side_effect=run):
+            with self.assertRaises(workflow.WorkflowError) as caught:
+                workflow.build_source_image(self.repo, base, 'baseline', 30)
+        self.assertIn('exit 42', str(caught.exception))
+        log = Path(str(caught.exception).split('output saved at ', 1)[1])
+        try:
+            self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+            self.assertEqual(log.read_text(), 'diagnostic: local build failed\n')
+        finally:
+            log.unlink()
+
     def git(self, *args):
         subprocess.run(['git', '-C', str(self.repo), *args], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

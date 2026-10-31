@@ -183,6 +183,7 @@ def build_source_image(repo, base_commit, base_image, timeout):
     if subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', base, head]).returncode:
         raise WorkflowError('candidate must descend from the verified baseline')
     image_id = _verified_image(repo, base_image, min(remaining(), 300), commit=base)
+    log_path = None
     try:
         inspected = subprocess.run(['docker', 'image', 'inspect', image_id], capture_output=True,
                                    text=True, timeout=min(remaining(), 30), check=True)
@@ -198,7 +199,9 @@ def build_source_image(repo, base_commit, base_image, timeout):
             recipe += 'RUN rm -f -- ' + ' '.join(shlex.quote('/app/' + p) for p in paths) + '\n'
         recipe += 'COPY source/ /app/\n'
         tag = 'workbench-candidate:' + uuid.uuid4().hex
-        with tempfile.TemporaryFile() as archive_file, tempfile.TemporaryFile() as log:
+        with tempfile.TemporaryFile() as archive_file, tempfile.NamedTemporaryFile(
+                prefix='iboard-image-build-', suffix='.log', delete=False) as log:
+            log_path = Path(log.name)
             subprocess.run(['git', '-C', str(repo), 'archive', '--format=tar', '--prefix=source/', head],
                            stdout=archive_file, stderr=log, timeout=remaining(), check=True)
             archive_file.seek(0)
@@ -215,9 +218,15 @@ def build_source_image(repo, base_commit, base_image, timeout):
                            stdin=archive_file, stdout=log, stderr=log, timeout=remaining(), check=True, env=env)
         if cli.sha(repo, 'HEAD') != head or _git(repo, 'status', '--porcelain', '--untracked-files=all'):
             raise WorkflowError('candidate changed during image build')
-        return _verified_image(repo, tag, min(remaining(), 300))
+        result = _verified_image(repo, tag, min(remaining(), 300))
+        log_path.unlink()
+        return result
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, tarfile.TarError, ValueError) as error:
-        raise WorkflowError(f'candidate source image build failed: {type(error).__name__}') from error
+        details = f' (exit {error.returncode})' if isinstance(error, subprocess.CalledProcessError) else ''
+        if log_path is not None:
+            # NamedTemporaryFile is owner-only. Retain tool output, never the environment.
+            details += f'; Docker/git output saved at {log_path}'
+        raise WorkflowError(f'candidate source image build failed: {type(error).__name__}{details}') from error
 
 
 def _git(repo: Path, *args: str, timeout=None) -> str:

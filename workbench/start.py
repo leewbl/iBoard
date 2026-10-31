@@ -164,7 +164,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         ci_skip_policy = workflow.validate_ci_skip_policy(ci_skip_policy, ci_skip_reason, required_ci_workflows)
     except workflow.WorkflowError as error:
         raise StartError(str(error)) from error
-    if source_mode not in ('workspace', 'image') or not 128 <= memory_mb <= 6144:
+    if source_mode not in ('workspace', 'image') or type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
         raise StartError('invalid source mode or memory limit')
     if (candidate_image and source_mode != 'image') or (build_source_image and (source_mode != 'image' or candidate_image)):
         raise StartError('candidate image settings require image mode and cannot be combined')

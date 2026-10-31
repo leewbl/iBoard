@@ -28,7 +28,7 @@ def create(*, legacy_task, task_id, tasks_root, workspaces_root, image, pr_repo,
         raise AdoptionError('a personal fork is required')
     if not isinstance(image, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/@-]*', image):
         raise AdoptionError('invalid baseline image reference')
-    if not 128 <= memory_mb <= 6144:
+    if type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
         raise AdoptionError('invalid memory limit')
     with task_lock(legacy):
         old = cli.read(legacy)

@@ -19,6 +19,14 @@ class StageRepairTests(AdoptionTests):
         self.assertEqual(repair.repair(task),'restored')
         self.assertEqual(json.loads(stage.read_text()),expected)
         self.assertEqual(repair.repair(task),'already present')
+    def test_stage_repair_retains_seven_gib_binding(self):
+        info = self.create(memory_mb=7168)
+        task = Path(info['task'])
+        stage = task.parent / 'input-stage.json'
+        stage.unlink()
+        self.assertEqual(repair.repair(task), 'restored')
+        self.assertEqual(cli.read(stage)['run_settings']['memory_mb'], 7168)
+
     def test_issue_snapshot_criteria_and_workspace_tampering_rejected(self):
         task,stage,_=self.prepared(); data=cli.read(task)
         for name in ('issue.txt','input-base.txt','legacy-task.json'):

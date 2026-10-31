@@ -72,7 +72,7 @@ def _expected(task, data):
         raise RepairError('invalid image identity')
     if not isinstance(pr_repo,str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',pr_repo):
         raise RepairError('invalid PR destination')
-    if type(memory) is not int or not 128 <= memory <= 6144:
+    if type(memory) is not int or not 128 <= memory <= 8192:
         raise RepairError('invalid isolation memory')
     request, base, snapshot = (task.parent / n for n in ('issue.txt','input-base.txt','legacy-task.json'))
     for p in (task, request, base, snapshot): _regular(p)
