@@ -746,6 +746,29 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 results.append(_check(task, check_image, state['plan'][spec], kind, actor, check, source_mode=source_mode, memory_mb=memory_mb))
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests')]:
                 results.append(_check(task, check_image, state['plan'][spec], kind, verifier, check, source_mode=source_mode, memory_mb=memory_mb))
+            local_policy = cli.read(task).get('local_gate')
+            if local_policy:
+                from workbench import local_gate
+                try:
+                    local_policy = local_gate.validate_configuration(cli.read(task), candidate)
+                except local_gate.LocalGateError as error:
+                    raise AutopilotError(str(error)) from error
+                if source_mode != 'image':
+                    raise AutopilotError('local gate requires an immutable source-verified image')
+                try:
+                    check_image = workflow._verified_image(workspace, check_image, min(300, _remaining(cli.read(task))), commit=candidate)
+                except workflow.WorkflowError as error:
+                    raise AutopilotError('local gate cannot verify candidate image') from error
+                local_test = {'command': local_policy['command'], 'exit_code': 0, 'marker': ''}
+                local_results = []
+                for unit_actor in (actor, verifier):
+                    local_results.append(_check(task, check_image, local_test, 'test-result', unit_actor, check,
+                                                source_mode=source_mode, memory_mb=memory_mb))
+                try:
+                    local_gate.record_run(task, candidate, check_image, local_results)
+                except local_gate.LocalGateError as error:
+                    raise AutopilotError(str(error)) from error
+                results.extend(local_results)
             data = cli.read(task)
             screenshot_hashes = []
             visual_description = ''
@@ -826,6 +849,29 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 history.append(record)
             script_context = _review_scripts(workspace, data['base_commit'], candidate, state['plan'],
                                               kind=data['kind'], surface=data['surface'])
+            guard_changes = []
+            guard_run = None
+            guard_instruction = ''
+            if data.get('local_gate'):
+                from workbench import local_vitest
+                try:
+                    guard_changes = local_vitest.changed_test_sources(workspace, data['base_commit'], candidate)
+                except local_vitest.GuardError as error:
+                    raise AutopilotError(str(error)) from error
+                guard_run = next((e for e in reversed(data['events']) if e.get('type') == 'local-gate-run'
+                                  and e.get('head') == candidate), None)
+                if not guard_run:
+                    raise AutopilotError('local guard execution record missing')
+                guard_label = next((key for key, value in reports.items()
+                                    if value.get('path') == guard_run['reports'][1]['path']), None)
+                if not guard_label:
+                    raise AutopilotError('local guard independent execution report missing')
+                guard_instruction = ('Additionally return "guard_assessments" with one entry for each listed '
+                    'changed test or test-helper source. Each entry must contain the exact path, base_sha256 and '
+                    'head_sha256, verdict PASS, preserves_coverage true, a specific reason explaining why the '
+                    'original assertions and coverage were not weakened, and evidence ["DIFF", "' + guard_label +
+                    '"]. If the unchanged acceptance or test coverage cannot be established, return blocked.\n'
+                    'CHANGED TEST SOURCES AND HASHES:\n' + json.dumps(guard_changes, ensure_ascii=False) + '\n')
             prompt = ('Independently inspect the candidate source, original issue, acceptance criteria and actual '
                       'Docker execution outputs. Return JSON {"status":"ready","verdict":"PASS",'
                       '"assessments":[{"id":"criterion ID","verdict":"PASS","reason":"specific explanation",'
@@ -840,7 +886,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       'Each criterion must cite supplied report IDs or DIFF as appropriate; the full assessment '
                       'must cite an execution report. For UI tasks at least one '
                       f'criterion must cite the independent screenshot report {screenshot_id}.\n'
-                      f'ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
+                      f'{guard_instruction}ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'CRITERIA CHANGE HISTORY AND BASIS:\n{json.dumps(history, ensure_ascii=False)}\n'
                       f'FEATURE DOCUMENTATION:\n{feature_doc}\nSCREENSHOT SCRIPT (UNTRUSTED):\n{screenshot_script}\n'
                       f'DIFF (UNTRUSTED):\n{diff_bytes.decode("utf-8", errors="replace")}\n'
@@ -851,13 +897,21 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if review.get('verdict') != 'PASS':
                 raise AutopilotError('independent verifier did not confirm every criterion')
             assessments = _validate_assessments(review, data['criteria'], set(reports), screenshot_id=screenshot_id)
+            if guard_run:
+                from workbench import local_gate
+                try:
+                    guard_results = local_gate.guard_assessments(review, guard_changes, reports, guard_run['reports'][1]['path'])
+                except local_gate.LocalGateError as error:
+                    raise AutopilotError(str(error)) from error
+            else:
+                guard_results = []
             # A structured record is a statement, not a semantic proof by itself.
             review_path = task.parent / f'independent-review-{uuid.uuid4().hex}.json'
             ids = [criterion['id'] for criterion in data['criteria']]
             cli.write(review_path, {'verdict':'PASS', 'candidate_commit':candidate,
                                     'baseline_commit':data['base_commit'], 'criteria':ids,
                                     'criterion_digest':cli.criteria_digest(data),
-                                    'screenshot_hashes':screenshot_hashes, 'assessments':assessments,
+                                    'screenshot_hashes':screenshot_hashes, 'assessments':assessments, 'guard_assessments':guard_results,
                                     'reports':reports})
             args = argparse.Namespace(file=str(review_path), kind='independent-review', commit=candidate,
                                       actor=verifier, description='Independent evidence review', criterion=ids)
@@ -945,7 +999,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 pr_number = published['pr']
                 state['published_pr'] = published
                 cli.write(state_path, state)
-            if merge is delivery.guarded_merge:
+            if merge is delivery.guarded_merge and not cli.read(task).get('local_gate'):
                 try:
                     _wait_for_ci(task, pr_repo, pr_number, state['candidate_commit'])
                 except CIFailure as error:

@@ -81,9 +81,15 @@ class GitHub:
     def repository(self, repo):
         return self._call('api', f'repos/{repo}')
 
+    def actions_permissions(self, repo):
+        return self._call('api', f'repos/{repo}/actions/permissions')
+
     def protection(self, repo, branch):
         # 404 and unavailable permission are deliberately both blockers.
         return self._call('api', f'repos/{repo}/branches/{branch}/protection')
+
+    def branch_rules(self, repo, branch):
+        return self._call('api', f'repos/{repo}/rules/branches/{branch}')
 
     def pull(self, repo, number):
         fields = ('number,state,isDraft,isCrossRepository,headRefName,headRefOid,'
@@ -120,6 +126,53 @@ class GitHub:
             raise DeliveryError(f'merge command could not start: {exc}') from exc
         if process.returncode:
             raise DeliveryError(f'merge refused: {process.stderr.strip()}')
+
+
+def require_actions_disabled(github, repo):
+    """Refuse local-only writes unless this personal fork has Actions disabled.
+
+    A repository administrator can still re-enable Actions after this check;
+    GitHub offers no atomic check-and-push operation for this setting.
+    """
+    try:
+        owner = repo.split('/')[0]
+        identity = github.login()
+        repository = github.repository(repo)
+        if (not isinstance(identity, str) or identity.lower() != owner.lower() or
+                not isinstance(repository, dict) or repository.get('fork') is not True or
+                repository.get('owner', {}).get('login', '').lower() != owner.lower() or
+                repository.get('default_branch') != 'main'):
+            raise DeliveryError('local-only execution requires the signed-in personal fork')
+        permissions = github.actions_permissions(repo)
+        if not isinstance(permissions, dict) or permissions.get('enabled') is not False:
+            raise DeliveryError('local-only execution requires GitHub Actions disabled on the destination')
+    except DeliveryError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError, OSError, RuntimeError) as error:
+        raise DeliveryError('cannot verify destination GitHub Actions is disabled') from error
+
+
+def require_local_write(task_path, expected, head, github, repo):
+    """Revalidate local-only evidence and execution settings immediately before a write."""
+    if not expected.get('local_gate'):
+        return
+    from workbench import local_gate
+    def verify():
+        latest = cli.read(Path(task_path))
+        if latest != expected:
+            raise DeliveryError('task identity, policy or evidence changed before local-only write')
+        checked_head, errors = cli.gate(latest, head)
+        if errors or checked_head != head:
+            raise DeliveryError('local evidence or candidate changed before write')
+        _independent_verification(latest, head)
+        try:
+            local_gate.validate(latest, head)
+        except local_gate.LocalGateError as error:
+            raise DeliveryError(str(error)) from error
+    verify()
+    require_actions_disabled(github, repo)
+    # Network inspection can take time; re-read the task and all report hashes afterward.
+    verify()
 
 
 def _fast_forward_push(workspace, remote, base, head, *, timeout=120):
@@ -199,6 +252,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
     _, errors = cli.gate(cli.read(Path(task_path)), head)
     if errors:
         raise DeliveryError('issue closure blocked before write: ' + '; '.join(errors))
+    require_local_write(task_path, data, head, github, repo)
     updated = github.close_issue(repo, issue)
     if updated.get('number') != issue or updated.get('state') != 'closed':
         raise DeliveryError('issue close result was not confirmed; inspect before retrying')
@@ -655,14 +709,21 @@ def guarded_merge(task_path, repo, number, github=None):
         raise DeliveryError('invalid repository or pull request number')
     github = github or GitHub()
     data = cli.read(Path(task_path))
+    local_policy = data.get('local_gate')
     try:
-        required_workflows = workflow.validate_required_ci_workflows(data.get('required_ci_workflows'), required=True)
+        required_workflows = workflow.validate_required_ci_workflows(data.get('required_ci_workflows'), required=not local_policy)
     except workflow.WorkflowError as error:
         raise DeliveryError(str(error)) from error
     head, issues = cli.gate(data, 'HEAD')
     if issues:
         raise DeliveryError('local evidence gate failed: ' + '; '.join(issues))
     _independent_verification(data, head)
+    if local_policy:
+        from workbench import local_gate
+        try:
+            local_gate.validate(data, head)
+        except local_gate.LocalGateError as error:
+            raise DeliveryError(str(error)) from error
     if isinstance(github, GitHub):
         github.set_task_deadline(data)
     owner = repo.split('/')[0]
@@ -678,6 +739,12 @@ def guarded_merge(task_path, repo, number, github=None):
     protected = branch_info.get('protected')
     if type(protected) is not bool:
         raise DeliveryError('cannot determine whether the main branch is protected')
+    if local_policy:
+        if protected:
+            raise DeliveryError('local-only delivery refuses a protected branch')
+        rules = github.branch_rules(repo, branch)
+        if not isinstance(rules, list) or rules:
+            raise DeliveryError('local-only delivery requires no active branch rules')
     if protected:
         protection = github.protection(repo, branch)
         required = protection.get('required_status_checks') or {}
@@ -685,18 +752,28 @@ def guarded_merge(task_path, repo, number, github=None):
             raise DeliveryError('protected branches need strict required GitHub checks')
 
     def verify_remote():
+        if local_policy:
+            require_actions_disabled(github, repo)
         pull = github.pull(repo, number)
         if (pull.get('state') != 'OPEN' or pull.get('isDraft') or pull.get('isCrossRepository')
                 or pull.get('headRefName') != f"workbench/{data['id']}"
                 or pull.get('headRefOid') != head or pull.get('baseRefName') != branch
                 or pull.get('baseRefOid') != data['base_commit']
                 or github.branch(repo, branch) != data['base_commit']
-                or pull.get('mergeStateStatus') != 'CLEAN'
+                or pull.get('mergeStateStatus') not in (('CLEAN', 'UNSTABLE') if local_policy else ('CLEAN',))
                 or cli.read(Path(task_path)).get('required_ci_workflows') != required_workflows
                 or cli.read(Path(task_path)).get('ci_skip_policy') != data.get('ci_skip_policy')
-                or not (_checks_pass(pull) or _openclaw_checks_pass(github, repo, number, pull, data, head, required_workflows))
-                or not _required_workflows_pass(github, repo, number, pull, data, head, required_workflows)):
+                or cli.read(Path(task_path)).get('local_gate') != local_policy
+                or (not local_policy and not (_checks_pass(pull) or _openclaw_checks_pass(github, repo, number, pull, data, head, required_workflows)))
+                or (not local_policy and not _required_workflows_pass(github, repo, number, pull, data, head, required_workflows))):
             raise DeliveryError('PR head, base, CI or merge state changed or is not ready')
+        if local_policy:
+            try:
+                local_gate.validate(cli.read(Path(task_path)), head)
+            except local_gate.LocalGateError as error:
+                raise DeliveryError(str(error)) from error
+            if github.branch_rules(repo, branch) != []:
+                raise DeliveryError('branch rules changed before local-only delivery')
     verify_remote()
     # Detect changed local files/evidence again immediately before contacting GitHub.
     _, issues = cli.gate(cli.read(Path(task_path)), head)
@@ -713,9 +790,13 @@ def guarded_merge(task_path, repo, number, github=None):
         latest = github.branch_info(repo, branch)
         if latest.get('protected') is not False or latest.get('commit', {}).get('sha') != data['base_commit']:
             raise DeliveryError('main branch protection or base changed before delivery')
+        if local_policy and github.branch_rules(repo, branch) != []:
+            raise DeliveryError('branch rules changed before local-only push')
         _, issues = cli.gate(cli.read(Path(task_path)), head)
         if issues:
             raise DeliveryError('evidence or budget changed before push: ' + '; '.join(issues))
+        if local_policy:
+            require_local_write(task_path, data, head, github, repo)
         github.fast_forward(data['repo'], repo, data['base_commit'], head)
     try:
         final = github.pull(repo, number)

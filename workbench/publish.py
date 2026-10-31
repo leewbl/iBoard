@@ -364,6 +364,7 @@ def _screenshot_body(task_path, data, head, repo, github):
             if issues or checked_head != head:
                 raise PublishError('evidence or budget changed before screenshot publication')
             delivery._independent_verification(current_data, head)
+            _local_remote_guard(task_path, data, head, github, repo)
             github.push_new(directory, repo, branch, commit)
         elif current != commit:
             raise PublishError('screenshot evidence branch differs; refusing to overwrite')
@@ -521,6 +522,14 @@ class Publisher(delivery.GitHub):
             raise PublishError('PR description update failed; inspect remote before retrying')
 
 
+def _local_remote_guard(task_path, data, head, github, repo):
+    if data.get('local_gate'):
+        try:
+            delivery.require_local_write(task_path, data, head, github, repo)
+        except delivery.DeliveryError as error:
+            raise PublishError(str(error)) from error
+
+
 @locked_task('task_path')
 def publish(task_path, repo, github=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
@@ -555,6 +564,7 @@ def publish(task_path, repo, github=None):
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('task evidence or budget changed before branch push')
+        _local_remote_guard(task_path, data, head, github, repo)
         github.push_new(data['repo'], repo, branch, head)
     elif current != head:
         raise PublishError('remote task branch differs; refusing to overwrite')
@@ -574,6 +584,7 @@ def publish(task_path, repo, github=None):
             checked_head, issues = cli.gate(checked, head)
             if issues or checked_head != head or _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
                 raise PublishError('evidence or budget changed before PR description update')
+            _local_remote_guard(task_path, data, head, github, repo)
             github.update_body(repo, number, body)
             pulls = github.pulls(repo, branch)
             if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or
@@ -583,6 +594,7 @@ def publish(task_path, repo, github=None):
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('task evidence or budget changed before PR creation')
+        _local_remote_guard(task_path, data, head, github, repo)
         number = github.create(repo, branch, data['id'], {**data, '_prepared_pr_body': body})
         pulls = github.pulls(repo, branch)
         if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or
@@ -636,6 +648,7 @@ def republish(task_path, repo, number, previous_head, github=None):
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('evidence or budget changed before update')
+        _local_remote_guard(task_path, data, head, github, repo)
         github.push_update(data['repo'], repo, branch, previous_head, head)
     if github.remote_head(repo, branch) != head or github.branch(repo, 'main') != data['base_commit']:
         raise PublishError('remote changed during update; inspect before retrying')
@@ -650,6 +663,7 @@ def republish(task_path, repo, number, previous_head, github=None):
     if _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
         raise PublishError('published evidence changed during PR update')
     if pulls[0].get('body') != body:
+        _local_remote_guard(task_path, data, head, github, repo)
         github.update_body(repo, number, body)
         pulls = github.pulls(repo, branch)
     if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or

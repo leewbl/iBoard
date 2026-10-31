@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 from workbench import cli, local_vitest
 from workbench.task_lock import task_lock
 
@@ -20,7 +21,19 @@ def configure(task_path, files, reason):
             raise LocalGateError('an unconfigured paused task is required')
         if not isinstance(reason, str) or not reason.strip() or not data.get('criteria'):
             raise LocalGateError('criteria and reason are required')
-        head = data.get('adoption', {}).get('candidate_commit') or cli.sha(data['repo'], 'HEAD')
+        state_path = task.parent / 'autopilot.json'
+        state = None
+        if state_path.exists():
+            if state_path.is_symlink():
+                raise LocalGateError('unsafe workflow state')
+            state = cli.read(state_path)
+        if state and state.get('phase') == 'delivery':
+            current = cli.sha(data['repo'], 'HEAD')
+            dirty = subprocess.run(['git', '-C', data['repo'], 'status', '--porcelain'],
+                                   capture_output=True, check=True, text=True, timeout=30).stdout
+            if dirty or state.get('candidate_commit') != current:
+                raise LocalGateError('delivery revalidation requires the unchanged clean candidate')
+        head = current if state and state.get('phase') == 'delivery' else (data.get('adoption', {}).get('candidate_commit') or cli.sha(data['repo'], 'HEAD'))
         try:
             command = local_vitest.command(data['repo'], data['base_commit'], head, files)
         except local_vitest.GuardError as error:
@@ -31,8 +44,58 @@ def configure(task_path, files, reason):
                   'reason': reason.strip()}
         data['local_gate'] = record
         data['events'].append({'at': cli.now(), 'type': 'local-gate-selected', **record})
+        if state and state.get('phase') == 'delivery':
+            data['local_gate_reverify'] = {'candidate': current, 'base': data['base_commit'],
+                'policy_digest': _digest_policy(record), 'event_index': len(data['events']) - 1}
         cli.write(task, data)
         return record
+
+
+def resume_reverify(task_path):
+    """Request the existing reverify transition; never manufacture workflow phases."""
+    task = Path(task_path)
+    data = cli.read(task)
+    request = data.get('local_gate_reverify')
+    if request is None:
+        return False
+    if not isinstance(request, dict):
+        raise LocalGateError('invalid local revalidation request')
+    index = request.get('event_index')
+    policy = validate_configuration(data, request.get('candidate'))
+    events = data.get('events', [])
+    if (type(index) is not int or not 0 <= index < len(events) or
+            events[index].get('type') != 'local-gate-selected' or
+            request.get('base') != data['base_commit'] or
+            request.get('policy_digest') != _digest_policy(policy)):
+        raise LocalGateError('local revalidation request identity changed')
+    state_path = task.parent / 'autopilot.json'
+    if state_path.is_symlink():
+        raise LocalGateError('unsafe workflow state')
+    state = cli.read(state_path)
+    applied = any(e.get('type') == 'reverify' for e in events[index + 1:])
+    phase = state.get('phase')
+    if applied and phase in ('verify', 'repairing', 'close-issue'):
+        data.pop('local_gate_reverify')
+        data['events'].append({'at': cli.now(), 'type': 'local-gate-reverify-consumed', **request})
+        cli.write(task, data)
+        return False
+    if applied and phase == 'delivery':
+        try:
+            validate(data, state.get('candidate_commit'))
+        except LocalGateError:
+            pass
+        else:
+            data.pop('local_gate_reverify')
+            data['events'].append({'at': cli.now(), 'type': 'local-gate-reverify-consumed', **request})
+            cli.write(task, data)
+            return False
+    current = cli.sha(data['repo'], 'HEAD')
+    dirty = subprocess.run(['git', '-C', data['repo'], 'status', '--porcelain'],
+                           capture_output=True, check=True, text=True, timeout=30).stdout
+    if (phase != 'delivery' or dirty or current != request.get('candidate') or
+            state.get('candidate_commit') != current):
+        raise LocalGateError('local revalidation requires its unchanged clean delivery candidate')
+    return True
 
 
 def validate_configuration(data, head):

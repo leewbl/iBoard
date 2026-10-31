@@ -1,5 +1,6 @@
 import json
 import argparse
+import hashlib
 from pathlib import Path
 import subprocess
 import unittest
@@ -14,6 +15,7 @@ class LocalGateTests(unittest.TestCase):
         self.fixture = DeliveryTests(methodName='test_good_evidence_and_strict_checks_permit_merge')
         self.fixture.setUp()
         self.task, self.github = self.fixture.task, self.fixture.github
+        self.github.actions_permissions = lambda repo: {'enabled': False}
         self.fixture.runcheck('test-result', 'independent-verifier', 'after', 0, 'PASS')
         self.image = 'sha256:' + 'a' * 64
         self.command = ['node', 'fixed-vitest']
@@ -39,6 +41,7 @@ class LocalGateTests(unittest.TestCase):
         paths = [next(e['path'] for e in data['evidence'] if e['kind'] == 'test-result' and e['actor'] == actor)
                  for actor in ('implementer', 'independent-verifier')]
         local_gate.record_run(self.task, self.fixture.head, self.image, [{'report': p} for p in paths])
+        self.bind_review(self.fixture.head)
         self.github.protected = False
         self.github.ci = False
         self.github.branch_rules = lambda repo, branch: []
@@ -129,13 +132,47 @@ class LocalGateTests(unittest.TestCase):
             reports.append({'report': str(path)})
         cli.write(self.task, data)
         local_gate.record_run(self.task, head, image, reports)
-        data = cli.read(self.task)
-        review_path = self.task.parent / 'new-independent-review.json'
-        review_path.write_text(json.dumps({'verdict': 'PASS', 'guard_assessments': [], 'reports': {}}))
-        cli.evidence_add(argparse.Namespace(file=str(review_path), kind='independent-review', commit=head,
-                          actor='independent-verifier', description='new candidate review', criterion=['c1']), data)
-        cli.write(self.task, data)
+        self.bind_review(head)
         local_gate.validate(cli.read(self.task), head)
+
+    def bind_review(self, head):
+        data = cli.read(self.task)
+        run = next(e for e in reversed(data['events']) if e.get('type') == 'local-gate-run' and e.get('head') == head)
+        independent = run['reports'][1]
+        previous = next(e for e in data['evidence'] if e['kind'] == 'independent-review')
+        review = json.loads(Path(previous['path']).read_text())
+        review.update(candidate_commit=head, baseline_commit=data['base_commit'],
+                      criterion_digest=cli.criteria_digest(data), guard_assessments=[])
+        review['reports']['GUARD'] = {'path': independent['path'], 'sha256': independent['sha256']}
+        review['reports']['DIFF'] = {'kind': 'git-diff', 'base': data['base_commit'], 'head': head,
+            'sha256': hashlib.sha256(delivery.candidate_diff(data['repo'], data['base_commit'], head)).hexdigest()}
+        path = self.task.parent / ('guard-review-' + head + '.json')
+        path.write_text(json.dumps(review))
+        cli.evidence_add(argparse.Namespace(file=str(path), kind='independent-review', commit=head,
+                        actor='independent-verifier', description='bound independent guard review', criterion=['c1']), data)
+        cli.write(self.task, data)
+
+    def test_missing_independent_review_is_rejected(self):
+        data = cli.read(self.task)
+        data['evidence'] = [e for e in data['evidence'] if e['kind'] != 'independent-review']
+        with self.assertRaisesRegex(local_gate.LocalGateError, 'independent review'):
+            local_gate.validate(data, self.fixture.head)
+
+    def test_wrong_diff_or_old_report_in_review_is_rejected(self):
+        data = cli.read(self.task)
+        evidence = next(e for e in reversed(data['evidence']) if e['kind'] == 'independent-review')
+        path = Path(evidence['path'])
+        original = json.loads(path.read_text())
+        for field in ('diff', 'report'):
+            with self.subTest(field=field):
+                review = json.loads(json.dumps(original))
+                if field == 'diff': review['reports']['DIFF']['sha256'] = '0' * 64
+                else: review['reports']['GUARD']['sha256'] = '0' * 64
+                path.write_text(json.dumps(review))
+                evidence['sha256'] = cli.digest(path)
+                with self.assertRaisesRegex(local_gate.LocalGateError, 'not bound'):
+                    local_gate.validate(data, self.fixture.head)
+        path.write_text(json.dumps(original))
 
 
 if __name__ == '__main__': unittest.main()

@@ -95,9 +95,16 @@ def _resume_locked(task_path, *, run, vision):
         autopilot._remaining(data)
         stage = _finish_screenshots(task, vision=vision)
         settings = stage['run_settings']
+        options = {}
+        if cli.read(task).get('local_gate_reverify') is not None:
+            from workbench import local_gate
+            try:
+                options['reverify'] = local_gate.resume_reverify(task)
+            except local_gate.LocalGateError as error:
+                raise StartError(str(error)) from error
         return run(task, task.parent / 'issue.txt', settings['image'], pr_repo=settings['pr_repo'],
                    source_mode=settings['source_mode'], candidate_image=settings['candidate_image'],
-                   build_source_image=settings['build_source_image'], memory_mb=settings['memory_mb'])
+                   build_source_image=settings['build_source_image'], memory_mb=settings['memory_mb'], **options)
     except (StartError, autopilot.AutopilotError, cli.WorkbenchError, OSError, ValueError, RuntimeError, KeyError) as error:
         if resumed:
             try:

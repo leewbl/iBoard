@@ -53,6 +53,63 @@ class VitestGuardTests(unittest.TestCase):
             self.assertEqual(local_vitest.changed_test_sources(self.root, self.base, head)[0]['path'], self.name)
         with self.assertRaises(local_vitest.GuardError): local_vitest.command(self.root, head, head, [self.name])
 
+    def _commit_sources(self, sources, message):
+        for name, body in sources.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(self.root), 'commit', '-qm', message], check=True)
+        return subprocess.check_output(['git', '-C', str(self.root), 'rev-parse', 'HEAD'], text=True).strip()
+
+    def test_real_git_enumerates_openclaw_helpers_mocks_and_test_configuration(self):
+        names = [
+            'src/gateway/test-helpers.ts',
+            'src/gateway/shared-auth.test-helpers.ts',
+            'src/talk/provider-discovery.test-fixtures.ts',
+            'packages/net-policy/src/ip-test-fixtures.ts',
+            'extensions/memory-core/src/memory/test-runtime-mocks.ts',
+            'src/gateway/server-startup-post-attach.mocks.test-support.ts',
+            'src/contracts/test-helpers/registry.ts',
+            'src/test-utils/registry.ts',
+            'src/gateway/__mocks__/runtime.ts',
+            'test/setup-openclaw-runtime.ts',
+            'test/vitest/vitest.gateway.config.ts',
+            'vitest.config.ts', 'vite.config.ts', 'test.config.mts', 'test.setup.ts',
+        ]
+        base = self._commit_sources({name: 'before' for name in names}, 'helper baseline')
+        head = self._commit_sources({**{name: 'after' for name in names},
+                                     'src/gateway/new.test-helpers.ts': 'new helper',
+                                     'src/gateway/production.ts': 'ordinary source'}, 'helper changes')
+        changes = local_vitest.changed_test_sources(self.root, base, head)
+        self.assertEqual([entry['path'] for entry in changes], sorted([*names, 'src/gateway/new.test-helpers.ts']))
+        import hashlib
+        for entry in changes:
+            if entry['path'] == 'src/gateway/new.test-helpers.ts':
+                self.assertIsNone(entry['base_sha256'])
+                self.assertEqual(entry['head_sha256'], hashlib.sha256(b'new helper').hexdigest())
+            else:
+                self.assertEqual(entry['base_sha256'], hashlib.sha256(b'before').hexdigest())
+                self.assertEqual(entry['head_sha256'], hashlib.sha256(b'after').hexdigest())
+
+    def test_real_git_rejects_deleted_helper(self):
+        name = 'src/gateway/test-helpers.ts'
+        base = self._commit_sources({name: 'before'}, 'helper baseline')
+        (self.root / name).unlink()
+        head = self._commit_sources({}, 'delete helper')
+        with self.assertRaisesRegex(local_vitest.GuardError, 'deleted or oversized'):
+            local_vitest.changed_test_sources(self.root, base, head)
+
+    def test_real_git_rejects_oversized_helper_before_or_after(self):
+        name = 'src/gateway/shared-auth.test-helpers.ts'
+        base = self._commit_sources({name: 'before'}, 'helper baseline')
+        large = self._commit_sources({name: 'x' * 100001}, 'oversized helper')
+        with self.assertRaisesRegex(local_vitest.GuardError, 'deleted or oversized'):
+            local_vitest.changed_test_sources(self.root, base, large)
+        small = self._commit_sources({name: 'small again'}, 'reduce helper')
+        with self.assertRaisesRegex(local_vitest.GuardError, 'deleted or oversized'):
+            local_vitest.changed_test_sources(self.root, large, small)
+
     def test_changed_test_requires_independent_coverage_assessment(self):
         change = {'path': self.name, 'base_sha256': 'a', 'head_sha256': 'b'}
         reports = {'R7': {'path': '/proof/independent'}}

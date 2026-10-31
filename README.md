@@ -6,6 +6,19 @@
 
 ## 当前状态
 
+本地门禁已作为显式选项接入。它目前适配 OpenClaw 的固定 Vitest JSON 命令，仍保留真实问题复现、候选恢复、双主体验证及逐条独立审查；不能代表 macOS、iOS 或其他框架的完整 CI 覆盖。最近完整隔离回归运行 396 项测试，394 项通过、2 项跳过；真实离线容器的运行器兼容检查通过 5 项。真实自动交付仍待验证。
+
+对已有验收条件的暂停任务，可以明确选择防护文件，再恢复：
+
+```bash
+python3 -m workbench.local_gate --task /path/to/task.json \
+  --file src/gateway/agent-input-recovery.test.ts \
+  --reason '使用本地隔离验证，原验收条件不变'
+python3 -m workbench.resume --task /path/to/task.json
+```
+
+示例中的文件只是运行器适配示例；实际任务必须选择覆盖相关功能的防护文件。已到交付阶段的任务会重新验证。每轮候选与镜像、两份实际报告独立绑定，测试及辅助文件变更须由独立审查说明。发布或合并前要求目标个人 fork 的 GitHub Actions 已禁用；查询失败或状态未知会停止。工作台不自动更改远端设置。管理员在检查后改变设置仍属于无法原子锁定的外部边界。
+
 本原型尚未完成端到端自动修复或合并 PR 的真实验证。插件提供工作流和独立验证者的指导；`workbench/cli.py` 记录任务、验收条件和证据，`workbench/workflow.py` 创建独立工作区并执行容器检查，`workbench/autopilot.py` 串联任务阶段，`workbench/publish.py` 在门禁通过后推送分支并创建 PR。发布流程已有模拟测试，并已为试点创建 PR；完整自动合并尚未完成验证。记录和文件哈希不判断测试是否真实、有效或充分，也不是不可篡改的安全边界。
 
 2026-10-29 已对独立的本地练习仓库运行真实 GLM 和 Docker：模型规划验收条件、两次复现、修改代码、分别执行解决检查和测试，并由独立模型调用审查通过；因练习仓库没有 PR，流程在交付阶段按设计暂停。记录位于 `.sandbox-check/autopilot-live-3e042eb1/tasks/live-smoke/`。该练习不证明 OpenClaw 问题已解决，也不验证 GitHub 发布和合并。

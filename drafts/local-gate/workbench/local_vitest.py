@@ -40,6 +40,21 @@ def command(repo, base, head, files):
     return [*PREFIX, *('/app/' + f for f in files)]
 
 
+def _is_test_source(path):
+    parts = path.split('/')
+    name = parts[-1]
+    # Include the project's real helper/mock naming families, not just test files.
+    # This intentionally errs toward review when a changed source looks test-related.
+    return (path.endswith(('.test.ts', '.spec.ts', '.test.tsx', '.spec.tsx')) or
+            any(part in ('test', 'tests', 'test-helpers', 'test-fixtures',
+                         'test-support', 'test-utils', '__tests__', '__mocks__', 'mocks')
+                for part in parts[:-1]) or
+            bool(re.search(r'(?:^|[.\-])test[.\-](?:helpers|fixtures|support|mocks|utils)(?:[.\-]|$)', name)) or
+            bool(re.search(r'(?:^|[.\-])(?:mocks|test-setup)(?:[.\-]|$)', name)) or
+            name.startswith(('vitest.', 'vitest-', 'vite.config.', 'test.config.',
+                             'test.setup.', 'setup-tests.', 'setupTests.')))
+
+
 def changed_test_sources(repo, base, head):
     """Enumerate all changed test sources/config helpers for independent review."""
     result = subprocess.run(['git', '-C', str(repo), 'diff', '--name-only', '-z', base, head, '--'],
@@ -54,8 +69,7 @@ def changed_test_sources(repo, base, head):
             path = raw.decode('utf-8')
         except UnicodeDecodeError as error:
             raise GuardError('invalid changed path') from error
-        if not (path.endswith('.test.ts') or '.test-support.' in path or
-                path.startswith(('test/helpers/', 'test/vitest/'))):
+        if not _is_test_source(path):
             continue
         before = subprocess.run(['git', '-C', str(repo), 'show', f'{base}:{path}'], capture_output=True)
         after = subprocess.run(['git', '-C', str(repo), 'show', f'{head}:{path}'], capture_output=True)
