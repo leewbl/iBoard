@@ -166,8 +166,9 @@ def _verified_image(repo, image, timeout, *, commit=None):
 def build_source_image(repo, base_commit, base_image, timeout):
     """Overlay a clean committed tree on a verified local baseline image.
 
-    This prepares source only: it does not install dependencies or compile the
-    project. Actual checks still decide whether the resulting image is usable.
+    Only changed tracked paths are overlaid on the fully verified baseline.
+    This does not install dependencies or compile the project. Actual checks
+    still decide whether the resulting image is usable.
     """
     repo = Path(repo).resolve(strict=True)
     deadline = time.monotonic() + timeout
@@ -194,16 +195,27 @@ def build_source_image(repo, base_commit, base_image, timeout):
         paths = [os.fsdecode(p) for p in deleted.split(b'\0') if p]
         if any('\n' in p or '\r' in p or '\x00' in p for p in paths):
             raise WorkflowError('unsupported deleted source path')
+        changed = subprocess.run(['git', '-C', str(repo), 'diff', '--no-renames', '--diff-filter=d',
+                                  '--name-only', '-z', base, head], capture_output=True, check=True).stdout
+        overlays = [os.fsdecode(p) for p in changed.split(b'\0') if p]
         recipe = f'FROM {image_id}\n'
         if paths:
             recipe += 'RUN rm -f -- ' + ' '.join(shlex.quote('/app/' + p) for p in paths) + '\n'
-        recipe += 'COPY source/ /app/\n'
+        if overlays:
+            recipe += 'COPY source/ /app/\n'
         tag = 'workbench-candidate:' + uuid.uuid4().hex
         with tempfile.TemporaryFile() as archive_file, tempfile.NamedTemporaryFile(
                 prefix='iboard-image-build-', suffix='.log', delete=False) as log:
             log_path = Path(log.name)
-            subprocess.run(['git', '-C', str(repo), 'archive', '--format=tar', '--prefix=source/', head],
-                           stdout=archive_file, stderr=log, timeout=remaining(), check=True)
+            if overlays:
+                archive_env = os.environ.copy()
+                archive_env['GIT_LITERAL_PATHSPECS'] = '1'
+                subprocess.run(['git', '-C', str(repo), 'archive', '--format=tar', '--prefix=source/',
+                                head, '--', *overlays], stdout=archive_file, stderr=log,
+                               timeout=remaining(), check=True, env=archive_env)
+            else:
+                with tarfile.open(fileobj=archive_file, mode='w'):
+                    pass
             archive_file.seek(0)
             with tarfile.open(fileobj=archive_file, mode='a') as archive:
                 content = recipe.encode()

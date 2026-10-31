@@ -34,3 +34,23 @@ Use the same adequate memory budget for both versions and run serially. A trial 
 Global cron or other database errors cannot satisfy the target-path assertion: diagnostics must name this run's database, `operation=placementJournals.prune`, `failureKind=lock-contention`, and SQLite primary code 5 or 6 while workspace recovery has started and has not reached active reconciliation. Failure scenarios must not reach active reconciliation or report HTTP readiness. Early HTTP 200 in transient mode is counted but never terminates the run successfully; both the target path and Gateway readiness logs must subsequently complete. Times are harness observation times, not instrumentation inside the worker. This depends on the specified source version's diagnostic and phase log contracts; changed log contracts must fail closed and require review rather than weakening the assertions.
 
 This validates fresh-state startup contention and the externally observed recovery/failure sequence. It does not instrument internal retry counts, prove existing reconciliation journals are retained, verify channels with production configuration, or replace independent semantic review. Existing-journal recovery and non-lock error checks need separate verified scenarios. The harness must itself pass actual image runs before its successful markers can be treated as evidence; syntax checking alone proves no runtime behavior.
+
+## Writable test prerequisites in a read-only sandbox
+
+The official `scripts/run-vitest.mjs` prepares Kysely types under `/app/.artifacts` before running tests. The source-only image does not contain that ignored directory; using it directly with the runner's read-only root fails before test collection. This is an environment failure, not a passing test or evidence of an OpenClaw regression.
+
+`images/openclaw-test/Dockerfile.sandbox-cache` is a test-only overlay for a locally verified baseline image. It requires `/app/.artifacts`, `/app/.cache`, `/app/node_modules/.vite-temp` and `/app/node_modules/.vite` to be absent and links those generated-cache paths to `/tmp`. Kysely and Vite both need these writes before test collection. The runner already mounts `/tmp` as a private, bounded 1024 MiB tmpfs (charged against the container memory limit), so generated files live only for that container. Tracked source remains unchanged and read-only; networking stays disabled. The baseline and candidate must both inherit this overlay and be source-verified again, with new reports. Do not substitute an overlay on only one version or reuse prior successful reports as proof of the new image.
+
+```sh
+# Verify and tag the intended local baseline first. No image is pulled.
+DOCKER_BUILDKIT=0 docker build --network=none --pull=false \
+  --build-arg BASE_IMAGE=iboard-openclaw-baseline:local \
+  -f images/openclaw-test/Dockerfile.sandbox-cache \
+  -t iboard-openclaw-baseline-cache:local images/openclaw-test
+```
+
+This overlay fails if any of those cache paths already exists, to avoid deleting or shadowing source. It does not make `/app/dist`, dependency installations, or the whole image writable. A different prerequisite that writes elsewhere must be diagnosed separately.
+
+A 256 MiB tmpfs trial reached real test execution but exhausted space while compiling Vitest subprocess workers; its report is a failure. The runner now bounds private `/tmp` at 1024 MiB, still within the cgroup memory cap. Tests and assertions are unchanged.
+
+After the cache overlay and 1024 MiB tmpfs correction, the unchanged official launcher command completed both selected files and all 9 tests with exit 0 and confirmed container cleanup. This is an environment smoke check only. The controlled workflow must still rerun baseline reproduction, both candidate executions and independent review on its own pinned images; no smoke report is imported as acceptance evidence.

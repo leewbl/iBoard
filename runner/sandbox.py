@@ -19,6 +19,7 @@ import time
 import uuid
 import zlib
 
+TMPFS_MB = 1024
 MAX_OUTPUT = 1_000_000
 MAX_SCREENSHOT = 8_000_000
 
@@ -146,12 +147,13 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
               "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
               "--pids-limit=256", f"--memory={memory_mb}m", "--cpus=2", "--init",
               "--user", f"{os.getuid()}:{os.getgid()}",
-              "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+              "--tmpfs", f"/tmp:rw,nosuid,nodev,size={TMPFS_MB}m",
               "--mount", f"type=bind,src={source},dst=/workspace",
               "--workdir", container_dir, "--entrypoint", command[0], image, *command[1:]]
     started = time.monotonic()
     report = {"workspace": str(source), "image": image, "command": command,
               "workdir": str(relative), "timeout_seconds": timeout, "memory_mb": memory_mb,
+              "tmpfs_mb": TMPFS_MB,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
               "exit_code": None, "timed_out": False, "cleanup_confirmed": False}
     created = False

@@ -54,10 +54,12 @@ class SandboxTests(unittest.TestCase):
             self.assertIn(flag, args)
         self.assertEqual(args.count("--mount"), 1)
         self.assertIn(f"type=bind,src={self.workspace.resolve()},dst=/workspace", args)
+        self.assertIn("/tmp:rw,nosuid,nodev,size=1024m", args)
         self.assertNotIn("--env", args)
         self.assertIn("--entrypoint", args)
         self.assertEqual(report["stdout"], "hello\n")
         self.assertEqual(report["exit_code"], 0)
+        self.assertEqual(report["tmpfs_mb"], 1024)
         self.assertTrue(report["cleanup_confirmed"])
         self.assertEqual(self.calls[-1][0][1:3], ["rm", "--force"])
 

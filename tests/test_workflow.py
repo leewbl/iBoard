@@ -29,6 +29,48 @@ class WorkflowTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_source_overlay_archives_changes_and_preserves_full_verification(self):
+        import json
+        import tarfile
+        (self.repo / 'unchanged.txt').write_text('keep\n')
+        (self.repo / 'literal-other').write_text('keep wildcard match\n')
+        (self.repo / 'deleted.txt').write_text('remove\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'baseline payload')
+        base = cli.sha(self.repo, 'HEAD')
+        (self.repo / 'app.txt').write_text('after\n')
+        (self.repo / 'new.txt').write_text('new\n')
+        (self.repo / 'literal-*').write_text('literal name\n')
+        (self.repo / 'deleted.txt').unlink()
+        self.git('add', '-A')
+        self.git('commit', '-qm', 'candidate')
+        head = cli.sha(self.repo, 'HEAD')
+        real_run = subprocess.run
+        captured = {}
+        def run(command, **kwargs):
+            if command[:3] == ['docker', 'image', 'inspect']:
+                return subprocess.CompletedProcess(command, 0, json.dumps([{'Config': {}}]), '')
+            if command[:2] == ['docker', 'build']:
+                with tarfile.open(fileobj=kwargs['stdin'], mode='r:') as archive:
+                    captured['files'] = archive.getnames()
+                    captured['recipe'] = archive.extractfile('Dockerfile').read().decode()
+                    captured['app'] = archive.extractfile('source/app.txt').read()
+                return subprocess.CompletedProcess(command, 0)
+            return real_run(command, **kwargs)
+        with patch.object(workflow, '_verified_image', return_value='sha256:' + 'a' * 64) as verify, \
+                patch.object(workflow.subprocess, 'run', side_effect=run):
+            workflow.build_source_image(self.repo, base, 'baseline', 30)
+        self.assertIn('source/new.txt', captured['files'])
+        self.assertIn('source/literal-*', captured['files'])
+        self.assertNotIn('source/literal-other', captured['files'])
+        self.assertNotIn('source/unchanged.txt', captured['files'])
+        self.assertNotIn('source/deleted.txt', captured['files'])
+        self.assertEqual(captured['app'], b'after\n')
+        self.assertIn('/app/deleted.txt', captured['recipe'])
+        self.assertEqual(verify.call_count, 2)
+        self.assertEqual(verify.call_args_list[0].kwargs['commit'], base)
+        self.assertEqual(cli.sha(self.repo, 'HEAD'), head)
+
     def test_source_build_failure_retains_owner_only_tool_output(self):
         import json
         import stat

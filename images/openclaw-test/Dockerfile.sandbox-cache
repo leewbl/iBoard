@@ -1,0 +1,12 @@
+# Test-only overlay: keep source read-only and place generated artifacts in
+# the runner's per-container /tmp tmpfs. No host cache or production state.
+ARG BASE_IMAGE=iboard-openclaw-baseline:local
+FROM ${BASE_IMAGE}
+RUN test ! -e /app/.artifacts && test ! -L /app/.artifacts \
+    && test ! -e /app/node_modules/.vite-temp && test ! -L /app/node_modules/.vite-temp \
+    && test ! -e /app/node_modules/.vite && test ! -L /app/node_modules/.vite \
+    && test ! -e /app/.cache && test ! -L /app/.cache \
+    && ln -s /tmp /app/.cache \
+    && ln -s /tmp /app/.artifacts \
+    && ln -s /tmp /app/node_modules/.vite-temp \
+    && ln -s /tmp /app/node_modules/.vite
