@@ -385,14 +385,13 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         raise WorkflowError('time limit reached')
     report_path = task.parent / f'{kind}-{uuid.uuid4().hex}.json'
     screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' else None
+    runner_options = {'source_root': '/app'} if source_mode == 'image' else {}
+    if screenshot_path is not None:
+        runner_options.update(memory_mb=memory_mb, screenshot_output=screenshot_path)
+    elif memory_mb != 2048:
+        runner_options['memory_mb'] = memory_mb
     try:
-        if screenshot_path is not None:
-            report = runner(data['repo'], selected_image, command, min(timeout, remaining),
-                            memory_mb=memory_mb, screenshot_output=screenshot_path)
-        elif memory_mb == 2048:
-            report = runner(data['repo'], selected_image, command, min(timeout, remaining))
-        else:
-            report = runner(data['repo'], selected_image, command, min(timeout, remaining), memory_mb=memory_mb)
+        report = runner(data['repo'], selected_image, command, min(timeout, remaining), **runner_options)
     except (SandboxError, OSError, ValueError) as exc:
         report = {'error': str(exc), 'exit_code': None, 'cleanup_confirmed': False}
     # Always save actual result, including failures, before enforcing any gate.

@@ -250,16 +250,20 @@ class WorkflowTests(unittest.TestCase):
         task = self.prepare()['task']
         self.criterion(task)
         image_id = 'sha256:' + 'a' * 64
-        images = []
-        def runner(workspace, image, command, timeout):
-            images.append(image)
+        executions = []
+        def runner(workspace, image, command, timeout, **options):
+            self.assertTrue(verify.called)
+            executions.append((image, options))
             return {'exit_code': 0, 'stdout': 'ok', 'stderr': '', 'cleanup_confirmed': True}
-        with patch.object(workflow, '_verified_image', return_value=image_id):
-            result = workflow.run_check(task=task, kind='test-result', image='mutable:tag',
-                                        command=['node', '/app/test.js'], timeout=10, expect_exit=0,
-                                        marker='ok', actor='runner', description='test', runner=runner,
-                                        source_mode='image')
-        self.assertEqual(images, [image_id])
+        with patch.object(workflow, '_verified_image', return_value=image_id) as verify:
+            for memory in (2048, 7168):
+                with self.subTest(memory=memory):
+                    result = workflow.run_check(task=task, kind='test-result', image='mutable:tag',
+                        command=['node', '/app/test.js'], timeout=10, expect_exit=0,
+                        marker='ok', actor='runner', description='test', runner=runner,
+                        memory_mb=memory, source_mode='image')
+        self.assertEqual(executions, [(image_id, {'source_root': '/app'}),
+                                     (image_id, {'source_root': '/app', 'memory_mb': 7168})])
         report = __import__('json').loads(Path(result['report']).read_text())
         self.assertEqual(report['verified_image_id'], image_id)
 

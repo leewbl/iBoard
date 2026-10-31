@@ -21,6 +21,7 @@ import zlib
 
 TMPFS_MB = 1024
 MAX_OUTPUT = 1_000_000
+MAX_CREATE_OUTPUT = 65_536
 MAX_SCREENSHOT = 8_000_000
 
 
@@ -28,11 +29,11 @@ class SandboxError(Exception):
     pass
 
 
-def _read_limited(stream):
+def _read_limited(stream, limit=MAX_OUTPUT):
     stream.seek(0)
-    content = stream.read(MAX_OUTPUT + 1)
-    truncated = len(content) > MAX_OUTPUT
-    return content[:MAX_OUTPUT].decode("utf-8", errors="replace"), truncated
+    content = stream.read(limit + 1)
+    truncated = len(content) > limit
+    return content[:limit].decode("utf-8", errors="replace"), truncated
 
 
 def _validated_png(data):
@@ -87,9 +88,11 @@ def _copy_screenshot(directory, output):
 
 
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
-                find_executable=shutil.which, screenshot_output=None):
+                find_executable=shutil.which, screenshot_output=None, source_root="/workspace"):
     """Return an execution report. The chosen workspace must contain test data only.
 
+    ``source_root`` selects the mounted workspace or the verified image source;
+    relative workdirs must still exist inside the host workspace.
     ``invoke`` and ``find_executable`` permit unit testing without a Docker daemon.
     """
     docker = find_executable("docker")
@@ -106,6 +109,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("timeout must be in (0, 86400] seconds")
     if type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
         raise SandboxError("memory limit must be between 128 and 8192 MiB")
+    if type(source_root) is not str or source_root not in ("/workspace", "/app"):
+        raise SandboxError("source root must be /workspace or /app")
     relative = PurePosixPath(workdir)
     if relative.is_absolute() or ".." in relative.parts:
         raise SandboxError("workdir must be relative to the mounted workspace")
@@ -142,7 +147,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("image declares extra volumes; use an image without VOLUME directives")
 
     name = "workbench-" + uuid.uuid4().hex
-    container_dir = "/workspace" if str(relative) == "." else "/workspace/" + str(relative)
+    container_dir = source_root if str(relative) == "." else source_root + "/" + str(relative)
     create = [docker, "create", "--name", name, "--pull=never", "--network=none",
               "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
               "--pids-limit=256", f"--memory={memory_mb}m", "--cpus=2", "--init",
@@ -152,18 +157,23 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
               "--workdir", container_dir, "--entrypoint", command[0], image, *command[1:]]
     started = time.monotonic()
     report = {"workspace": str(source), "image": image, "command": command,
-              "workdir": str(relative), "timeout_seconds": timeout, "memory_mb": memory_mb,
+              "workdir": str(relative), "source_root": source_root, "container_workdir": container_dir,
+              "timeout_seconds": timeout, "memory_mb": memory_mb,
               "tmpfs_mb": TMPFS_MB,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-              "exit_code": None, "timed_out": False, "cleanup_confirmed": False}
+              "exit_code": None, "create_exit_code": None, "timed_out": False, "cleanup_confirmed": False}
     created = False
-    with tempfile.TemporaryDirectory(prefix='workbench-artifact-') as artifact_dir, tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+    with tempfile.TemporaryDirectory(prefix='workbench-artifact-') as artifact_dir, \
+            tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr, \
+            tempfile.TemporaryFile() as create_stdout, tempfile.TemporaryFile() as create_stderr:
         try:
             if screenshot_output is not None:
                 create[create.index('--workdir'):create.index('--workdir')] = [
                     '--mount', f'type=bind,src={artifact_dir},dst=/artifacts',
                     '--env', 'WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png']
-            result = invoke(create, stdout=stdout, stderr=stderr, timeout=timeout, check=False)
+            # Docker create emits its container ID and daemon diagnostics, not application output.
+            result = invoke(create, stdout=create_stdout, stderr=create_stderr, timeout=timeout, check=False)
+            report["create_exit_code"] = result.returncode
             if result.returncode:
                 report["error"] = "container creation failed"
                 report["exit_code"] = result.returncode
@@ -195,6 +205,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                     report["cleanup_error"] = cleanup.stderr.strip()[:2000]
             except (OSError, subprocess.TimeoutExpired) as exc:
                 report["cleanup_error"] = str(exc)
+            report["create_stdout"], report["create_stdout_truncated"] = _read_limited(create_stdout, MAX_CREATE_OUTPUT)
+            report["create_stderr"], report["create_stderr_truncated"] = _read_limited(create_stderr, MAX_CREATE_OUTPUT)
             report["stdout"], report["stdout_truncated"] = _read_limited(stdout)
             report["stderr"], report["stderr_truncated"] = _read_limited(stderr)
             report["elapsed_seconds"] = round(time.monotonic() - started, 3)

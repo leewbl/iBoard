@@ -6,6 +6,8 @@ RUN test ! -e /app/.artifacts && test ! -L /app/.artifacts \
     && test ! -e /app/node_modules/.vite-temp && test ! -L /app/node_modules/.vite-temp \
     && test ! -e /app/node_modules/.vite && test ! -L /app/node_modules/.vite \
     && test ! -e /app/.cache && test ! -L /app/.cache \
+    && test ! -e /app/node_modules/.vitest && test ! -L /app/node_modules/.vitest \
+    && ln -s /tmp /app/node_modules/.vitest \
     && ln -s /tmp /app/.cache \
     && ln -s /tmp /app/.artifacts \
     && ln -s /tmp /app/node_modules/.vite-temp \

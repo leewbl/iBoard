@@ -7,7 +7,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from runner.sandbox import SandboxError, _copy_screenshot, _validated_png, run_sandbox
+from runner.sandbox import MAX_CREATE_OUTPUT, SandboxError, _copy_screenshot, _validated_png, run_sandbox
 
 
 def tiny_png():
@@ -57,11 +57,101 @@ class SandboxTests(unittest.TestCase):
         self.assertIn("/tmp:rw,nosuid,nodev,size=1024m", args)
         self.assertNotIn("--env", args)
         self.assertIn("--entrypoint", args)
+        self.assertEqual(args[args.index("--workdir") + 1], "/workspace")
+        self.assertEqual(report["source_root"], "/workspace")
+        self.assertEqual(report["container_workdir"], "/workspace")
         self.assertEqual(report["stdout"], "hello\n")
         self.assertEqual(report["exit_code"], 0)
         self.assertEqual(report["tmpfs_mb"], 1024)
         self.assertTrue(report["cleanup_confirmed"])
         self.assertEqual(self.calls[-1][0][1:3], ["rm", "--force"])
+
+    def test_image_source_root_uses_app_without_changing_workspace_mount(self):
+        (self.workspace / 'packages').mkdir()
+        report = self.run_it(source_root='/app', workdir='packages')
+        args = next(args for args, _ in self.calls if args[1] == 'create')
+        self.assertEqual(args[args.index('--workdir') + 1], '/app/packages')
+        self.assertIn(f'type=bind,src={self.workspace.resolve()},dst=/workspace', args)
+        self.assertIn('--network=none', args)
+        self.assertIn('--read-only', args)
+        self.assertIn('--memory=2048m', args)
+        self.assertEqual(report['source_root'], '/app')
+        self.assertEqual(report['container_workdir'], '/app/packages')
+        self.assertEqual(report['workdir'], 'packages')
+
+    def test_other_source_roots_are_rejected_before_docker_operations(self):
+        for root in ('', '/', '/tmp', '/app/../tmp', '/app/', Path('/app'), None, True):
+            with self.subTest(root=root):
+                self.calls.clear()
+                with self.assertRaisesRegex(SandboxError, 'source root'):
+                    self.run_it(source_root=root)
+                self.assertEqual(self.calls, [])
+
+    def test_creation_output_does_not_contaminate_execution_json_streams(self):
+        payload = '{"success":true,"numPassedTests":4}\n'
+        container_id = 'a' * 64 + '\n'
+        def output(args, **kwargs):
+            if args[1] == 'create':
+                self.calls.append((args, kwargs))
+                kwargs['stdout'].write(container_id.encode())
+                kwargs['stderr'].write(b'Docker creation diagnostic\n')
+                return subprocess.CompletedProcess(args, 0)
+            if args[1] == 'start':
+                self.calls.append((args, kwargs))
+                kwargs['stdout'].write(payload.encode())
+                kwargs['stderr'].write(b'application diagnostic\n')
+                return subprocess.CompletedProcess(args, 0)
+            return self.fake(args, **kwargs)
+        report = self.run_it(output)
+        self.assertEqual(report['stdout'], payload)
+        self.assertEqual(json.loads(report['stdout'])['numPassedTests'], 4)
+        self.assertEqual(report['stderr'], 'application diagnostic\n')
+        self.assertEqual(report['create_stdout'], container_id)
+        self.assertEqual(report['create_stderr'], 'Docker creation diagnostic\n')
+        self.assertEqual(report['create_exit_code'], 0)
+        self.assertFalse(report['create_stdout_truncated'])
+        self.assertFalse(report['create_stderr_truncated'])
+        self.assertTrue(report['cleanup_confirmed'])
+
+    def test_creation_failure_retains_bounded_diagnostics_without_starting(self):
+        diagnostic = b'x' * (MAX_CREATE_OUTPUT + 1)
+        def failed_create(args, **kwargs):
+            if args[1] == 'create':
+                self.calls.append((args, kwargs))
+                kwargs['stdout'].write(diagnostic)
+                kwargs['stderr'].write(diagnostic)
+                return subprocess.CompletedProcess(args, 125)
+            return self.fake(args, **kwargs)
+        report = self.run_it(failed_create)
+        self.assertEqual(report['error'], 'container creation failed')
+        self.assertEqual(report['exit_code'], 125)
+        self.assertEqual(report['create_exit_code'], 125)
+        self.assertEqual(report['stdout'], '')
+        self.assertEqual(report['stderr'], '')
+        for stream in ('create_stdout', 'create_stderr'):
+            self.assertEqual(report[stream], 'x' * MAX_CREATE_OUTPUT)
+            self.assertTrue(report[stream + '_truncated'])
+        self.assertFalse(report['container_created'])
+        self.assertTrue(report['cleanup_confirmed'])
+        self.assertFalse(any(args[1] == 'start' for args, _ in self.calls))
+
+    def test_creation_timeout_retains_partial_diagnostic_and_attempts_cleanup(self):
+        def timed_out_create(args, **kwargs):
+            if args[1] == 'create':
+                self.calls.append((args, kwargs))
+                kwargs['stderr'].write(b'partial Docker diagnostic\n')
+                raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+            return self.fake(args, **kwargs)
+        report = self.run_it(timed_out_create)
+        self.assertTrue(report['timed_out'])
+        self.assertIn('timed out', report['error'])
+        self.assertIsNone(report['create_exit_code'])
+        self.assertEqual(report['create_stderr'], 'partial Docker diagnostic\n')
+        self.assertFalse(report['create_stderr_truncated'])
+        self.assertEqual(report['stderr'], '')
+        self.assertFalse(report['container_created'])
+        self.assertTrue(report['cleanup_confirmed'])
+        self.assertFalse(any(args[1] == 'start' for args, _ in self.calls))
 
     def test_explicit_seven_gib_and_upper_bound_preserve_container_controls(self):
         for memory in (7168, 8192):
@@ -103,11 +193,11 @@ class SandboxTests(unittest.TestCase):
         self.assertIn("daemon unavailable", report["cleanup_error"])
 
     def test_workdir_cannot_escape_or_follow_symlink_outside(self):
-        with self.assertRaises(SandboxError):
-            self.run_it(workdir="../")
         (self.workspace / "escape").symlink_to(self.workspace.parent, target_is_directory=True)
-        with self.assertRaises(SandboxError):
-            self.run_it(workdir="escape")
+        for root in ('/workspace', '/app'):
+            for workdir in ('../', '/tmp', 'escape'):
+                with self.subTest(root=root, workdir=workdir), self.assertRaises(SandboxError):
+                    self.run_it(source_root=root, workdir=workdir)
         self.assertEqual(self.calls, [])
 
     def test_image_volume_is_rejected_before_execution(self):
