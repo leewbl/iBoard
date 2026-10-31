@@ -1,0 +1,202 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-10-31T20:07:54.430587+00:00",
+  "workflow_commit": "3107dad1c8100015b4e54a82b1d961011691e9e6",
+  "task": "openclaw-186875-gate",
+  "workflow_phase": "complete",
+  "task_control_status": "running",
+  "limits": {
+    "iterations": null,
+    "seconds": null,
+    "cost": "provider-limit"
+  },
+  "base_commit": "edca4aee62bedc1548afd1899984e05ef0b8259a",
+  "candidate_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+  "pull_request": "https://github.com/leewbl/myopenclaw/pull/2",
+  "delivery": {
+    "merged": true,
+    "repo": "leewbl/myopenclaw",
+    "pr": 2,
+    "verified_head": "54710b123fe94a2139930c1d7c038e7623345a5e"
+  },
+  "remote_confirmation": {
+    "state": "MERGED",
+    "merged_at": "2026-10-31T20:01:01Z",
+    "main": "54710b123fe94a2139930c1d7c038e7623345a5e",
+    "merge_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+    "actions_enabled": false
+  },
+  "criteria_assessments": [
+    {
+      "id": "reproduce-lock",
+      "verdict": "PASS",
+      "reason": "Baseline commit edca4aee was executed in an isolated, source-verified image (verified_image_id sha256:4c605fe6…, source_limit 'Image /app matched every tracked Git blob before execution'). I decoded the embedded command from the report JSON: the hash-bound startup.mjs (sha256 9bdfafe60b8fef484a7aafc6f1ce760d77009a183c5a7ab53b3c86fc64cb2662, identical in both runs) spawns the real gateway (/app/src/entry.ts gateway, channels/providers enabled, skip-env deleted, default sidecar startup) and, on observing 'sidecars.worker-environments starting', acquires a genuine external BEGIN IMMEDIATE write lock on the app's own state DB. Both runs (implementer B1 and independent-verifier B2) show the identical real chain: workspace-recovery attempt 1 → real application diagnostic 'operation=placementJournals.prune … failureKind=lock-contention sqlitePrimaryCode=5' after a ~5.2s busy wait → '[gateway] sidecars failed to start: Error: database is locked' while lockHeld=true → stability bundle gateway.startup_failed → 'Gateway failed to start: database is locked. Run openclaw gateway status --deep' → spontaneous gateway-exit code 1 (cleanupStarted=false), with exactly one attempt (no retry). Commands, phase logs and lock timings are fully preserved in the hash-verified reports.",
+      "evidence": [
+        "B1",
+        "B2"
+      ]
+    },
+    {
+      "id": "verify-recovery",
+      "verdict": "PASS",
+      "reason": "The same hash-bound startup.mjs was re-run at candidate commit 54710b123 (image sha256:44c82395…, blob-verified) three times (R1 implementer, R3, R4 independent-verifier). Transient scenario: real lock acquired at the worker-environments stage, attempts 1–2 failed with real lock-contention diagnostics, attempt 3 started before release and completed after it (attempt3 ended 40904ms ≥ lock-released 40842ms), then active reconciliation started after release, worker stage and channel-start completed, '[gateway] ready' logged, and /readyz returned HTTP 200 only after release (50452ms ≥ 40842ms) with prematureHttpResponses=0 and clean exit 0 — Gateway reached ready without human restart and without suppressing channels. Persistent-lock scenario (same runs): 4 attempts then the fatal 'sidecars failed to start: Error: database is locked' with lock still held, spontaneous exit 1, never ready, zero premature HTTP responses — a persistent lock is NOT masked as success. Other errors are not masked either: source rethrows non-lock errors immediately (src/gateway/server-startup-sqlite-retry.ts), and unit tests 'does not suppress unrelated errors' (rejects with the original error after 1 call) and the 4-attempt cap passed in R2/R5 and in the full 109/109 JSON runs R6/R7. The decoded journal.mjs harness exercised the real production modules (recoverGatewayWorkerPlacementWorkspaces + retryStartupSqliteLock + placement store): first failure is a verified isSqliteLockError with the reconciliation journal retained, retry after ROLLBACK restores the workspace to base content and clears the journal (attempts=2), and shutdown during the lock retries nothing and retains the journal. The fix (bounded retry wrapping the measured startup.workspaces reconcile inside the sidecars.worker-environments startup path in src/gateway/server-worker-placement-startup.ts) directly addresses the reported bug without lowering any condition.",
+      "evidence": [
+        "R1",
+        "R2",
+        "R4",
+        "R6",
+        "DIFF"
+      ]
+    }
+  ],
+  "changed_test_assessments": 10,
+  "reports": [
+    {
+      "kind": "reproduction",
+      "actor": "glm-implementer",
+      "commit": "edca4aee62bedc1548afd1899984e05ef0b8259a",
+      "sha256": "fa5eea84de0b6a8425f2d5635b8224861f1b18a4fedf24ef653de7d99bfeba83",
+      "report": "reproduction-58196c06ad34414f9cbd74e755eaa7a3.json",
+      "source_verified_commit": "edca4aee62bedc1548afd1899984e05ef0b8259a",
+      "verified_image_id": "sha256:4c605fe69eadb50ecd6795234f28c55920da7973cae8eb5bfa227b3e1c5275f9",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024
+    },
+    {
+      "kind": "reproduction",
+      "actor": "independent-verifier",
+      "commit": "edca4aee62bedc1548afd1899984e05ef0b8259a",
+      "sha256": "9501e8a9dfd276e2535eed78456bd9e72e6bfa2fe7df60c34dfe32a2180680f8",
+      "report": "reproduction-c77fe008de2f46739d94bea2c06814f7.json",
+      "source_verified_commit": "edca4aee62bedc1548afd1899984e05ef0b8259a",
+      "verified_image_id": "sha256:4c605fe69eadb50ecd6795234f28c55920da7973cae8eb5bfa227b3e1c5275f9",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024
+    },
+    {
+      "kind": "resolution",
+      "actor": "glm-implementer",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "6747a338dcb32a0139725cd9b831e74e988dad409638d93c1510aa4fabcd5b31",
+      "report": "resolution-58014776cd974d48867f2dd4851b387b.json",
+      "source_verified_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "verified_image_id": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024
+    },
+    {
+      "kind": "test-result",
+      "actor": "glm-implementer",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "d9e9c06156fa8e0e15994201a07df865df880f00ef3e7e6a3d1dbd2c1889629e",
+      "report": "test-result-4b49682025ca4db2a38cb961cbde1432.json",
+      "source_verified_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "verified_image_id": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024
+    },
+    {
+      "kind": "runtime-log",
+      "actor": "glm-implementer",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "26917a2f54d3481e7bea33ca14a43bde153c60c80f56adfbc97a8c1322fdc47d",
+      "report": "runtime-log-5c7ea6f6bcaf439295b574c49666e4b4.json",
+      "source_verified_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "verified_image_id": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024
+    },
+    {
+      "kind": "resolution",
+      "actor": "independent-verifier",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "5bb959dd050772e15110fa7db1cfb6d4fcd5b6822aeb065463af1dce9588b95a",
+      "report": "resolution-0e5f6080d721419ba4b33afe78b13498.json",
+      "source_verified_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "verified_image_id": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024
+    },
+    {
+      "kind": "test-result",
+      "actor": "independent-verifier",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "277e4d81e7c27805d14ae5e159855dcfabdbc9f63adf9573a3956828b43c4358",
+      "report": "test-result-ae89c73e7ceb42bd9a7a6b5bf4e2059a.json",
+      "source_verified_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "verified_image_id": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024
+    },
+    {
+      "kind": "test-result",
+      "actor": "glm-implementer",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "183de1587ccd4b3569124f03d47875fcd89cee3546a2fd3b95bbaee465bf0125",
+      "report": "test-result-18f9c5ff95f446d48c2d262f5ed2f515.json",
+      "source_verified_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "verified_image_id": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024,
+      "exact_guard_tests_passed": 109
+    },
+    {
+      "kind": "test-result",
+      "actor": "independent-verifier",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "bc14017cc9411a7b361a7cb3cbcd372848d0f86d547c969f4fea774a25ed7426",
+      "report": "test-result-cb8f49f59a914756ba427df3ce33a3c5.json",
+      "source_verified_commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "verified_image_id": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "exit_code": 0,
+      "cleanup_confirmed": true,
+      "source_root": "/app",
+      "memory_mb": 7168,
+      "tmpfs_mb": 1024,
+      "exact_guard_tests_passed": 109
+    },
+    {
+      "kind": "independent-review",
+      "actor": "independent-verifier",
+      "commit": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "sha256": "97b5b327314e5fb2d2a7394060f2cf472a94a9a2d9a3431ac9aa6fa31d5feef8",
+      "report": "independent-review-bc8b40459f294012ae72ce3ac397b31f.json"
+    }
+  ],
+  "raw_reports": "Retained locally in the task directory; filenames and hashes identify them. Raw private machine logs are not published.",
+  "completion_state_note": "workflow_phase and remote confirmation establish completion. task_control_status is the existing budget-control field, not process liveness.",
+  "scope": [
+    "Linux Docker fresh-state Gateway with plugins disabled and no production channel accounts",
+    "Real transient and persistent SQLite lock; existing-journal recovery and shutdown retention; non-lock unit cases",
+    "Two actors each ran the exact four-file 109-test guard",
+    "No remote CI, macOS/iOS coverage or production instance connection"
+  ],
+  "deferred": [
+    "Parallel task sandboxes",
+    "Complete transactional recovery for preparation interrupted before a trustworthy complete task record"
+  ]
+}
