@@ -14,10 +14,35 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False):
+def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=()):
     workspace = workspace.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not prompt.strip() or not 1 <= timeout <= 86400:
         raise ValueError("a workspace, nonempty prompt and valid timeout are required")
+    if not isinstance(evidence_paths, (list, tuple)) or len(evidence_paths) > 4:
+        raise ValueError("bounded explicit evidence directories are required")
+    if evidence_paths and not read_only:
+        raise ValueError("evidence access is restricted to read-only model calls")
+    evidence_dirs = []
+    home = Path.home().resolve()
+    credential_root = ROOT.resolve()
+    sensitive = [home / name for name in ('.claude', '.codex', '.ssh', '.config', '.aws')]
+    for raw in evidence_paths:
+        candidate = Path(raw).expanduser()
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise ValueError("evidence directory is missing or unsafe")
+        resolved = candidate.resolve(strict=True)
+        if (home.is_relative_to(resolved) or credential_root.is_relative_to(resolved) or
+                any(resolved.is_relative_to(item) or item.is_relative_to(resolved) for item in sensitive)):
+            raise ValueError("evidence access cannot include home or credential roots")
+        # Preserve ordinary platform root aliases, but never follow links inside
+        # an evidence path provided by the trusted coordinator.
+        for ancestor in (candidate, *candidate.parents):
+            if ancestor.is_symlink():
+                platform_alias = {Path('/tmp'): Path('/private/tmp'), Path('/var'): Path('/private/var')}
+                if ancestor not in platform_alias or ancestor.resolve() != platform_alias[ancestor]:
+                    raise ValueError("evidence directory has a symbolic-link ancestor")
+        if str(resolved) not in evidence_dirs:
+            evidence_dirs.append(str(resolved))
     key = (ROOT / "glm.ini").read_text(encoding="utf-8").strip()
     if not key or any(ch.isspace() for ch in key):
         raise ValueError("glm.ini must contain a single API key")
@@ -35,14 +60,14 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
     settings = {
         "sandbox": {
             "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-            "filesystem": {"denyRead": ["~/"], "allowRead": [str(workspace), str(Path.home() / ".nvm/versions/node")]},
+            "filesystem": {"denyRead": ["~/"], "allowRead": [str(workspace), str(Path.home() / ".nvm/versions/node"), *evidence_dirs]},
             "credentials": {"envVars": [{"name": n, "mode": "deny"} for n in (
                 "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "OPENAI_API_KEY")]},
             "network": {"allowedDomains": [], "allowLocalBinding": False, "allowAllUnixSockets": False},
         }
     }
     if read_only:
-        settings["sandbox"]["filesystem"]["denyWrite"] = [str(workspace)]
+        settings["sandbox"]["filesystem"]["denyWrite"] = [str(workspace), *evidence_dirs]
     with tempfile.TemporaryDirectory(prefix="workbench-claude-") as tmp:
         path = Path(tmp) / "settings.json"
         path.write_text(json.dumps(settings), encoding="utf-8")

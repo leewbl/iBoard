@@ -63,3 +63,25 @@ class ReviewScopeTests(unittest.TestCase):
         saved = json.loads((self.f.task.parent / 'final-review-model.json').read_text())
         self.assertEqual(saved['exit_code'], 1)
         self.assertEqual(saved['review_scope'], 'read-only workspace inspection and supplied evidence')
+
+    def test_small_untracked_command_forces_read_only_source_and_original_report_inspection(self):
+        self.commit('fixed small source')
+        prompt = 'REPORT contains summarized long base64 command. reproduction: entrypoint is not a tracked workspace script; inspect.'
+        with patch.object(autopilot, 'execute_model', return_value={
+                'exit_code': 0, 'timed_out': False, 'stdout': '{"status":"blocked"}', 'stderr': ''}) as cli, \
+                patch.object(autopilot, 'direct_review') as direct:
+            autopilot._model(self.f.task, 'final-review', prompt, read_only=True, model=cli)
+        direct.assert_not_called()
+        self.assertEqual(cli.call_args.kwargs['evidence_paths'], [self.f.task.parent])
+        self.assertTrue(cli.call_args.kwargs['read_only'])
+        self.assertIn('decode any embedded base64 script', cli.call_args.args[1])
+        self.assertIn('Read the hash-bound original reports', cli.call_args.args[1])
+
+    def test_baseline_review_receives_only_current_task_read_only_evidence(self):
+        with patch.object(autopilot, 'execute_model', return_value={
+                'exit_code': 0, 'timed_out': False, 'stdout': '{"status":"blocked"}', 'stderr': ''}) as cli:
+            autopilot._model(self.f.task, 'baseline-review', 'actual report view', read_only=True, model=cli)
+        self.assertEqual(cli.call_args.kwargs['evidence_paths'], [self.f.task.parent])
+        self.assertTrue(cli.call_args.kwargs['read_only'])
+        self.assertIn(str(self.f.task.parent), cli.call_args.args[1])
+        self.assertIn('decode embedded scripts', cli.call_args.args[1])

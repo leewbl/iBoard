@@ -65,6 +65,42 @@ class AdapterTests(unittest.TestCase):
                 claude_glm.execute(self.workspace, 'a task', 30)
         kill.assert_called_once_with(12345, signal.SIGKILL)
 
+    def test_explicit_evidence_directory_is_readable_but_cannot_be_written(self):
+        evidence = self.root / 'tasks' / 'one'
+        evidence.mkdir(parents=True)
+        seen = {}
+        class Process:
+            returncode = 0
+            def __init__(self, args, **kwargs):
+                seen['args'] = args
+                seen['settings'] = json.loads(Path(args[args.index('--settings') + 1]).read_text())
+            def communicate(self, **kwargs):
+                return ('review', '')
+        with patch.object(claude_glm, 'ROOT', self.root), patch.object(Path, 'home', return_value=self.root), \
+             patch.object(claude_glm.subprocess, 'Popen', Process):
+            claude_glm.execute(self.workspace, 'review', 30, read_only=True, evidence_paths=[evidence])
+        fs = seen['settings']['sandbox']['filesystem']
+        self.assertIn(str(evidence.resolve()), fs['allowRead'])
+        self.assertIn(str(evidence.resolve()), fs['denyWrite'])
+        self.assertIn(str(self.workspace.resolve()), fs['denyWrite'])
+        self.assertEqual(seen['args'][seen['args'].index('--tools') + 1], 'Bash,Read,Glob,Grep')
+
+    def test_evidence_cannot_expose_credentials_or_home_or_follow_links(self):
+        evidence = self.root / 'evidence'
+        evidence.mkdir()
+        link = self.root / 'evidence-link'
+        link.symlink_to(evidence, target_is_directory=True)
+        regular = self.root / 'report.json'
+        regular.write_text('{}')
+        with patch.object(claude_glm, 'ROOT', self.root), patch.object(Path, 'home', return_value=self.root), \
+             patch.object(claude_glm.subprocess, 'Popen') as spawn:
+            for directory in (self.root, self.root.parent, Path('/'), self.root / '.claude', link, regular):
+                with self.subTest(directory=str(directory)), self.assertRaises(ValueError):
+                    claude_glm.execute(self.workspace, 'review', 30, read_only=True, evidence_paths=[directory])
+            with self.assertRaises(ValueError):
+                claude_glm.execute(self.workspace, 'implementation', 30, evidence_paths=[evidence])
+        spawn.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
