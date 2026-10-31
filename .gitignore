@@ -1,0 +1,7 @@
+glm.ini
+tasks/
+workspaces/
+.sandbox-check/
+__pycache__/
+*.py[cod]
+claude-sandbox-settings.json
