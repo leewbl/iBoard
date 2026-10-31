@@ -694,6 +694,36 @@ class AutopilotTests(unittest.TestCase):
             autopilot.run(self.task, self.issue, 'image', model=self.model, check=self.check)
         self.assertNotIn('implement', self.calls)
 
+    def test_planning_receives_existing_criteria_and_command_contract(self):
+        data = cli.read(self.task)
+        criteria = [{'id': 'real-lock', 'text': 'Acquire a real SQLite lock during Gateway startup.'}]
+        data['criteria'] = criteria
+        cli.write(self.task, data)
+        prompts = []
+        self.plan['reproduction']['marker'] = ''
+        def model(workspace, prompt, timeout, *, read_only):
+            prompts.append(prompt)
+            self.assertTrue(read_only)
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'observable marker'):
+            autopilot.run(self.task, self.issue, 'image', model=model, check=self.check)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn(json.dumps(criteria, ensure_ascii=False), prompts[0])
+        self.assertIn('at most 40 strings', prompts[0])
+        self.assertIn('at most 8192 characters', prompts[0])
+        self.assertIn('preserve their IDs and text', prompts[0])
+        self.assertIn('acquire an actual SQLite lock', prompts[0])
+        self.assertIn('not substitute a simulated lock error', prompts[0])
+        self.assertEqual(cli.read(self.task)['criteria'], criteria)
+        self.assertNotIn('implement', self.calls)
+
+    def test_oversized_planning_argument_is_rejected_before_execution(self):
+        self.plan['reproduction']['command'] = ['node', '-e', 'x' * 8193]
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'bounded argument array'):
+            autopilot.run(self.task, self.issue, 'image', model=self.model, check=self.check)
+        self.assertEqual(self.calls, ['plan'])
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+
     def test_publishes_verified_task_before_guarded_merge(self):
         events = []
         def publisher(task, repo):

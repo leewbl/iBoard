@@ -619,15 +619,26 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       '"reproduction":{"command":["..."],"marker":"...","exit_code":0}, '
                       '"resolution":{"command":["..."],"marker":"...","exit_code":0}, '
                       '"tests":{"command":["..."],"marker":"...","exit_code":0}}. '
+                      'Each command must be a nonempty argument array of at most 40 strings; each argument '
+                      'must be nonempty, contain no NUL, and be at most 8192 characters. Do not embed '
+                      'oversized scripts in one argument; use available tracked scripts where possible. '
+                      'Existing acceptance criteria below are authoritative: preserve their IDs and text, '
+                      'do not replace, relax, or substitute them with suggested criteria. '
                       'For feature tasks also include "feature_doc":"relative/path/to/functional-documentation.md". '
                       'For UI tasks also include "screenshot":{"command":[...],"marker":"...",'
                       '"exit_code":0}; it must use a real browser to capture the candidate UI and write PNG '
                       'to the path in WORKBENCH_SCREENSHOT_PATH. The marker must come from the capture run. '
                       'Commands run offline inside the supplied Docker image, not on the host; do not assume '
-                      'installed tools or synthesize an error as a reproduction. The reproduction must exercise '
+                      'installed tools or synthesize an error as a reproduction. Constructing, mocking, or '
+                      'throwing an error object is not evidence of a real failure. When existing criteria '
+                      'require real SQLite lock contention, acquire an actual SQLite lock and exercise '
+                      'the specified application path; do not substitute a simulated lock error. '
+                      'The reproduction must exercise '
                       'the actual reported behavior and resolution must exercise that same scenario. If this '
                       'cannot be established return {"status":"blocked","reason":"..."}.\n'
-                      f'TASK KIND: {data["kind"]}\nIMAGE: {image}\nISSUE DATA:\n{issue}')
+                      f'TASK KIND: {data["kind"]}\nIMAGE: {image}\n'
+                      f'EXISTING ACCEPTANCE CRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
+                      f'ISSUE DATA:\n{issue}')
             plan = _result(_model(task, 'plan', prompt, read_only=True, model=model))
             for name in ('reproduction', 'resolution', 'tests'):
                 if name != 'reproduction' or data['kind'] == 'bug':
