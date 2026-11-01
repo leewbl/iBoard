@@ -705,7 +705,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     if 'plan_revisions' in state:
         from workbench import replan
         try:
-            replan.validate_binding(task, data, state)
+            replan.validate_binding(task, data, state, run_settings={
+                'image': image, 'pr_repo': pr_repo, 'source_mode': source_mode,
+                'candidate_image': candidate_image, 'build_source_image': build_source_image,
+                'memory_mb': memory_mb})
         except (replan.ReplanError, OSError, ValueError, KeyError) as error:
             _pause(task, 'replacement plan or its original contract changed')
             raise AutopilotError('replacement plan or its original contract changed') from error

@@ -1,4 +1,4 @@
-"""Replace an unexecuted reproduction plan without changing its acceptance contract."""
+"""Replace a pre-implementation reproduction plan without changing its acceptance contract."""
 from __future__ import annotations
 
 import argparse
@@ -38,20 +38,31 @@ def _contract(task, data, state):
             or 'input_digest' not in state or state['input_digest'] != input_digest
             or stage.get('input_digest') != input_digest):
         raise ReplanError('retained request or input snapshot changed')
-    if not isinstance(data.get('adoption'), dict) or not data.get('criteria'):
-        raise ReplanError('an acceptance-bound adoption task is required')
-    try:
-        autopilot._validate_adoption(task, data, issue, settings['image'], settings['pr_repo'],
-            settings['source_mode'], settings['candidate_image'], settings['build_source_image'],
-            settings['memory_mb'])
-    except (KeyError, autopilot.AutopilotError) as error:
-        raise ReplanError('adoption settings or acceptance changed') from error
-    return {'base_commit': data['base_commit'], 'issue_digest': request_digest,
-            'input_digest': input_digest, 'criteria_digest': cli.criteria_digest(data),
-            'run_settings_digest': _digest(settings), 'adoption_digest': _digest(data['adoption'])}
+    if not data.get('criteria'):
+        raise ReplanError('original acceptance criteria are required')
+    contract = {'base_commit': data['base_commit'], 'issue_digest': request_digest,
+                'input_digest': input_digest, 'criteria_digest': cli.criteria_digest(data),
+                'run_settings_digest': _digest(settings)}
+    if 'adoption' in data:
+        if not isinstance(data['adoption'], dict):
+            raise ReplanError('invalid adoption metadata')
+        try:
+            autopilot._validate_adoption(task, data, issue, settings['image'], settings['pr_repo'],
+                settings['source_mode'], settings['candidate_image'], settings['build_source_image'],
+                settings['memory_mb'])
+        except (KeyError, autopilot.AutopilotError) as error:
+            raise ReplanError('adoption settings or acceptance changed') from error
+        # Preserve the original adoption contract shape for existing histories.
+        contract['adoption_digest'] = _digest(data['adoption'])
+    else:
+        if data.get('kind') != 'bug' or data.get('surface') != 'non-ui':
+            raise ReplanError('ordinary replacement requires a non-ui bug task')
+        contract.update(kind='ordinary', base_digest=cli.digest(base),
+                        stage_digest=cli.digest(stage_path))
+    return contract
 
 
-def validate_binding(task, data, state):
+def validate_binding(task, data, state, *, run_settings=None):
     """Recheck a replacement at every run, including later verification/delivery."""
     revisions = state.get('plan_revisions')
     if revisions is None:
@@ -59,6 +70,8 @@ def validate_binding(task, data, state):
     if not isinstance(revisions, list) or not revisions:
         raise ReplanError('invalid plan replacement history')
     contract = _contract(task, data, state)
+    if run_settings is not None and _digest(run_settings) != contract['run_settings_digest']:
+        raise ReplanError('replacement execution settings changed')
     prior = None
     for entry in revisions:
         if (not isinstance(entry, dict) or entry.get('contract') != contract
