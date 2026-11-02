@@ -399,6 +399,64 @@ class AutopilotTests(unittest.TestCase):
         cli.write(task, data)
         return {'report':str(report), 'commit':commit, 'kind':kind}
 
+    def test_restricted_planner_proposes_commands_before_coordinator_baseline_checks(self):
+        # This is a prompt/coordination contract test, not product or model proof.
+        def restricted_model(workspace, prompt, timeout, *, read_only):
+            if 'Return only JSON:' in prompt:
+                self.assertTrue(read_only)
+                for instruction in (
+                        'Read source and propose bounded commands',
+                        'Do not run the product, tests, or Docker yourself',
+                        'Do not request Docker socket access, unsandboxing, or host dependencies',
+                        'Absence of direct Docker access or host node_modules is intentional',
+                        'not a planning blocker',
+                        'trusted coordinator executes the proposed commands through run_check',
+                        'unverified until coordinator execution',
+                        'bug tasks require actual baseline runs from both actors',
+                        'independent review before implementation',
+                        'source or runtime-image constraints prevent constructing a valid command'):
+                    self.assertIn(instruction, prompt)
+                self.assertEqual(self.calls, [])
+                self.assertFalse((workspace / 'node_modules').exists())
+                # The planner has source access, but no product execution capability.
+                with self.assertRaises(PermissionError):
+                    planner_docker()
+            elif 'Implement this explicitly' in prompt:
+                self.assertEqual(self.calls, ['plan', 'reproduction:implementer',
+                    'reproduction:independent-verifier', 'baseline-review'])
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+
+        def planner_docker():
+            raise PermissionError('planner cannot connect to container runtime')
+
+        def coordinator_check(**kwargs):
+            if kwargs['kind'] == 'reproduction':
+                self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+                self.assertEqual(kwargs['command'], self.plan['reproduction']['command'])
+            return self.check(**kwargs)
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):
+            autopilot.run(self.task, self.issue, 'image', model=restricted_model,
+                          check=coordinator_check)
+        self.assertEqual(self.calls[:5], ['plan', 'reproduction:implementer',
+            'reproduction:independent-verifier', 'baseline-review', 'implement'])
+
+    def test_proposed_plan_cannot_bypass_independent_baseline_review(self):
+        def rejected_review(workspace, prompt, timeout, *, read_only):
+            if 'Independently inspect this task and the actual baseline run below.' in prompt:
+                self.assertTrue(read_only)
+                self.calls.append('baseline-review')
+                return {'exit_code': 0, 'timed_out': False, 'stderr': '',
+                        'stdout': json.dumps({'status': 'ready', 'verdict': 'FAIL'})}
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'independent semantic confirmation'):
+            autopilot.run(self.task, self.issue, 'image', model=rejected_review, check=self.check)
+        self.assertEqual(self.calls, ['plan', 'reproduction:implementer',
+            'reproduction:independent-verifier', 'baseline-review'])
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+
     def test_failed_reproduction_stops_before_modification(self):
         def fail(**kwargs):
             raise workflow.WorkflowError('no real reproduction')
