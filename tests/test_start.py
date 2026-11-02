@@ -169,6 +169,28 @@ class StartTests(unittest.TestCase):
 
     @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
     @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
+    def test_input_vision_limit_pauses_and_preserves_typed_report(self, process, which):
+        from model.provider_limits import ProviderLimitError
+        screenshot = self.root / 'limited.png'
+        screenshot.write_bytes(b'\x89PNG\r\n\x1a\nexample')
+        result = {'exit_code': 1, 'timed_out': False, 'status_code': 429,
+                  'stdout': 'limit reset 2026-11-02 19:15:46\n', 'stderr': ''}
+        def limited(*args):
+            raise ProviderLimitError(report_path=None, result=result,
+                signal={'kind': 'provider_limit', 'reason': 'http_429'}, phase='vision')
+        with self.assertRaises(ProviderLimitError) as caught:
+            start.start(**self.kwargs, screenshot_files=[screenshot], prepare=self.prepare,
+                        run=self.drive, vision=limited)
+        self.assertEqual([call[0] for call in self.called], ['prepare'])
+        task = self.root / 'tasks/case/task.json'
+        self.assertEqual(cli.read(task)['status'], 'paused')
+        self.assertEqual(caught.exception.phase, 'input-screenshot-1')
+        self.assertEqual(json.loads(caught.exception.report_path.read_text()), result)
+        self.assertEqual((task.parent / 'inputs/screenshot-1.png').read_bytes(), screenshot.read_bytes())
+        self.assertEqual(cli.read(task.parent / 'input-stage.json')['descriptions'], [])
+
+    @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
+    @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
     def test_screenshot_is_snapshotted_and_described_as_untrusted(self, process, which):
         screenshot = self.root / 'error.png'
         data = b'\x89PNG\r\n\x1a\nexample'

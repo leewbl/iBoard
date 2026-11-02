@@ -8,6 +8,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 from model.claude_glm import ROOT
+from model.provider_limits import raise_http_provider_limit
 
 
 def review(prompt: str, timeout: int = 60, *, opener=urllib.request.urlopen):
@@ -30,6 +31,7 @@ def review(prompt: str, timeout: int = 60, *, opener=urllib.request.urlopen):
         with opener(request, timeout=timeout) as response:
             result = json.load(response)
     except urllib.error.HTTPError as error:
+        raise_http_provider_limit(error, secret=key, phase='direct-review')
         raise RuntimeError(f'GLM returned HTTP {error.code}') from None
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise RuntimeError(f'GLM request failed: {type(error).__name__}') from None

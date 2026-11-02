@@ -45,7 +45,13 @@ def _finish_screenshots(task, *, vision):
         entry = images[len(descriptions)]
         data = (task.parent / 'inputs' / entry['file']).read_bytes()
         timeout = min(90, autopilot._remaining(cli.read(task)))
-        description = vision(data, timeout)
+        try:
+            description = vision(data, timeout)
+        except autopilot.ProviderLimitError as error:
+            phase = f'input-screenshot-{len(descriptions) + 1}'
+            path = autopilot._save_model_result(task, phase, error.result)
+            raise autopilot.ProviderLimitError(report_path=path, result=error.result,
+                                              signal=error.signal, phase=phase) from error
         autopilot._remaining(cli.read(task))
         if not isinstance(description, str) or not description.strip() or len(description) > 15000:
             raise StartError('invalid screenshot interpretation')
@@ -105,6 +111,10 @@ def _resume_locked(task_path, *, run, vision):
         return run(task, task.parent / 'issue.txt', settings['image'], pr_repo=settings['pr_repo'],
                    source_mode=settings['source_mode'], candidate_image=settings['candidate_image'],
                    build_source_image=settings['build_source_image'], memory_mb=settings['memory_mb'], **options)
+    except autopilot.ProviderLimitError as error:
+        if resumed:
+            autopilot._pause(task, str(error))
+        raise
     except (StartError, autopilot.AutopilotError, cli.WorkbenchError, OSError, ValueError, RuntimeError, KeyError) as error:
         if resumed:
             try:
@@ -273,6 +283,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 return run(task, request, image, pr_repo=pr_repo, source_mode=source_mode,
                            candidate_image=candidate_image, build_source_image=build_source_image,
                            memory_mb=memory_mb)
+            except autopilot.ProviderLimitError as error:
+                autopilot._pause(task, str(error))
+                raise
             except (StartError, autopilot.AutopilotError, cli.WorkbenchError, OSError, ValueError, RuntimeError) as error:
                 try:
                     autopilot._pause(task, f'start failed: {type(error).__name__}')
@@ -325,6 +338,6 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         main()
-    except (StartError, workflow.WorkflowError, cli.WorkbenchError, OSError, ValueError) as error:
+    except (StartError, autopilot.ProviderLimitError, workflow.WorkflowError, cli.WorkbenchError, OSError, ValueError) as error:
         print(f'start: {error}', file=sys.stderr)
         sys.exit(2)

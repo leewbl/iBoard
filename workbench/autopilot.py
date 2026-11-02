@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
+from model.provider_limits import ProviderLimitError, classify_provider_limit
 from workbench import cli, workflow, delivery, publish
 from workbench.task_lock import task_lock
 
@@ -438,6 +439,16 @@ def _bounded_review_prompt(prompt):
     return prompt
 
 
+def _save_model_result(task, phase, result):
+    """Retain adapter output unchanged, including any previous observation."""
+    latest = task.parent / f'{phase}-model.json'
+    if latest.exists():
+        previous = json.loads(latest.read_text(encoding='utf-8'))
+        cli.write(task.parent / f'{phase}-model-previous-{uuid.uuid4().hex}.json', previous)
+    cli.write(latest, result)
+    return latest
+
+
 def _model(task, phase, prompt, *, read_only, model):
     data = cli.read(task)
     if phase == 'final-review' and model is execute_model:
@@ -463,6 +474,8 @@ def _model(task, phase, prompt, *, read_only, model):
                 text = direct_review(evidence, min(90, _remaining(data)))
                 result = {'exit_code': 0, 'timed_out': False, 'stdout': text, 'stderr': '',
                           'review_scope': 'provided evidence and changed files only'}
+            except ProviderLimitError as error:
+                result = error.result
             except (RuntimeError, ValueError, OSError, KeyError) as error:
                 raise AutopilotError(f'direct independent review unavailable: {type(error).__name__}') from error
         else:
@@ -482,8 +495,11 @@ def _model(task, phase, prompt, *, read_only, model):
                 f'TASK EVIDENCE DIRECTORY: {Path(task).parent}\n'
                 'CHANGED PATHS (untrusted JSON): ' + json.dumps(
                     [raw.decode('utf-8') for raw in changed if raw], ensure_ascii=False))
-            result = model(repo, _bounded_review_prompt(inspection), _remaining(data), read_only=True,
-                           evidence_paths=[Path(task).parent])
+            try:
+                result = model(repo, _bounded_review_prompt(inspection), _remaining(data), read_only=True,
+                               evidence_paths=[Path(task).parent])
+            except ProviderLimitError as error:
+                result = error.result
             result = {**result, 'review_scope': 'read-only workspace inspection and supplied evidence'}
     else:
         options = {'read_only': read_only}
@@ -495,13 +511,15 @@ def _model(task, phase, prompt, *, read_only, model):
                        + 'TASK EVIDENCE DIRECTORY: ' + str(Path(task).parent))
             _bounded_review_prompt(prompt)
             options['evidence_paths'] = [Path(task).parent]
-        result = model(Path(data['repo']), prompt, _remaining(data), **options)
+        try:
+            result = model(Path(data['repo']), prompt, _remaining(data), **options)
+        except ProviderLimitError as error:
+            result = error.result
     # The adapter redacts the key; do not persist environment variables.
-    latest = task.parent / f'{phase}-model.json'
-    if latest.exists():
-        previous = json.loads(latest.read_text(encoding='utf-8'))
-        cli.write(task.parent / f'{phase}-model-previous-{uuid.uuid4().hex}.json', previous)
-    cli.write(latest, result)
+    latest = _save_model_result(task, phase, result)
+    signal = classify_provider_limit(result)
+    if signal:
+        raise ProviderLimitError(report_path=latest, result=result, signal=signal, phase=phase)
     if result.get('exit_code') != 0 or result.get('timed_out'):
         raise AutopilotError(f'{phase} model failed; output saved')
     return result.get('stdout', '')
@@ -942,6 +960,11 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     if cli.digest(screenshot) != screenshot_hash:
                         raise AutopilotError('screenshot changed during independent visual analysis')
                     _remaining(cli.read(task))
+                except ProviderLimitError as error:
+                    phase = 'screenshot-visual-review'
+                    path = _save_model_result(task, phase, error.result)
+                    raise ProviderLimitError(report_path=path, result=error.result,
+                                             signal=error.signal, phase=phase) from error
                 except (OSError, ValueError, RuntimeError, KeyError) as error:
                     raise AutopilotError(f'independent screenshot analysis unavailable: {type(error).__name__}') from error
                 screenshot_hashes = [screenshot_hash]
@@ -1209,6 +1232,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             state['phase'] = 'complete'
             cli.write(state_path, state)
         return state
+    except ProviderLimitError as error:
+        _pause(task, str(error))
+        raise
     except (AutopilotError, workflow.WorkflowError, cli.WorkbenchError, delivery.DeliveryError, publish.PublishError,
             OSError, ValueError, KeyError) as error:
         _pause(task, str(error))
@@ -1237,6 +1263,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (AutopilotError, OSError, ValueError) as exc:
+    except (AutopilotError, ProviderLimitError, OSError, ValueError) as exc:
         print(f'autopilot: {exc}', file=sys.stderr)
         sys.exit(2)

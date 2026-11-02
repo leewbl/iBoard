@@ -457,6 +457,86 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
         self.assertEqual(cli.read(self.task)['status'], 'paused')
 
+    def test_provider_limit_in_plan_stops_without_implementation_or_checks(self):
+        from test_provider_limits import ACTUAL_QUOTA
+        result = {'exit_code': 1, 'timed_out': False, 'stdout': ACTUAL_QUOTA,
+                  'stderr': 'Warning: unrecognized model glm-test\n'}
+        calls = []
+        def quota(*args, **kwargs):
+            calls.append('model')
+            return dict(result)
+        with self.assertRaises(Exception) as caught:
+            autopilot.run(self.task, self.issue, 'image', model=quota, check=self.check)
+        self.assertEqual(type(caught.exception).__name__, 'ProviderLimitError')
+        self.assertEqual(calls, ['model'])
+        self.assertEqual(self.calls, [])
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'plan')
+        self.assertEqual(json.loads(caught.exception.report_path.read_text()), result)
+        self.assertEqual(caught.exception.result, result)
+        self.assertEqual(caught.exception.phase, 'plan')
+
+    def test_provider_limit_preserves_partial_implementation_and_baseline_evidence(self):
+        from test_provider_limits import ACTUAL_QUOTA
+        def quota_during_implementation(workspace, prompt, timeout, *, read_only):
+            if 'Implement this explicitly' in prompt:
+                self.calls.append('implement-quota')
+                (workspace / 'code.txt').write_text('partial work retained')
+                return {'exit_code': 1, 'timed_out': False,
+                        'stdout': ACTUAL_QUOTA, 'stderr': 'benign warning\n'}
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+        with self.assertRaises(Exception) as caught:
+            autopilot.run(self.task, self.issue, 'image', model=quota_during_implementation,
+                          check=self.check)
+        self.assertEqual(type(caught.exception).__name__, 'ProviderLimitError')
+        self.assertEqual(self.calls, ['plan', 'reproduction:implementer',
+            'reproduction:independent-verifier', 'baseline-review', 'implement-quota'])
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'partial work retained')
+        data = cli.read(self.task)
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), data['base_commit'])
+        self.assertEqual(data['status'], 'paused')
+        self.assertEqual(len(data['evidence']), 2)
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'implementing')
+        self.assertEqual(json.loads(caught.exception.report_path.read_text())['stdout'], ACTUAL_QUOTA)
+
+    def test_provider_limit_in_final_review_cannot_enter_repair_or_publish(self):
+        from test_provider_limits import ACTUAL_QUOTA
+        def quota_in_review(workspace, prompt, timeout, *, read_only):
+            if 'Return only JSON:' not in prompt and 'actual baseline run' not in prompt and 'Implement this explicitly' not in prompt:
+                self.calls.append('final-review-quota')
+                return {'exit_code': 1, 'timed_out': False, 'stdout': ACTUAL_QUOTA, 'stderr': ''}
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+        with self.assertRaises(Exception) as caught:
+            autopilot.run(self.task, self.issue, 'image', model=quota_in_review, check=self.check,
+                          publisher=lambda *args, **kwargs: self.fail('quota must not publish'))
+        self.assertEqual(type(caught.exception).__name__, 'ProviderLimitError')
+        self.assertEqual(self.calls[-1], 'final-review-quota')
+        self.assertEqual(self.calls.count('implement'), 1)
+        self.assertEqual(cli.read(self.task)['iterations'], 1)
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'verify')
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'fixed')
+
+    def test_direct_review_limit_stays_typed_and_is_persisted_before_stop(self):
+        from model.provider_limits import ProviderLimitError
+        result = {'exit_code': 1, 'timed_out': False, 'status_code': 429,
+                  'stdout': 'reset 2026-11-02 19:15:46\n', 'stderr': ''}
+        limited = ProviderLimitError(report_path=None, result=result,
+            signal={'kind': 'provider_limit', 'reason': 'http_429'}, phase='direct-review')
+        def adapter(workspace, prompt, timeout, **kwargs):
+            return self.model(workspace, prompt, timeout, read_only=kwargs['read_only'])
+        with patch.object(autopilot, 'execute_model', adapter), \
+             patch.object(autopilot, 'direct_review', side_effect=limited) as direct:
+            with self.assertRaises(ProviderLimitError) as caught:
+                autopilot.run(self.task, self.issue, 'image', model=adapter, check=self.check,
+                              publisher=lambda *args: self.fail('limit cannot publish'))
+        direct.assert_called_once()
+        self.assertEqual(caught.exception.phase, 'final-review')
+        self.assertEqual(json.loads(caught.exception.report_path.read_text()), result)
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+        self.assertEqual(cli.read(self.task)['iterations'], 1)
+
     def test_failed_reproduction_stops_before_modification(self):
         def fail(**kwargs):
             raise workflow.WorkflowError('no real reproduction')
@@ -878,6 +958,43 @@ class AutopilotTests(unittest.TestCase):
         with self.assertRaisesRegex(autopilot.AutopilotError, 'screenshot'):
             autopilot.run(self.task, self.issue, 'image', model=self.model, check=self.check)
         self.assertNotIn('implement', self.calls)
+
+    def test_ui_vision_limit_cannot_enter_repair_or_publish(self):
+        data = cli.read(self.task); data['surface'] = 'ui'; cli.write(self.task, data)
+        self.plan['screenshot'] = {'command': ['node', '/workspace/capture.js'], 'marker': 'CAPTURED', 'exit_code': 0}
+        def check(**kwargs):
+            if kwargs['kind'] != 'screenshot':
+                return self.check(**kwargs)
+            data = cli.read(kwargs['task']); commit = cli.sha(data['repo'], 'HEAD')
+            screenshot = self.task.parent / 'actual.png'; screenshot.write_bytes(tiny_png())
+            report = self.task.parent / 'actual.json'
+            cli.write(report, {'kind': 'screenshot', 'actor': kwargs['actor'], 'commit': commit,
+                              'source_mode': 'workspace', 'source_verified_commit': commit,
+                              'workspace': str(self.workspace), 'command': kwargs['command'],
+                              'container_created': True, 'cleanup_confirmed': True, 'timed_out': False,
+                              'exit_code': 0, 'expected_exit': 0, 'stdout': 'CAPTURED', 'expected_marker': 'CAPTURED',
+                              'screenshot_path': str(screenshot), 'screenshot_sha256': cli.digest(screenshot)})
+            cli.evidence_add(argparse.Namespace(file=str(screenshot), kind='screenshot', commit=commit,
+                actor=kwargs['actor'], description='capture', criterion=[]), data)
+            data['evidence'][-1].update(execution_report=str(report), execution_report_sha256=cli.digest(report))
+            cli.write(self.task, data)
+            return {'report': str(report), 'screenshot': str(screenshot)}
+        from model.provider_limits import ProviderLimitError
+        result = {'exit_code': 1, 'timed_out': False, 'status_code': 429,
+                  'stdout': 'reset 2026-11-02 19:15:46\n', 'stderr': ''}
+        def limited(*args):
+            raise ProviderLimitError(report_path=None, result=result,
+                signal={'kind': 'provider_limit', 'reason': 'http_429'}, phase='vision')
+        with self.assertRaises(ProviderLimitError) as caught:
+            autopilot.run(self.task, self.issue, 'image', model=self.model, check=check, vision=limited,
+                          publisher=lambda *args: self.fail('limit cannot publish'))
+        self.assertEqual(caught.exception.phase, 'screenshot-visual-review')
+        self.assertEqual(json.loads(caught.exception.report_path.read_text()), result)
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+        self.assertEqual(cli.read(self.task)['iterations'], 1)
+        self.assertNotIn('final-review', self.calls)
+        self.assertTrue((self.task.parent / 'actual.png').exists())
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'fixed')
 
     def test_ui_task_review_binds_independent_screenshot(self):
         data = cli.read(self.task); data['surface'] = 'ui'; cli.write(self.task, data)

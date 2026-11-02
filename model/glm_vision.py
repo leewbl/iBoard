@@ -9,6 +9,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 from model.claude_glm import ROOT
+from model.provider_limits import raise_http_provider_limit
 
 MAX_IMAGE_BYTES = 5_000_000
 
@@ -49,6 +50,7 @@ def describe(data, timeout, *, opener=urllib.request.urlopen):
         with opener(request, timeout=timeout) as response:
             result = json.load(response)
     except urllib.error.HTTPError as error:
+        raise_http_provider_limit(error, secret=key, phase='vision')
         raise RuntimeError(f'vision service returned HTTP {error.code}') from None
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise RuntimeError(f'vision request failed: {type(error).__name__}') from None

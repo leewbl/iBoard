@@ -4,6 +4,7 @@ import json
 import sys
 
 from workbench.start import StartError, resume_task
+from model.provider_limits import ProviderLimitError
 
 
 def main():
@@ -16,6 +17,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except StartError as error:
+    except (StartError, ProviderLimitError) as error:
         print(f'resume: {error}', file=sys.stderr)
         sys.exit(2)
