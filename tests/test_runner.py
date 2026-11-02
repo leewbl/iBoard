@@ -39,6 +39,60 @@ class SandboxTests(unittest.TestCase):
                            invoke=invoke or self.fake, find_executable=lambda _: "/usr/bin/docker",
                            **kwargs)
 
+    def test_artifact_mount_is_readonly_and_has_no_host_workspace_or_home(self):
+        import hashlib
+        from workbench.execution_artifacts import CONTAINER_PATH
+        artifact = self.workspace / 'harness.mjs'; artifact.write_text('// frozen')
+        command = ['node', CONTAINER_PATH, 'tests']
+        ref = {'host_path': str(artifact.resolve()), 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
+               'command_sha256': {'tests': hashlib.sha256(json.dumps(command, separators=(',', ':')).encode()).hexdigest()}}
+        report = run_sandbox(self.workspace, 'example:latest', command, 10,
+            source_root='/app', execution_artifact=ref, invoke=self.fake,
+            find_executable=lambda _: '/usr/bin/docker')
+        args = next(args for args, _ in self.calls if args[1] == 'create')
+        mounts = [args[i+1] for i, value in enumerate(args) if value == '--mount']
+        self.assertEqual(mounts, [f'type=bind,src={artifact.resolve()},dst={CONTAINER_PATH},readonly'])
+        self.assertNotIn('dst=/workspace', ' '.join(args))
+        self.assertNotIn('docker.sock', ' '.join(args))
+        self.assertEqual(report['execution_artifact'], ref)
+        self.assertEqual(args[args.index('--workdir') + 1], '/app')
+        for flag in ('--network=none', '--read-only', '--cap-drop=ALL'):
+            self.assertIn(flag, args)
+        with self.assertRaises(ValueError):
+            run_sandbox(self.workspace, 'example:latest', command, 10, source_root='/app',
+                execution_artifact={**ref, 'sha256': '0' * 64}, invoke=self.fake,
+                find_executable=lambda _: '/usr/bin/docker')
+
+    def test_artifact_nonzero_exit_retains_real_png_without_changing_legacy(self):
+        import hashlib
+        from workbench.execution_artifacts import CONTAINER_PATH
+        artifact = self.workspace / 'harness.mjs'; artifact.write_text('// frozen')
+        command = ['node', CONTAINER_PATH, 'reproduction']
+        ref = {'host_path': str(artifact.resolve()), 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),
+               'command_sha256': {'reproduction': hashlib.sha256(json.dumps(command, separators=(',', ':')).encode()).hexdigest()}}
+        def invoke(args, **kwargs):
+            result = self.fake(args, **kwargs)
+            if args[1] == 'create':
+                mount = next(arg for arg in args if arg.startswith('type=bind,src=') and arg.endswith(',dst=/artifacts'))
+                directory = Path(mount.removeprefix('type=bind,src=').removesuffix(',dst=/artifacts'))
+                (directory / 'screenshot.png').write_bytes(tiny_png())
+            if args[1] == 'start':
+                return subprocess.CompletedProcess(args, 1)
+            return result
+        output = self.workspace / 'artifact-capture.png'
+        report = run_sandbox(self.workspace, 'example:latest', command, 10, source_root='/app',
+            execution_artifact=ref, screenshot_output=output, invoke=invoke,
+            find_executable=lambda _: '/usr/bin/docker')
+        self.assertEqual(report['exit_code'], 1)
+        self.assertTrue(output.is_file(), 'artifact PNG must survive declared nonzero exit')
+        self.assertEqual(output.read_bytes(), tiny_png())
+        self.assertEqual(report['screenshot_sha256'], hashlib.sha256(tiny_png()).hexdigest())
+        self.assertTrue(report['cleanup_confirmed'])
+        legacy = self.workspace / 'legacy-capture.png'
+        report = self.run_it(invoke=invoke, screenshot_output=legacy)
+        self.assertEqual(report['exit_code'], 1)
+        self.assertFalse(legacy.exists())
+
     def test_docker_missing_never_runs_host_command(self):
         with self.assertRaisesRegex(SandboxError, "Docker is unavailable"):
             run_sandbox(self.workspace, "example", ["echo", "hello"], 1,

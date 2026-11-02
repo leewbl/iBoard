@@ -88,7 +88,7 @@ def _copy_screenshot(directory, output):
 
 
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
-                find_executable=shutil.which, screenshot_output=None, source_root="/workspace"):
+                find_executable=shutil.which, screenshot_output=None, source_root="/workspace", execution_artifact=None):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -117,6 +117,20 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     host_workdir = (source / str(relative)).resolve(strict=True)
     if not host_workdir.is_relative_to(source) or not host_workdir.is_dir():
         raise SandboxError("workdir resolves outside the workspace or is not a directory")
+    artifact_mount = None
+    if execution_artifact is not None:
+        from workbench.execution_artifacts import verify_file, CONTAINER_PATH
+        if source_root != '/app' or not isinstance(execution_artifact, dict):
+            raise SandboxError('execution artifact requires verified image source root')
+        artifact_path = Path(execution_artifact['host_path'])
+        if ',' in str(artifact_path):
+            raise SandboxError('execution artifact mount path contains a comma')
+        verify_file(artifact_path, execution_artifact['sha256'])
+        command_hash = hashlib.sha256(json.dumps(command, separators=(',', ':')).encode()).hexdigest()
+        if command_hash not in execution_artifact['command_sha256'].values():
+            raise SandboxError('execution artifact command changed')
+        artifact_mount = f'type=bind,src={artifact_path},dst={CONTAINER_PATH},readonly'
+
     configured_host = os.environ.get("DOCKER_HOST", "")
     if configured_host and not configured_host.startswith("unix://"):
         raise SandboxError("remote Docker hosts are not supported")
@@ -153,7 +167,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
               "--pids-limit=256", f"--memory={memory_mb}m", "--cpus=2", "--init",
               "--user", f"{os.getuid()}:{os.getgid()}",
               "--tmpfs", f"/tmp:rw,nosuid,nodev,size={TMPFS_MB}m",
-              "--mount", f"type=bind,src={source},dst=/workspace",
+              "--mount", artifact_mount or f"type=bind,src={source},dst=/workspace",
               "--workdir", container_dir, "--entrypoint", command[0], image, *command[1:]]
     started = time.monotonic()
     report = {"workspace": str(source), "image": image, "command": command,
@@ -185,7 +199,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 result = invoke([docker, "start", "--attach", name], stdout=stdout, stderr=stderr,
                                 timeout=remaining, check=False)
                 report["exit_code"] = result.returncode
-                if screenshot_output is not None and result.returncode == 0:
+                if screenshot_output is not None and (result.returncode == 0 or execution_artifact is not None):
                     report['screenshot_sha256'] = _copy_screenshot(artifact_dir, screenshot_output)
                     report['screenshot_path'] = str(Path(screenshot_output).resolve())
         except subprocess.TimeoutExpired:
@@ -211,6 +225,12 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
             report["stderr"], report["stderr_truncated"] = _read_limited(stderr)
             report["elapsed_seconds"] = round(time.monotonic() - started, 3)
             report["container_created"] = created
+    if execution_artifact is not None:
+        report['execution_artifact'] = execution_artifact
+        try:
+            verify_file(execution_artifact['host_path'], execution_artifact['sha256'])
+        except (OSError, ValueError) as error:
+            report['error'] = str(error)
     return report
 
 

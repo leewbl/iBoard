@@ -26,7 +26,7 @@ import uuid
 
 from workbench import cli
 from workbench.task_lock import locked_task
-from runner.sandbox import SandboxError, run_sandbox
+from runner.sandbox import SandboxError, run_sandbox, _validated_png
 
 
 class WorkflowError(Exception):
@@ -347,7 +347,7 @@ def prepare(*, task_id, repo, tasks_root, workspaces_root, source, kind, surface
 
 @locked_task('task')
 def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor,
-              description, runner=run_sandbox, memory_mb=2048, source_mode='workspace'):
+              description, runner=run_sandbox, memory_mb=2048, source_mode='workspace', execution_artifact=None):
     """Run and archive a real test result; success does not establish semantics.
 
     Reproduction must run on the baseline and assert an explicit observable
@@ -366,7 +366,16 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     head = cli.sha(data['repo'], 'HEAD')
     if cli.git(data['repo'], 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError('source worktree must be clean before the check')
-    if source_mode == 'workspace' or kind == 'screenshot':
+    artifact = None
+    if execution_artifact is not None:
+        from workbench import execution_artifacts
+        state = cli.read(task.parent / 'autopilot.json')
+        artifact = execution_artifacts.verify(task, state['plan'], execution_artifact,
+                                               data, source_mode, head)
+        expected = state['plan'][{'test-result': 'tests', 'runtime-log': 'resolution'}.get(kind, kind)]['command']
+        if command != expected:
+            raise WorkflowError('execution artifact command does not match check kind')
+    elif source_mode == 'workspace' or kind == 'screenshot':
         _verify_workspace_entry(data['repo'], command)
     if source_mode == 'workspace':
         selected_image = image
@@ -384,8 +393,10 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     if remaining <= 0:
         raise WorkflowError('time limit reached')
     report_path = task.parent / f'{kind}-{uuid.uuid4().hex}.json'
-    screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' else None
+    screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' or (artifact is not None and kind in ('reproduction', 'resolution', 'runtime-log')) else None
     runner_options = {'source_root': '/app'} if source_mode == 'image' else {}
+    if artifact is not None:
+        runner_options['execution_artifact'] = artifact
     if screenshot_path is not None:
         runner_options.update(memory_mb=memory_mb, screenshot_output=screenshot_path)
     elif memory_mb != 2048:
@@ -394,6 +405,19 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         report = runner(data['repo'], selected_image, command, min(timeout, remaining), **runner_options)
     except (SandboxError, OSError, ValueError) as exc:
         report = {'error': str(exc), 'exit_code': None, 'cleanup_confirmed': False}
+    if artifact is not None:
+        report['execution_artifact'] = artifact
+        report['command_sha256'] = hashlib.sha256(json.dumps(command, separators=(',', ':')).encode()).hexdigest()
+        if 'WORKBENCH_SETUP_FAILURE' in (str(report.get('stdout', '')) + str(report.get('stderr', ''))):
+            report['error'] = 'execution artifact reported setup failure'
+        try:
+            if screenshot_path is not None:
+                if screenshot_path.is_symlink() or not screenshot_path.is_file():
+                    raise WorkflowError('execution artifact requires a regular actual PNG')
+                _validated_png(screenshot_path.read_bytes())
+            execution_artifacts.verify(task, state['plan'], execution_artifact, data, source_mode, head)
+        except (OSError, ValueError, SandboxError, WorkflowError) as error:
+            report['error'] = str(error)
     # Always save actual result, including failures, before enforcing any gate.
     report.update({'kind': kind, 'commit': head, 'actor': actor, 'description': description,
                    'expected_exit': expect_exit, 'expected_marker': marker, 'source_mode': source_mode,
@@ -412,7 +436,7 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         raise WorkflowError(f'task budget expired during check; raw report saved at {report_path}')
     if cli.sha(data['repo'], 'HEAD') != head or cli.git(data['repo'], 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError(f'HEAD or worktree changed during check; raw report saved at {report_path}')
-    args = argparse.Namespace(file=str(screenshot_path or report_path), kind=kind, commit=head, actor=actor,
+    args = argparse.Namespace(file=str(screenshot_path if kind == 'screenshot' else report_path), kind=kind, commit=head, actor=actor,
                               description=description, criterion=[])
     cli.evidence_add(args, data)
     if screenshot_path is not None:

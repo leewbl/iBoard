@@ -537,6 +537,146 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual(cli.read(self.task)['status'], 'paused')
         self.assertEqual(cli.read(self.task)['iterations'], 1)
 
+    def _ui_artifact_flow(self, *, complete=False, mutate=None):
+        data = cli.read(self.task); data['surface'] = 'ui'; cli.write(self.task, data)
+        source = '// frozen UI evidence source, not product proof\n'
+        self.plan['execution_artifact'] = {'version': 1, 'language': 'javascript', 'source': source}
+        for name in ('reproduction', 'resolution', 'tests', 'screenshot'):
+            self.plan[name] = {'command': ['node', '/evaluation/harness.mjs', name],
+                               'marker': name, 'exit_code': 0}
+        def model(workspace, prompt, timeout, *, read_only):
+            if 'Independently inspect this task and the actual baseline run below.' in prompt:
+                self.assertIn(source, prompt)
+                self.assertIn('not tracked product source', prompt)
+                if mutate == 'baseline-source':
+                    ref = cli.read(self.task.parent / 'autopilot.json')['execution_artifact']
+                    path = self.task.parent / ref['path']; path.chmod(0o600); path.write_text('changed')
+                if mutate == 'baseline-png':
+                    next(self.task.parent.glob('*.png')).unlink()
+            if 'Independently inspect the candidate source' in prompt:
+                self.assertIn(source, prompt)
+                self.assertIn('execution_artifact', prompt)
+                if mutate == 'final-source':
+                    ref = cli.read(self.task.parent / 'autopilot.json')['execution_artifact']
+                    path = self.task.parent / ref['path']; path.chmod(0o600); path.write_text('changed')
+            if mutate and mutate.startswith('final-capture-') and 'Independently inspect the candidate source' in prompt:
+                _, _, capture_kind, action = mutate.split('-')
+                current = cli.read(self.task)
+                evidence = next(entry for entry in current['evidence']
+                                if entry['kind'] == capture_kind and entry['commit'] == cli.sha(workspace, 'HEAD'))
+                report_path = evidence['execution_report'] if capture_kind == 'screenshot' else evidence['path']
+                png = Path(json.loads(Path(report_path).read_text())['screenshot_path'])
+                if action == 'delete':
+                    png.unlink()
+                else:
+                    png.write_bytes(b'corrupt actual capture')
+            if 'Implement this explicitly' in prompt:
+                self.assertEqual(self.calls, ['plan', 'reproduction:implementer',
+                    'reproduction:independent-verifier', 'baseline-review'])
+                if not complete:
+                    return {'exit_code': 1, 'timed_out': False, 'status_code': 429,
+                            'stdout': 'API Error: 429', 'stderr': ''}
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+        def check(**kwargs):
+            artifact = kwargs.pop('execution_artifact')
+            kwargs.pop('source_mode')
+            self.assertEqual((self.task.parent / artifact['path']).read_text(), source)
+            result = self.check(**kwargs)
+            png = self.task.parent / f"{len(self.calls)}-{kwargs['kind']}-{kwargs['actor']}.png"
+            png.write_bytes(tiny_png())  # Mock transport only; no browser/product verdict.
+            report = json.loads(Path(result['report']).read_text())
+            report.update(screenshot_path=str(png), screenshot_sha256=cli.digest(png),
+                          execution_artifact=artifact, source_mode='image', image=kwargs['image'],
+                          verified_image_id=kwargs['image'])
+            cli.write(Path(result['report']), report)
+            current = cli.read(self.task)
+            current['evidence'][-1]['sha256'] = cli.digest(Path(result['report']))
+            if kwargs['kind'] == 'screenshot':
+                current['evidence'][-1].update(path=str(png), sha256=cli.digest(png),
+                    execution_report=result['report'], execution_report_sha256=cli.digest(Path(result['report'])))
+            cli.write(self.task, current)
+            return {**result, 'screenshot': str(png)}
+        expected = autopilot.AutopilotError if complete or mutate else autopilot.ProviderLimitError
+        with self.assertRaises(expected) as caught:
+            autopilot.run(self.task, self.issue, 'sha256:' + 'a' * 64, source_mode='image', candidate_image='sha256:' + 'b' * 64,
+                          model=model, check=check, vision=lambda *args: 'Mock image transport observation')
+        if complete and not mutate:
+            self.assertIn('PR must exist', str(caught.exception))
+            self.assertIn('final-review', self.calls)
+        if not complete:
+            self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+        if not mutate:
+            self.assertGreaterEqual(len(list(self.task.parent.glob('*.png'))), 2)
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+
+    def test_ui_artifact_freezes_before_dual_baseline_capture_and_source_review(self):
+        self._ui_artifact_flow()
+
+    def test_ui_artifact_final_review_contains_actual_frozen_source(self):
+        self._ui_artifact_flow(complete=True)
+
+    def test_ui_artifact_candidate_loader_change_is_visible_to_final_review(self):
+        original = self.model
+        reviews = []
+        def model(workspace, prompt, timeout, *, read_only):
+            if 'Return only JSON:' in prompt:
+                for name in ('reproduction', 'resolution', 'tests', 'screenshot'):
+                    self.plan[name]['command'] = ['node', '--import', '/app/repro.js',
+                                                  '/evaluation/harness.mjs', name]
+            elif 'Implement this explicitly' in prompt:
+                (workspace / 'repro.js').write_text('// candidate loader behavior change\n')
+            elif 'Independently inspect the candidate source' in prompt:
+                current_blob = subprocess.check_output(
+                    ['git', '-C', str(workspace), 'rev-parse', 'HEAD:repro.js'], text=True).strip()
+                self.assertIn(current_blob, prompt)
+                self.assertIn('/app/repro.js', prompt)
+                self.assertIn('+// candidate loader behavior change', prompt)
+                reviews.append(current_blob)
+            return original(workspace, prompt, timeout, read_only=read_only)
+        self.model = model
+        self._ui_artifact_flow(complete=True)
+        self.assertEqual(len(reviews), 1)
+
+    def test_ui_artifact_source_change_prevents_implementation(self):
+        self._ui_artifact_flow(mutate='baseline-source')
+        self.assertNotIn('implement', self.calls)
+
+    def test_ui_artifact_missing_baseline_png_prevents_implementation(self):
+        self._ui_artifact_flow(mutate='baseline-png')
+        self.assertNotIn('implement', self.calls)
+
+    def test_ui_artifact_source_change_in_final_review_prevents_delivery(self):
+        self._ui_artifact_flow(complete=True, mutate='final-source')
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'verify')
+
+    def test_ui_artifact_final_review_resolution_png_deletion_blocks_delivery(self):
+        self._ui_artifact_flow(complete=True, mutate='final-capture-resolution-delete')
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'verify')
+
+    def test_ui_artifact_final_review_resolution_png_corruption_blocks_delivery(self):
+        self._ui_artifact_flow(complete=True, mutate='final-capture-resolution-corrupt')
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'verify')
+
+    def test_ui_artifact_final_review_screenshot_deletion_blocks_delivery(self):
+        self._ui_artifact_flow(complete=True, mutate='final-capture-screenshot-delete')
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'verify')
+
+    def test_ui_artifact_final_review_screenshot_corruption_blocks_delivery(self):
+        self._ui_artifact_flow(complete=True, mutate='final-capture-screenshot-corrupt')
+        self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['phase'], 'verify')
+
+    def test_ui_artifact_old_candidate_capture_is_not_validated_against_new_head(self):
+        self._ui_artifact_flow(complete=True)
+        data = cli.read(self.task)
+        report = next(entry for entry in data['evidence'] if entry['kind'] == 'resolution')
+        old_png = Path(json.loads(Path(report['path']).read_text())['screenshot_path'])
+        (self.workspace / 'code.txt').write_text('new candidate')
+        subprocess.run(['git', '-C', str(self.workspace), 'add', 'code.txt'], check=True)
+        subprocess.run(['git', '-C', str(self.workspace), 'commit', '-qm', 'new fixture candidate'], check=True)
+        old_png.unlink()
+        state = cli.read(self.task.parent / 'autopilot.json')
+        self.assertIsNotNone(autopilot._artifact(self.task, state, 'image'))
+
     def test_failed_reproduction_stops_before_modification(self):
         def fail(**kwargs):
             raise workflow.WorkflowError('no real reproduction')

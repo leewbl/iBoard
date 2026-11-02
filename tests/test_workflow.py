@@ -111,6 +111,87 @@ class WorkflowTests(unittest.TestCase):
         cli.criterion_add(argparse.Namespace(id='a', text='repair behavior', reason='issue'), record)
         cli.write(Path(task), record)
 
+    def _artifact_reproduction(self, capture=True, corrupt=False, mutate=False, setup=False, actual_exit=0, expected_exit=0):
+        import json
+        from workbench import execution_artifacts
+        created = self.prepare(); task = Path(created['task']); self.criterion(task)
+        data = cli.read(task); data['surface'] = 'ui'; cli.write(task, data)
+        plan = {'execution_artifact': {'version': 1, 'language': 'javascript', 'source': '// frozen\n'}}
+        for mode in execution_artifacts.MODES:
+            plan[mode] = {'command': ['node', execution_artifacts.CONTAINER_PATH, mode]}
+        ref = execution_artifacts.freeze(task, plan, data, 'image')
+        cli.write(task.parent / 'autopilot.json', {'schema': cli.SCHEMA, 'plan': plan, 'execution_artifact': ref})
+        def runner(path, image, command, timeout, **options):
+            self.assertEqual(options['source_root'], '/app')
+            self.assertEqual(options['execution_artifact']['sha256'], ref['sha256'])
+            report = {'exit_code': actual_exit, 'stdout': 'WORKBENCH_SETUP_FAILURE observed' if setup else 'observed',
+                      'stderr': '', 'cleanup_confirmed': True, 'container_created': True, 'timed_out': False}
+            if capture:
+                png = options['screenshot_output']; png.write_bytes(b'bad PNG' if corrupt else tiny_png())
+                report.update(screenshot_path=str(png), screenshot_sha256=cli.digest(png))
+            if mutate:
+                artifact = Path(options['execution_artifact']['host_path']); artifact.chmod(0o600); artifact.write_text('changed')
+            return report
+        with patch.object(workflow, '_verified_image', return_value='immutable-image'):
+            return workflow.run_check(task=task, kind='reproduction', image='image',
+                command=plan['reproduction']['command'], timeout=10, expect_exit=expected_exit, marker='observed',
+                actor='implementer', description='mock artifact transport', source_mode='image',
+                execution_artifact=ref, runner=runner)
+
+    def test_artifact_baseline_preserves_png_and_json_evidence_binding(self):
+        import json
+        result = self._artifact_reproduction()
+        report = json.loads(Path(result['report']).read_text())
+        self.assertTrue(Path(result['screenshot']).is_file())
+        self.assertIn('execution_artifact', report)
+        task = self.root / 'tasks/issue-1/task.json'
+        self.assertEqual(cli.read(task)['evidence'][0]['path'], result['report'])
+
+    def test_artifact_declared_nonzero_baseline_keeps_actual_png(self):
+        import json
+        result = self._artifact_reproduction(actual_exit=1, expected_exit=1)
+        report = json.loads(Path(result['report']).read_text())
+        self.assertEqual(report['exit_code'], 1)
+        self.assertEqual(report['expected_exit'], 1)
+        self.assertTrue(Path(result['screenshot']).is_file())
+
+    def test_artifact_wrong_exit_cannot_pass_despite_actual_png(self):
+        import json
+        with self.assertRaises(workflow.WorkflowError):
+            self._artifact_reproduction(actual_exit=1, expected_exit=0)
+        path = next((self.root / 'tasks/issue-1').glob('reproduction-*.json'))
+        report = json.loads(path.read_text())
+        self.assertEqual(report['exit_code'], 1)
+        self.assertTrue(Path(report['screenshot_path']).is_file())
+        self.assertEqual(cli.read(self.root / 'tasks/issue-1/task.json')['evidence'], [])
+
+    def test_artifact_nonzero_without_png_remains_setup_failure(self):
+        import json
+        with self.assertRaises(workflow.WorkflowError):
+            self._artifact_reproduction(actual_exit=1, expected_exit=1, capture=False)
+        path = next((self.root / 'tasks/issue-1').glob('reproduction-*.json'))
+        self.assertIn('PNG', json.loads(path.read_text())['error'])
+
+    def test_artifact_missing_png_is_setup_failure(self):
+        with self.assertRaises(workflow.WorkflowError):
+            self._artifact_reproduction(capture=False)
+
+    def test_artifact_corrupt_png_is_setup_failure(self):
+        with self.assertRaises(workflow.WorkflowError):
+            self._artifact_reproduction(corrupt=True)
+
+    def test_artifact_mutation_retains_failed_report(self):
+        import json
+        with self.assertRaises(workflow.WorkflowError):
+            self._artifact_reproduction(mutate=True)
+        reports = list((self.root / 'tasks/issue-1').glob('reproduction-*.json'))
+        self.assertEqual(len(reports), 1)
+        self.assertIn('bytes changed', json.loads(reports[0].read_text())['error'])
+
+    def test_artifact_setup_marker_cannot_be_counted_as_reproduction(self):
+        with self.assertRaises(workflow.WorkflowError):
+            self._artifact_reproduction(setup=True)
+
     def test_prepare_creates_independent_worktree_without_touching_original(self):
         result = self.prepare()
         self.assertEqual(Path(result['workspace'], 'app.txt').read_text(), 'before\n')

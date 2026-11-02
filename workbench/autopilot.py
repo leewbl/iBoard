@@ -21,7 +21,7 @@ from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
 from model.provider_limits import ProviderLimitError, classify_provider_limit
-from workbench import cli, workflow, delivery, publish
+from workbench import cli, workflow, delivery, publish, execution_artifacts
 from workbench.task_lock import task_lock
 
 
@@ -384,6 +384,9 @@ def _review_report(path):
         'workspace', 'source_mode', 'source_verified_commit', 'image', 'verified_image_id',
         'exit_code', 'timed_out', 'cleanup_confirmed', 'error', 'expected_exit',
         'expected_marker', 'stdout_truncated', 'stderr_truncated')}
+    if report.get('execution_artifact'):
+        identity.update({key: report.get(key) for key in ('execution_artifact', 'command_sha256',
+                         'screenshot_path', 'screenshot_sha256')})
     command = report.get('command')
     encoded = json.dumps(command, ensure_ascii=False, separators=(',', ':'))
     identity['command'] = command if len(encoded) <= 1000 else {
@@ -522,6 +525,11 @@ def _model(task, phase, prompt, *, read_only, model):
         raise ProviderLimitError(report_path=latest, result=result, signal=signal, phase=phase)
     if result.get('exit_code') != 0 or result.get('timed_out'):
         raise AutopilotError(f'{phase} model failed; output saved')
+    state_path = task.parent / 'autopilot.json'
+    if state_path.exists():
+        accepted = cli.read(state_path)
+        if accepted.get('execution_artifact'):
+            _artifact(task, accepted, accepted.get('execution_artifact_source_mode'))
     return result.get('stdout', '')
 
 
@@ -578,16 +586,93 @@ def _review_scripts(workspace, base, head, plan, *, kind, surface):
     return '\n'.join(context)
 
 
+def _artifact(task, state, source_mode, *, review=False):
+    plan = state.get('plan', {})
+    if 'execution_artifact' not in plan and 'execution_artifact' not in state:
+        return None
+    data = cli.read(task)
+    function = execution_artifacts.review if review else execution_artifacts.verify
+    verified = function(task, plan, state.get('execution_artifact'), data, source_mode,
+                        cli.sha(data['repo'], 'HEAD'))
+    if state.get('baseline_reports'):
+        if len(state['baseline_reports']) != 2:
+            raise execution_artifacts.ArtifactError('execution artifact requires both baseline reports')
+        actors = set()
+        for path in state['baseline_reports']:
+            report = json.loads(Path(path).read_text())
+            if (report.get('commit') != data['base_commit']
+                    or report.get('command') != plan['reproduction']['command']
+                    or not any(entry.get('path') == path and entry.get('sha256') == cli.digest(Path(path))
+                               for entry in data['evidence'] if entry.get('kind') == 'reproduction')):
+                raise execution_artifacts.ArtifactError('execution artifact baseline evidence changed')
+            _artifact_capture(task, report, state['execution_artifact'])
+            actors.add(report.get('actor'))
+        if actors != {data['implementer'], 'independent-verifier'}:
+            raise execution_artifacts.ArtifactError('execution artifact baseline actors changed')
+    head = cli.sha(data['repo'], 'HEAD')
+    for evidence in data['evidence']:
+        kind = evidence.get('kind')
+        if evidence.get('commit') != head or kind not in ('resolution', 'runtime-log', 'screenshot'):
+            continue  # Old candidate captures remain history, not current-head proof.
+        path = Path(evidence.get('execution_report', '') if kind == 'screenshot' else evidence['path'])
+        expected_hash = evidence.get('execution_report_sha256') if kind == 'screenshot' else evidence.get('sha256')
+        actor = evidence.get('actor')
+        if (path.is_symlink() or not path.is_file() or path.resolve().parent != task.parent.resolve()
+                or cli.digest(path) != expected_hash or actor not in {data['implementer'], 'independent-verifier'}):
+            raise execution_artifacts.ArtifactError('current artifact capture report evidence changed')
+        report = json.loads(path.read_text())
+        mode = 'screenshot' if kind == 'screenshot' else 'resolution'
+        if (report.get('command') != plan[mode]['command']
+                or not delivery._valid_run({**evidence, 'path': str(path)}, actor, kind, head, data['repo'])):
+            raise execution_artifacts.ArtifactError('current artifact capture execution identity changed')
+        _artifact_capture(task, report, state['execution_artifact'])
+        if kind == 'screenshot' and (evidence.get('path') != report.get('screenshot_path')
+                                    or evidence.get('sha256') != report.get('screenshot_sha256')):
+            raise execution_artifacts.ArtifactError('current artifact screenshot evidence changed')
+    return verified
+
+
+def _artifact_capture(task, report, reference):
+    from runner.sandbox import _validated_png
+    if any(report.get('execution_artifact', {}).get(key) != value for key, value in reference.items()):
+        raise execution_artifacts.ArtifactError('execution artifact report binding changed')
+    screenshot = Path(report.get('screenshot_path', ''))
+    if (screenshot.is_symlink() or not screenshot.is_file()
+            or screenshot.resolve().parent != task.parent.resolve()
+            or cli.digest(screenshot) != report.get('screenshot_sha256')):
+        raise execution_artifacts.ArtifactError('execution artifact requires its real bound PNG')
+    try:
+        _validated_png(screenshot.read_bytes())
+    except workflow.SandboxError as error:
+        raise execution_artifacts.ArtifactError(str(error)) from error
+
+
 def _check(task, image, item, kind, actor, check, *, source_mode='workspace', memory_mb=2048):
     options = {}
     if source_mode != 'workspace':
         options['source_mode'] = source_mode
     if memory_mb != 2048:
         options['memory_mb'] = memory_mb
-    return check(task=task, kind=kind, image=image, command=item['command'],
+    state = cli.read(task.parent / 'autopilot.json')
+    artifact = _artifact(task, state, source_mode)
+    if artifact is not None:
+        options['execution_artifact'] = state['execution_artifact']
+    result = check(task=task, kind=kind, image=image, command=item['command'],
                  timeout=_remaining(cli.read(task)), expect_exit=item['exit_code'],
                  marker=item['marker'], actor=actor,
                  description=f'{actor} independently executes {kind}', **options)
+    if artifact is not None:
+        _artifact(task, state, source_mode)
+        report = json.loads(Path(result['report']).read_text())
+        if (report.get('commit') != cli.sha(cli.read(task)['repo'], 'HEAD')
+                or report.get('source_verified_commit') != report['commit']
+                or report.get('source_mode') != 'image' or not report.get('verified_image_id')
+                or report.get('image') != report['verified_image_id']
+                or report.get('command') != item['command']):
+            raise execution_artifacts.ArtifactError('execution artifact execution identity changed')
+        if kind in ('reproduction', 'resolution', 'runtime-log', 'screenshot'):
+            _artifact_capture(task, report, state['execution_artifact'])
+    return result
 
 
 def _pause(task, reason):
@@ -765,6 +850,19 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       'offline inside the supplied Docker image. Your proposed plan remains '
                       'unverified until coordinator execution; bug tasks require actual baseline runs from both actors and '
                       'independent review before implementation; source inspection is not runtime evidence. '
+                      'For bug UI tasks in image mode you may include execution_artifact: '
+                      '{"version":1,"language":"javascript","source":"bounded MJS source"}. '
+                      'Source must be nonempty UTF-8, no NUL, at most 32768 bytes. It is task evidence '
+                      'code, never a product file. All four command modes reproduction, resolution, tests, '
+                      'screenshot must use ["node","/evaluation/harness.mjs",mode] or '
+                      '["node","--import","/app/<tracked regular loader>","/evaluation/harness.mjs",mode], '
+                      'with identical loader. Coordinator freezes source before baseline and mounts only '
+                      'that file read-only into the verified /app image, with no host workspace or Git access. '
+                      'Use existing real product browser helpers; no synthetic DOM, injected corrective CSS, '
+                      'fabricated failures or hard-coded Gateway activity flags. Reproduction, resolution '
+                      'and screenshot modes must capture actual product UI to WORKBENCH_SCREENSHOT_PATH '
+                      'and log actual interactions. Emit WORKBENCH_SETUP_FAILURE and exit nonzero for startup, page or setup failures. Same frozen source and scenario are required before/after; '
+                      'source/cache/browser/loopback startup failures are setup failures, not bug evidence. '
                       'Return only JSON: {"status":"ready", "criteria":[{"id":"...","text":"..."}], '
                       '"reproduction":{"command":["..."],"marker":"...","exit_code":0}, '
                       '"resolution":{"command":["..."],"marker":"...","exit_code":0}, '
@@ -798,7 +896,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     _check_spec(plan, name)
             if data['surface'] == 'ui':
                 _check_spec(plan, 'screenshot')
-                if not workflow._workspace_command(plan['screenshot']['command']):
+                if 'execution_artifact' not in plan and not workflow._workspace_command(plan['screenshot']['command']):
                     raise AutopilotError('screenshot command requires a tracked workspace script')
             if data['kind'] == 'feature' and not isinstance(plan.get('feature_doc'), str):
                 raise AutopilotError('feature plan must identify functional documentation')
@@ -807,6 +905,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 if not isinstance(criteria, list) or not criteria or len(criteria) > 20:
                     raise AutopilotError('model must supply explicit acceptance criteria')
                 _add_criteria(task, criteria)
+            if 'execution_artifact' in plan:
+                state['execution_artifact'] = execution_artifacts.freeze(task, plan, data, source_mode)
+                state['execution_artifact_source_mode'] = source_mode
             state.update(phase='reproduce' if data['kind'] == 'bug' else 'implement', plan=plan)
             cli.write(state_path, state)
 
@@ -817,6 +918,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             second = _check(task, image, state['plan']['reproduction'], 'reproduction', verifier, check, source_mode=source_mode, memory_mb=memory_mb)
             # Independent model judges whether observed behavior is the reported bug.
             raw = _review_report(second['report'])
+            if state.get('execution_artifact'):
+                raw = (_review_report(first['report']) + '\n' + raw + '\n'
+                       + _artifact(task, state, source_mode, review=True))
             prompt = ('Independently inspect this task and the actual baseline run below. Do not edit files. '
                       'Return ONLY JSON {"status":"ready","verdict":"PASS"} if the real run demonstrates '
                       'the reported failure, not just a simulated or unrelated failure. Otherwise return '
@@ -871,6 +975,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             state.update(phase='verify', candidate_commit=candidate)
             cli.write(state_path, state)
 
+        _artifact(task, state, source_mode)
         if state['phase'] == 'implement':
             data = cli.read(task)
             if not _clean(workspace) or cli.sha(workspace, 'HEAD') != data['base_commit']:
@@ -982,10 +1087,13 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             screenshot_script = ''
             if data['surface'] == 'ui':
                 try:
-                    capture_source = workflow._verify_workspace_entry(workspace, state['plan']['screenshot']['command'])
-                    if capture_source.stat().st_size > 30000:
-                        raise AutopilotError('screenshot capture script exceeds review limit')
-                    screenshot_script = capture_source.read_text(encoding='utf-8')
+                    if state.get('execution_artifact'):
+                        screenshot_script = _artifact(task, state, source_mode, review=True)
+                    else:
+                        capture_source = workflow._verify_workspace_entry(workspace, state['plan']['screenshot']['command'])
+                        if capture_source.stat().st_size > 30000:
+                            raise AutopilotError('screenshot capture script exceeds review limit')
+                        screenshot_script = capture_source.read_text(encoding='utf-8')
                 except (OSError, UnicodeError, workflow.WorkflowError) as error:
                     raise AutopilotError('screenshot capture script is unavailable for review') from error
                 capture = _check(task, check_image, state['plan']['screenshot'], 'screenshot', verifier, check,
@@ -1057,8 +1165,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 if record.get('basis'):
                     record['basis_content'] = Path(record['basis']).read_text(encoding='utf-8')[:30000]
                 history.append(record)
-            script_context = _review_scripts(workspace, data['base_commit'], candidate, state['plan'],
-                                              kind=data['kind'], surface=data['surface'])
+            script_context = ('All artifact commands use the identical frozen source shown in SCREENSHOT SCRIPT; inspect its production helpers.' if state.get('execution_artifact') else
+                              _review_scripts(workspace, data['base_commit'], candidate, state['plan'],
+                                              kind=data['kind'], surface=data['surface']))
             guard_changes = []
             guard_run = None
             guard_instruction = ''
@@ -1103,6 +1212,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       f'SCREENSHOT DESCRIPTION (UNTRUSTED):\n{visual_description}\n'
                       f'VERIFICATION ENTRYPOINTS (UNTRUSTED):\n{script_context}\n'
                       f'BASELINE REPORT CONTENTS:\n{baseline_raw}\nRUNS:\n{raw}')
+            _artifact(task, state, source_mode)
             review = _result(_model(task, 'final-review', _bounded_review_prompt(prompt), read_only=True, model=model))
             if review.get('verdict') != 'PASS':
                 raise AutopilotError('independent verifier did not confirm every criterion')
@@ -1179,6 +1289,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             cli.write(state_path, state)
 
         if state['phase'] == 'delivery':
+            _artifact(task, state, source_mode)
             _validate_adoption(task, cli.read(task), issue_path, image, pr_repo, source_mode, candidate_image,
                                build_source_image, memory_mb)
             if not pr_repo:
@@ -1207,6 +1318,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 del state['ci_republish']
                 cli.write(state_path, state)
             if not pr_number:
+                _artifact(task, state, source_mode)
                 published = publisher(task, pr_repo)
                 pr_number = published['pr']
                 state['published_pr'] = published
@@ -1264,9 +1376,11 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                        memory_mb=memory_mb, build_source_image=build_source_image,
                                        model=model, check=check, merge=merge, publisher=publisher,
                                        closer=closer, vision=vision)
+            _artifact(task, state, source_mode)
             result = merge(task, pr_repo, pr_number)
             state.update(phase='close-issue', delivery=result, delivery_repo=pr_repo, delivery_pr=pr_number)
             cli.write(state_path, state)
+        _artifact(task, state, source_mode)
         if state['phase'] == 'close-issue':
             data = cli.read(task)
             _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
