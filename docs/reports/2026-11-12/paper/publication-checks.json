@@ -7,7 +7,7 @@
   "score": 80,
   "accepted_cases": 8,
   "total_cases": 10,
-  "local_link_occurrences_checked": 254,
+  "local_link_occurrences_checked": 253,
   "archify": [
     {
       "diagram": "iboard_as_is",
@@ -81,7 +81,7 @@
     "htmlSha256": "ffb8cecb34ca961237fbab9eccac4a93740ead0e1edd64ab12c4184f121b4d11"
   },
   "artifacts": {
-    "README.md": "3f6e03c88a4ba43aad9032cd47378c0095739d3679aaefbc21be090b97197781",
+    "README.md": "f5ddd92e7575277e95d9f38549909db71ece3571594a4ad377ea59eccf1f4518",
     ".gitignore": "0fc36df9b6afd9c3b3d93970697975d5b3bfa0cf3c397557563a65c1e63c4bed",
     "iboard-experiment-report.html": "ffb8cecb34ca961237fbab9eccac4a93740ead0e1edd64ab12c4184f121b4d11",
     "iboard-experiment-report.pdf": "4ee9fbbba0db35623beb53c9831970e69869bec400553721a51a59a4c6de8b8f",
@@ -120,7 +120,7 @@
     "paper/figures/fig2-benchmark-results.svg": "26cad0e29850543e90602bc15fd2835745b1e3360bdb4a0863a57158d30059fd",
     "paper/figures/fig5-target-architecture.svg": "4c809b00e9eb2136ec53851ab87909d4a88d5f093c2f9e8843190b94190a5c6c",
     "data/metrics.json": "f97aa5c21fea076e12539354e5d184ce505f357774bd4d4d46548989a1a00f20",
-    "data/evidence-index.md": "e8acf7cf7768b08b4f0925cb7dc7c562e959288eae1219579c6bf447871bdfdb",
+    "data/evidence-index.md": "d35a9c93c7dddf51b549ca82740485e6b03627bd40e0dcba308d719bb26683ca",
     "data/external-sources.md": "6dbaf770a19970c4a727248e2502fc72cfc096057cd56ba3ec8f3e8d38d37d78",
     "data/evidence-catalog.json": "8d671d3bb71ac41a3475dfd958e8831733794939f101843572b4bd06eda6bda1",
     "data/architecture-diagnosis.md": "8c1dd74470058baf92498d743cf2956c9185cfb8f1c063c80206f74b650814a8"

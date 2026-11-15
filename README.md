@@ -4,12 +4,13 @@ iBoard 组织智能体完成需求实现、故障修复、隔离验证、独立�
 
 ## 实验报告与架构
 
+- **在线阅读：[新版报告](https://leewbl.github.io/iBoard/) · [当前架构 Archify](https://leewbl.github.io/iBoard/reports/2026-11-12/paper/architecture/iboard_as_is.archify.html) · [目标架构 Archify](https://leewbl.github.io/iBoard/reports/2026-11-12/paper/architecture/iboard_to_be.archify.html) · [PDF](https://leewbl.github.io/iBoard/reports/2026-11-12/iboard-experiment-report.pdf)**
 - [新版实验报告](docs/reports/2026-11-12/iboard-experiment-report.md) · [论文式网页](docs/reports/2026-11-12/iboard-experiment-report.html) · [PDF](docs/reports/2026-11-12/iboard-experiment-report.pdf)
 - [当前架构 Archify](docs/reports/2026-11-12/paper/architecture/iboard_as_is.archify.html) · [当前架构 SVG](docs/reports/2026-11-12/paper/architecture/iboard_as_is.svg)
 - [目标架构 Archify](docs/reports/2026-11-12/paper/architecture/iboard_to_be.archify.html) · [目标架构 SVG](docs/reports/2026-11-12/paper/architecture/iboard_to_be.svg)
 - [文档索引与本地预览方法](docs/README.md) · [技术附件及证据范围](docs/reports/2026-11-12/technical-notes.md)
 
-报告以需求开发自动化为背景；十题故障评测取得80/100、8/10固定验收通过，需求分支已有实现，真实需求至PR的完整能力仍待专门验证。GitHub不直接执行HTML，查看交互效果请下载仓库按文档索引中的方法打开。
+报告以需求开发自动化为背景；十题故障评测取得80/100、8/10固定验收通过，需求分支已有实现，真实需求至PR的完整能力仍待专门验证。GitHub Pages 提供网页和交互图的在线版本，也可下载仓库按文档索引中的方法本地预览。
 
 ![iBoard产品框架与两类验收](docs/reports/2026-11-12/paper/figures/fig1-harness-overview.svg)
 

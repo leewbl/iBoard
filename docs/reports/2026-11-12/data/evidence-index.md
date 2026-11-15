@@ -12,6 +12,6 @@
 - [证据文件目录](evidence-catalog.json)：本轮报告所引用本地文件的仓库相对路径与SHA-256。哈希仅确认文件身份，不证明测试真实、充分或行为验收通过。
 - [架构诊断](architecture-diagnosis.md)：固定代码分析、观察到的瓶颈和建议；其中本地来源同样通过本页说明。
 - [外部方案对比与固定版本来源](external-sources.md)：沿用11月7日分析快照，不声称本次重新核对最新版本。
-- 仓库已有的 [SQLite试点公开摘要](../../../../evidence/openclaw-186875-local-validation.json) 和 [myopenclaw PR #2](https://github.com/leewbl/myopenclaw/pull/2)。试点不计入十题分母。
+- 仓库已有的 [SQLite试点公开摘要](https://github.com/leewbl/iBoard/blob/effc347df42f45037dad0a4bbe2a2cb7e53d363a/evidence/openclaw-186875-local-validation.json) 和 [myopenclaw PR #2](https://github.com/leewbl/myopenclaw/pull/2)。试点不计入十题分母。
 
 公开原型分析基准为 `effc347df42f45037dad0a4bbe2a2cb7e53d363a`。十题过程中使用本地恢复版本与补充审定，不能归为同一个不变公开发行版。公开指标可用于复算表格和图形，不能单凭文档包重新执行原始完整实验。
