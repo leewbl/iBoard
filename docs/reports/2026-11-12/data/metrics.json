@@ -1,0 +1,409 @@
+{
+  "source": {
+    "run.json": {
+      "path": "tasks/benchmark-v1-20261101/run.json",
+      "sha256": "27b3a2f3f29dbdd8ca73131b1691227a6dd4d93b896a79bbce414e5668ea8cac"
+    },
+    "benchmark-final-score-time-evidence.json": {
+      "path": "tasks/benchmark-v1-20261101/benchmark-final-score-time-evidence.json",
+      "sha256": "572bbc9e9d59f2eea46d330a6e8c229c7653f21bfb9b9c9269b7269f74a4b322"
+    },
+    "score-provisional.json": {
+      "path": "tasks/benchmark-v1-20261101/score-provisional.json",
+      "sha256": "7065f129416408964e3b6e568e7fd3535b949643b4c497d6413bf411c25a9335"
+    },
+    "benchmark-completion-audit.json": {
+      "path": "tasks/benchmark-v1-20261101/benchmark-completion-audit.json",
+      "sha256": "fa0cb612fc31573aca673fbca855e4ebd1bf674d10491dc2a30cd4cb19654f79"
+    }
+  },
+  "source_observed_at": "2026-11-06T17:22:41.372901+00:00",
+  "fixed": {
+    "benchmark_id": "openclaw-bugs-v1",
+    "source_base_sha": "54710b123fe94a2139930c1d7c038e7623345a5e",
+    "manifest_sha256": "16c3705cd1e0b669bda60b8a764ada24005c86afcfa87e107e2ded3451ffae03",
+    "benchmark_commit": "81498d1e391a6cbdf0f5ef92eb46419a8de51bb5",
+    "workbench_commit": "effc347df42f45037dad0a4bbe2a2cb7e53d363a",
+    "workbench_version_policy": "Adaptive workbench experiment: root workbench_commit identifies the initial version, not one unchanged release. Per-case execution versions and retained attempts identify later recovery engines; Codex coordinated and improved the workbench while Claude Code/GLM produced target fixes.",
+    "track": "pr-assisted",
+    "model": "glm-5.3[1M] via 2.1.285 (Claude Code)",
+    "resource_policy": {
+      "seconds": null,
+      "iterations": null,
+      "cost": "stop-on-provider-error",
+      "parallelism": 1,
+      "memory_mb": 3072,
+      "network": "none",
+      "read_only_container": true,
+      "docker_vm_memory_mb": 4096
+    },
+    "environment": {
+      "image_digest": "sha256:44c82395dd40e1a605037d0b489912305aa7a9081da367b127e6a9df4bb33e15",
+      "node": "v24.22.1",
+      "pnpm": "12.15.0",
+      "lockfile_sha256": "01c02f06984feaa8090c17b45e80e83e1f0842f38eed2f9ab37b113f0a4627fc",
+      "prompt_sha256": "4fe94c563c245e1280367a92c4d029e5f3d03d6490f725c6bc0d1bc1e947b656"
+    },
+    "environment_scope": "Common tool versions; root image is the original source/dependency image and root prompt hash identifies the orchestration harness. Actual selected images and request hashes are per-case below and in execution reports."
+  },
+  "metrics": {
+    "score": {
+      "value": 80,
+      "denominator": 100,
+      "formula": "sum of independently reviewed stage awards; 2+4+2+2 per case"
+    },
+    "full_acceptance_success": {
+      "numerator": 8,
+      "denominator": 10,
+      "ratio": 0.8,
+      "qualification": "Frozen benchmark acceptance, not native end-to-end delivery."
+    },
+    "baseline_reproduced": {
+      "numerator": 8,
+      "denominator": 10,
+      "ratio": 0.8
+    },
+    "conservative_autonomy": {
+      "numerator": 2,
+      "denominator": 10,
+      "ratio": 0.2,
+      "issues": [
+        149994,
+        186914
+      ],
+      "formula": "points == 10 and human_intervention == false",
+      "qualification": "External Codex recovery, stronger verification or runtime intervention may count; not a literal human-source-edit metric, and coordinator help can remain even when false."
+    },
+    "external_intervention_flag": {
+      "numerator": 6,
+      "denominator": 10,
+      "ratio": 0.6,
+      "qualification": "Not human editing rate. No unified counts or human elapsed-time measurement."
+    },
+    "observed_container_runs": 474,
+    "observed_container_seconds_sum": 16916.599,
+    "active_duration_all_10": {
+      "n": 10,
+      "median_seconds": 11001.369,
+      "median_hms": "3:03:21",
+      "p95_nearest_rank_seconds": 31072.34860325086,
+      "p95_nearest_rank_hms": "8:37:52",
+      "p95_rank": 10,
+      "mean_seconds": 12968.034228795856,
+      "mean_hms": "3:36:08",
+      "minimum_seconds": 445.989,
+      "maximum_seconds": 31072.34860325086,
+      "qualification": "Descriptive active durations only; small fixed sample, not population quantiles or end-to-end wall latency."
+    },
+    "active_duration_solved_8": {
+      "n": 8,
+      "median_seconds": 11001.369,
+      "median_hms": "3:03:21",
+      "p95_nearest_rank_seconds": 31072.34860325086,
+      "p95_nearest_rank_hms": "8:37:52",
+      "p95_rank": 8,
+      "mean_seconds": 13150.99091099482,
+      "mean_hms": "3:39:11",
+      "minimum_seconds": 5985.066000000001,
+      "maximum_seconds": 31072.34860325086,
+      "qualification": "Descriptive active durations only; small fixed sample, not population quantiles or end-to-end wall latency."
+    },
+    "native_github_delivery": {
+      "numerator": 0,
+      "denominator": 10,
+      "qualification": "This benchmark deliberately retained candidates locally. This is delivery status, not a 0% capability score; the separate SQLite pilot delivered PR #2."
+    }
+  },
+  "duration_policy": {
+    "timing_ledger_collected_at": "2026-11-06T17:22:41.372901+00:00",
+    "total_observed_container_runs": 474,
+    "solver_active_policy": "Per-case active monotonic elapsed includes preparation and discarded/interrupted calls; user pause excluded via recorded segments. Overall wall time includes queue/environment preparation and user pause, reported separately.",
+    "sandbox_time_qualification": "Observed real sandbox process durations, including failed attempts. Duplicate report copies are deduplicated by image/start/command. Native sandbox time is already within solver active time and must not be added again. Independent checks are included where reports exist; image preparation, model latency, evaluator coding and queue time are not inferred from sandbox durations. Last finished attempt wall span is not a final per-case completion time.",
+    "usage_qualification": "Current Claude Code text adapter does not report token/cost usage; do not estimate.",
+    "pending_browser_issues": []
+  },
+  "quantile_method": "nearest-rank P95 = sorted values[ceil(0.95*n)-1]; n=10 gives rank10, n=8 gives rank8; no population or stability inference",
+  "unknown_metrics": [
+    "Uniform first-attempt success",
+    "Per-case end-to-end wall latency to acceptance including queue and pauses",
+    "Actual token or monetary cost",
+    "Cost per accepted task",
+    "Human intervention count and duration",
+    "Controlled recovery success rate",
+    "Parallel throughput gain",
+    "Repeated independent full-run variability",
+    "No-harness baseline delta",
+    "Mechanism ablation effect"
+  ],
+  "integrity": {
+    "categories": 30,
+    "copies": 319,
+    "errors": []
+  },
+  "cases": [
+    {
+      "issue": 149994,
+      "topic": "浅色主题审批按钮文字对比度",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 14137.317827458766,
+      "active_hms": "3:55:37",
+      "observed_container_runs": 46,
+      "observed_container_seconds": 823.809,
+      "candidate_sha": "c03fd1b43fe9c916b9d862adae3c8f985a58025f",
+      "human_intervention": false,
+      "conservative_autonomy_credit": true,
+      "iterations_recorded": 1,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "cb6bb5721abb2c0206102dbd7db62ebfe6164dba",
+      "workflow_phase": "delivery",
+      "outcome_audit": {
+        "path": "independent-final-audit-149994-c03fd1b4-score-schema.json",
+        "sha256": "a5607fb5131b95143f5fd56c814adc3c5f78cc8baee54ae1110b90e408847f84"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-149994",
+      "main_validation_limit": "保留本地；有协调和独立审核，不等于完全无人值守。定向类型检查使用正式生成数据库类型；非全量CI。",
+      "intervention_qualification": null
+    },
+    {
+      "issue": 180815,
+      "topic": "键盘跳过聊天记录到输入框",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 31072.34860325086,
+      "active_hms": "8:37:52",
+      "observed_container_runs": 33,
+      "observed_container_seconds": 1126.7589999999998,
+      "candidate_sha": "72ef11ede970198b67b68b1ca9ed61f2456bdd20",
+      "human_intervention": true,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 10,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "502794d6acef56d687b7aa39241abfa8949402f5",
+      "workflow_phase": "verify",
+      "outcome_audit": {
+        "path": "independent-final-audit-180815-72ef11ed-lint-repair-v3.json",
+        "sha256": "afffaac40922daac2e11d2fe1ea02b0f5403313922dc9d49e3789cc1fa5b6e36"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-180815",
+      "main_validation_limit": "156项单测、54项浏览器测试和补充独立复核支持评分；原生流程未完成终审，补充GLM审查420秒超时，未交付。截图网关模拟，gpt-5.5只是标签。",
+      "intervention_qualification": null
+    },
+    {
+      "issue": 180379,
+      "topic": "agent.wait 与父任务答案文本一致性",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 6974.064,
+      "active_hms": "1:56:14",
+      "observed_container_runs": 55,
+      "observed_container_seconds": 378.523,
+      "candidate_sha": "e68aa31c7902c7c0fff9fa7e1561a61a66d659dc",
+      "human_intervention": true,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 4,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "2414ee58a2b80b0aaa9cc46f4ff4bdac9fe68a4e",
+      "workflow_phase": "delivery",
+      "outcome_audit": {
+        "path": "independent-semantic-audit-180379-e68aa31c.json",
+        "sha256": "8e690e088a8882d27df5dd5721414f27bf35be2e372ac87e79a9d9a7ecafdaa0"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-180379",
+      "main_validation_limit": "双角色77项原生与22项补充测试；Codex恢复协调和补强验证导致保守自主指标排除，业务修复由Claude Code/GLM完成；未全量CI或交付。",
+      "intervention_qualification": "Conservative unattended exclusion: external Codex coordinator added targeted type/frozen regression gates and versioned recovery; Claude Code/GLM alone edited target source. This is not an unchanged-release unattended run. No literal human target code edits are asserted."
+    },
+    {
+      "issue": 183389,
+      "topic": "提升为顶层会话后的忙碌状态",
+      "outcome": "already_fixed",
+      "points": 0,
+      "active_seconds": 24026.426,
+      "active_hms": "6:40:26",
+      "observed_container_runs": 37,
+      "observed_container_seconds": 7108.045,
+      "candidate_sha": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "human_intervention": false,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 0,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "4bfdf6e771f8e4b1529d9f9247e47820e07bcefd",
+      "workflow_phase": "reproduce",
+      "outcome_audit": {
+        "path": "independent-183389-standalone-fixed-baseline-audit.json",
+        "sha256": "aceee3fc159bad1c7dff11fd6f3e9c0bfc3e0e5b1e345a62049fab453485a70b"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-183389",
+      "main_validation_limit": "固定基线两次3072 MiB行为断言正确，未获得修复分。原始退出86保留；独立外层监控归因于esbuild辅助进程并确认退出和容器清理。",
+      "intervention_qualification": null
+    },
+    {
+      "issue": 186914,
+      "topic": "Slack 延迟回复的顶层/线程路由",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 10655.047,
+      "active_hms": "2:57:35",
+      "observed_container_runs": 54,
+      "observed_container_seconds": 967.199,
+      "candidate_sha": "3d224b8112704b0986bbd2c02f90c857fda56880",
+      "human_intervention": false,
+      "conservative_autonomy_credit": true,
+      "iterations_recorded": 3,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "2414ee58a2b80b0aaa9cc46f4ff4bdac9fe68a4e",
+      "workflow_phase": "delivery",
+      "outcome_audit": {
+        "path": "independent-final-audit-186914-3d224b81-score-schema.json",
+        "sha256": "e16d27fde458d7b3a0eede9475b7a93c1075f591b6a26cd943be140435b4726e"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-186914",
+      "main_validation_limit": "路由回放、模拟Gateway ACK/wait/peer及实际SDK到本地HTTP对端；没有真实Slack或完整模型回合，不能外推真实端到端渠道集成。",
+      "intervention_qualification": null
+    },
+    {
+      "issue": 185317,
+      "topic": "子任务模型策略拒绝的修复提示",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 14920.13885724893,
+      "active_hms": "4:08:40",
+      "observed_container_runs": 99,
+      "observed_container_seconds": 3859.833,
+      "candidate_sha": "fe500a554267f7e0f47bc37632806ba028acd167",
+      "human_intervention": true,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 5,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "2414ee58a2b80b0aaa9cc46f4ff4bdac9fe68a4e",
+      "workflow_phase": "delivery",
+      "outcome_audit": {
+        "path": "independent-final-audit-185317-fe500-score-schema.json",
+        "sha256": "d2e3895a62bfc557ddb5c4f821a0efb8b39f2aa238e3af49e71244c02a1aab3f"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-185317",
+      "main_validation_limit": "真实spawn/session/registry配模拟Gateway ACK；没有在线模型推理或全量CI。补充旧例、策略和metadata检查保留原条件。",
+      "intervention_qualification": null
+    },
+    {
+      "issue": 183700,
+      "topic": "Doctor 检查跨会话记忆插件可用性",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 11347.691,
+      "active_hms": "3:09:08",
+      "observed_container_runs": 74,
+      "observed_container_seconds": 573.724,
+      "candidate_sha": "17eb39237d5cad53c06f21639611bc90da4234f7",
+      "human_intervention": true,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 6,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "2414ee58a2b80b0aaa9cc46f4ff4bdac9fe68a4e",
+      "workflow_phase": "delivery",
+      "outcome_audit": {
+        "path": "independent-final-audit-183700-17eb3923-score-schema.json",
+        "sha256": "07143f5d8ed37d823632d37bee3f7c9882f0f2403474624845fccccf1b554b0e"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-183700",
+      "main_validation_limit": "实际collector/loader与Doctor CLI；36叶只读发现遮蔽不等于实际卸载/在线Gateway/供应商链路。外部冻结测试补回产品测试丢失的metadata断言。",
+      "intervention_qualification": "Codex coordinator supplied frozen additional verification, versioned recovery and independent evidence collection. Target business-source changes authored by native Claude Code/GLM; conservatively excluded from unattended score."
+    },
+    {
+      "issue": 159790,
+      "topic": "UI 测试重复加载 Lit",
+      "outcome": "unreproduced",
+      "points": 0,
+      "active_seconds": 445.989,
+      "active_hms": "0:07:26",
+      "observed_container_runs": 2,
+      "observed_container_seconds": 17.505,
+      "candidate_sha": "54710b123fe94a2139930c1d7c038e7623345a5e",
+      "human_intervention": false,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 0,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "effc347df42f45037dad0a4bbe2a2cb7e53d363a",
+      "workflow_phase": "plan",
+      "outcome_audit": {
+        "path": "diagnostic-159790-fixed-base-focused-ui/adjudication-addendum.json",
+        "sha256": "9594cc1d04e91aaf0b13f1ffbcbb39e28c5d8e2d03fb5bd6a4057950aadc8ae2"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-159790",
+      "main_validation_limit": "固定Linux共享配置15项通过且无Lit警告；隔离配置未选择目标测试并退出1。历史macOS环境未重建，未复现、计0分。",
+      "intervention_qualification": null
+    },
+    {
+      "issue": 185079,
+      "topic": "纯图片历史消息的恢复上下文投影",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 10116.253999999999,
+      "active_hms": "2:48:36",
+      "observed_container_runs": 56,
+      "observed_container_seconds": 1886.01,
+      "candidate_sha": "a2fc0d904e4affeab7dc06bf2bca40784d2a6bac",
+      "human_intervention": true,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 4,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "2414ee58a2b80b0aaa9cc46f4ff4bdac9fe68a4e",
+      "workflow_phase": "delivery",
+      "outcome_audit": {
+        "path": "independent-semantic-audit-185079-a2fc0d90.json",
+        "sha256": "5f18504fc68e39b440deb0b75280bd81474d5706a20410c9606bd8b613c56b0a"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-185079",
+      "main_validation_limit": "真实SQLite复现、双角色150项及冻结控制。定向类型检查基线/候选同报既有TS2561，不属于类型检查通过或全量CI通过。",
+      "intervention_qualification": "External Codex coordinator recovery and stronger frozen independent verification; target business fixes authored by Claude Code/GLM. Conservative exclusion from unattended metric."
+    },
+    {
+      "issue": 185534,
+      "topic": "Gemini 参数转换与本地输入校验",
+      "outcome": "solved",
+      "points": 10,
+      "active_seconds": 5985.066000000001,
+      "active_hms": "1:39:45",
+      "observed_container_runs": 18,
+      "observed_container_seconds": 175.192,
+      "candidate_sha": "aa14e9d51a3eee458a2eb94915d0dceb98e35636",
+      "human_intervention": true,
+      "conservative_autonomy_credit": false,
+      "iterations_recorded": 2,
+      "tokens": null,
+      "cost": null,
+      "execution_workbench_commit": "2414ee58a2b80b0aaa9cc46f4ff4bdac9fe68a4e",
+      "workflow_phase": "delivery",
+      "outcome_audit": {
+        "path": "independent-semantic-audit-185534-aa14e9d5.json",
+        "sha256": "e3f8aa5293be9924ea485af0a3c657aff407af49849f75312562da63a1f7ffe0"
+      },
+      "evidence_directory": "tasks/benchmark-v1-20261101/results/issue-185534",
+      "main_validation_limit": "离线运行与生成声明验证；没有在线Gemini和Code Mode guest执行。Codex终止越界find子进程被保守计为干预，未编辑目标业务源码。",
+      "intervention_qualification": {
+        "actor": "Codex coordinator",
+        "kind": "external_runtime_intervention",
+        "reason": "Conservatively excluded from unattended metric: coordinator terminated only the out-of-workspace find child; no target source edit or model restart.",
+        "evidence": "case-185534-host-search-intervention.json",
+        "sha256": "b532c4797d6b73ed7246bd4cb1fc4e699919ff45515c1e59e0fc947b4b230b98",
+        "prior_case": "case-185534-before-intervention-qualification.json",
+        "prior_case_sha256": "f393788575d5709628d5b5eaf489bc99326c8b65373450c9b46421a49cf29073"
+      }
+    }
+  ],
+  "warnings": [
+    "run.json case #185534 notes retain the older text Ten-case run remains incomplete; structured run_status=completed and final snapshot supersede that stale note.",
+    "Recorded iterations are not homogeneous independent trials or evidence of first-attempt success.",
+    "Baseline/candidate red-green comparisons identify target-code behavior change, not the causal contribution of iBoard as a harness.",
+    "The orchestration harness evolved during the experiment; root effc347 is the initial version, not a constant released treatment."
+  ]
+}

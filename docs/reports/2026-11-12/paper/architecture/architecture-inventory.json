@@ -1,0 +1,775 @@
+{
+  "date": "2026-11-12",
+  "product_definition": "iBoard 是面向自动化产品开发的 Agent Harness 工作台，将用户指定的需求或故障组织为实现、隔离验证、证据审查和 PR 交付。",
+  "evidence_cutoff": "2026-11-07 experiment records; repository public skeleton effc347",
+  "current_components": [
+    {
+      "id": "A01",
+      "type": "external",
+      "label": "需求 / 故障输入",
+      "sublabel": "指定 Issue · 描述 · 截图 · 日志",
+      "pos": [
+        370,
+        45
+      ],
+      "size": [
+        240,
+        76
+      ],
+      "sources": [
+        {
+          "path": "workbench/start.py",
+          "line": 144
+        }
+      ],
+      "tag": "用户指定任务"
+    },
+    {
+      "id": "A02",
+      "type": "backend",
+      "label": "任务协议与阶段控制",
+      "sublabel": "需求 → 实现；故障 → 先复现",
+      "pos": [
+        370,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "sources": [
+        {
+          "path": "workbench/autopilot.py",
+          "line": 652
+        },
+        {
+          "path": "workbench/workflow.py",
+          "line": 274
+        },
+        {
+          "path": ".claude-plugin/plugin.json"
+        }
+      ],
+      "tag": "Python · 局部实现"
+    },
+    {
+      "id": "A03",
+      "type": "backend",
+      "label": "Claude Code 执行器",
+      "sublabel": "受限工具 · 实现 / 修复代码",
+      "pos": [
+        30,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "sources": [
+        {
+          "path": "model/claude_glm.py",
+          "line": 58
+        },
+        {
+          "path": "model/claude_glm.py",
+          "line": 76
+        }
+      ],
+      "tag": "已验证调用"
+    },
+    {
+      "id": "A04",
+      "type": "cloud",
+      "label": "GLM 模型服务",
+      "sublabel": "CLI 兼容端点 · 审查 / 视觉 API",
+      "pos": [
+        30,
+        445
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "sources": [
+        {
+          "path": "model/claude_glm.py",
+          "line": 50
+        },
+        {
+          "path": "model/glm_review.py",
+          "line": 13
+        },
+        {
+          "path": "model/glm_vision.py",
+          "line": 20
+        }
+      ],
+      "tag": "已验证调用"
+    },
+    {
+      "id": "A05",
+      "type": "security",
+      "label": "Docker 目标验证",
+      "sublabel": "OpenClaw · 基线 / 候选 · 断网",
+      "pos": [
+        370,
+        445
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "sources": [
+        {
+          "path": "runner/sandbox.py",
+          "line": 151
+        },
+        {
+          "path": "workbench/workflow.py",
+          "line": 64
+        },
+        {
+          "path": "workbench/workflow.py",
+          "line": 166
+        }
+      ],
+      "tag": "隔离目标程序"
+    },
+    {
+      "id": "A06",
+      "type": "database",
+      "label": "任务状态与证据",
+      "sublabel": "提交 · 验收摘要 · 日志 · 截图",
+      "pos": [
+        370,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "sources": [
+        {
+          "path": "workbench/workflow.py",
+          "line": 349
+        }
+      ],
+      "tag": "本地文件存储"
+    },
+    {
+      "id": "A07",
+      "type": "backend",
+      "label": "独立复验与终审",
+      "sublabel": "按需求 / 故障契约核对证据",
+      "pos": [
+        710,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "sources": [
+        {
+          "path": "workbench/autopilot.py",
+          "line": 344
+        },
+        {
+          "path": "workbench/local_gate.py",
+          "line": 178
+        },
+        {
+          "path": "agents/verifier.md"
+        }
+      ],
+      "tag": "恢复与大差异受限"
+    },
+    {
+      "id": "A08",
+      "type": "external",
+      "label": "GitHub PR 交付",
+      "sublabel": "创建 PR · 检查后合并个人 main",
+      "pos": [
+        710,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "sources": [
+        {
+          "path": "workbench/delivery.py"
+        },
+        {
+          "path": "workbench/publish.py"
+        },
+        {
+          "path": "workbench/local_gate.py"
+        }
+      ],
+      "tag": "SQLite 试点走通"
+    },
+    {
+      "id": "A10",
+      "type": "database",
+      "label": "固定十题故障集",
+      "sublabel": "同一基线 · 每题独立候选",
+      "pos": [
+        1050,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "仅故障样本"
+    },
+    {
+      "id": "A11",
+      "type": "backend",
+      "label": "补充审定与评分",
+      "sublabel": "2 + 4 + 2 + 2 · 总分 80/100",
+      "pos": [
+        1050,
+        445
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "本地实验流程"
+    },
+    {
+      "id": "A12",
+      "type": "database",
+      "label": "按题证据归档",
+      "sublabel": "复现 / 验证关闭 / 测试结果",
+      "pos": [
+        1050,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "目录名不代表关单"
+    },
+    {
+      "id": "A09",
+      "type": "external",
+      "label": "外部协调与恢复",
+      "sublabel": "Codex 协调 · 本地恢复修改",
+      "pos": [
+        30,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "实验仍有介入"
+    }
+  ],
+  "current_relations": [
+    {
+      "id": "C01",
+      "from": "A01",
+      "to": "A02",
+      "label": "冻结输入",
+      "variant": "default",
+      "labelAt": [
+        490,
+        135
+      ]
+    },
+    {
+      "id": "C02",
+      "from": "A02",
+      "to": "A03",
+      "label": "生成补丁",
+      "variant": "default"
+    },
+    {
+      "id": "C03",
+      "from": "A03",
+      "to": "A04",
+      "label": "HTTPS 推理",
+      "variant": "default",
+      "labelAt": [
+        150,
+        329
+      ]
+    },
+    {
+      "id": "C04",
+      "from": "A02",
+      "to": "A05",
+      "label": "复现与候选验证",
+      "variant": "default",
+      "labelAt": [
+        490,
+        329
+      ]
+    },
+    {
+      "id": "C05",
+      "from": "A05",
+      "to": "A06",
+      "label": "执行证据",
+      "variant": "dashed",
+      "labelAt": [
+        490,
+        539
+      ]
+    },
+    {
+      "id": "C06",
+      "from": "A06",
+      "to": "A07",
+      "label": "提交与证据绑定",
+      "variant": "dashed",
+      "labelAt": [
+        660,
+        742
+      ]
+    },
+    {
+      "id": "C07",
+      "from": "A07",
+      "to": "A08",
+      "label": "验收后交付",
+      "variant": "default"
+    },
+    {
+      "id": "C08",
+      "from": "A10",
+      "to": "A11",
+      "label": "固定评分规则",
+      "variant": "dashed",
+      "labelAt": [
+        1170,
+        329
+      ]
+    },
+    {
+      "id": "C09",
+      "from": "A07",
+      "to": "A11",
+      "label": "原生证据供本地审定",
+      "variant": "dashed"
+    },
+    {
+      "id": "C10",
+      "from": "A11",
+      "to": "A12",
+      "label": "按题组织结果",
+      "variant": "dashed",
+      "labelAt": [
+        1170,
+        539
+      ]
+    },
+    {
+      "id": "C11",
+      "from": "A09",
+      "to": "A02",
+      "label": "明确恢复入口",
+      "variant": "emphasis"
+    },
+    {
+      "id": "C12",
+      "from": "A02",
+      "to": "A06",
+      "label": "状态读写",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "right",
+      "via": [
+        [
+          660,
+          275
+        ],
+        [
+          660,
+          695
+        ]
+      ]
+    },
+    {
+      "id": "C13",
+      "from": "A02",
+      "to": "A04",
+      "label": "直接 HTTP 审查／视觉",
+      "variant": "default",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [
+        [
+          350,
+          275
+        ],
+        [
+          350,
+          380
+        ],
+        [
+          150,
+          380
+        ]
+      ],
+      "labelAt": [
+        245,
+        380
+      ]
+    }
+  ],
+  "proposed_components": [
+    {
+      "id": "A01",
+      "type": "external",
+      "label": "需求 / 故障输入",
+      "sublabel": "保留 · 用户指定任务与材料",
+      "pos": [
+        370,
+        45
+      ],
+      "size": [
+        240,
+        76
+      ],
+      "tag": "保留"
+    },
+    {
+      "id": "A02",
+      "type": "backend",
+      "label": "任务协议与项目适配",
+      "sublabel": "调整 · 验收契约与项目规则分离",
+      "pos": [
+        370,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 优先阶段"
+    },
+    {
+      "id": "A03",
+      "type": "backend",
+      "label": "Claude Code 执行器",
+      "sublabel": "调整 · 错误分类与真实用量回执",
+      "pos": [
+        30,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 优先阶段"
+    },
+    {
+      "id": "A04",
+      "type": "cloud",
+      "label": "GLM 模型服务",
+      "sublabel": "保留 · CLI / 审查 / 视觉接口",
+      "pos": [
+        30,
+        445
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "保留"
+    },
+    {
+      "id": "A05",
+      "type": "security",
+      "label": "可迁移目标验证",
+      "sublabel": "调整 · 环境契约与资源配置",
+      "pos": [
+        370,
+        445
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 第二阶段"
+    },
+    {
+      "id": "A06",
+      "type": "database",
+      "label": "一致状态与证据账",
+      "sublabel": "调整 · 修订身份 · 检查点 · 终态",
+      "pos": [
+        370,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 优先阶段"
+    },
+    {
+      "id": "A07",
+      "type": "backend",
+      "label": "有界独立审查",
+      "sublabel": "调整 · 分项审查 · 完整覆盖清单",
+      "pos": [
+        710,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 优先阶段"
+    },
+    {
+      "id": "A08",
+      "type": "external",
+      "label": "GitHub PR 交付",
+      "sublabel": "保留 · 门禁与远端结果核对",
+      "pos": [
+        710,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "保留"
+    },
+    {
+      "id": "A10",
+      "type": "database",
+      "label": "需求 + 故障评测集",
+      "sublabel": "扩展 · 新需求任务与未见故障",
+      "pos": [
+        1050,
+        235
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 第二阶段"
+    },
+    {
+      "id": "A11",
+      "type": "backend",
+      "label": "分层完成指标",
+      "sublabel": "功能验收 / 流程完成 / PR 交付",
+      "pos": [
+        1050,
+        445
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 第二阶段"
+    },
+    {
+      "id": "A12",
+      "type": "database",
+      "label": "自动证据归档",
+      "sublabel": "调整 · 可迁移路径 · 报告生成",
+      "pos": [
+        1050,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 第二阶段"
+    },
+    {
+      "id": "A09",
+      "type": "external",
+      "label": "恢复与停止控制",
+      "sublabel": "新增 · 按检查点恢复 / 拒绝重试",
+      "pos": [
+        30,
+        655
+      ],
+      "size": [
+        240,
+        80
+      ],
+      "tag": "建议 · 优先阶段"
+    }
+  ],
+  "proposed_relations": [
+    {
+      "id": "C01",
+      "from": "A01",
+      "to": "A02",
+      "label": "冻结输入",
+      "variant": "default",
+      "labelAt": [
+        490,
+        135
+      ]
+    },
+    {
+      "id": "C02",
+      "from": "A02",
+      "to": "A03",
+      "label": "生成补丁",
+      "variant": "default"
+    },
+    {
+      "id": "C03",
+      "from": "A03",
+      "to": "A04",
+      "label": "HTTPS 推理",
+      "variant": "default",
+      "labelAt": [
+        150,
+        329
+      ]
+    },
+    {
+      "id": "C04",
+      "from": "A02",
+      "to": "A05",
+      "label": "复现与候选验证",
+      "variant": "default",
+      "labelAt": [
+        490,
+        329
+      ]
+    },
+    {
+      "id": "C05",
+      "from": "A05",
+      "to": "A06",
+      "label": "执行证据",
+      "variant": "dashed",
+      "labelAt": [
+        490,
+        539
+      ]
+    },
+    {
+      "id": "C06",
+      "from": "A06",
+      "to": "A07",
+      "label": "提交与证据绑定",
+      "variant": "dashed",
+      "labelAt": [
+        660,
+        742
+      ]
+    },
+    {
+      "id": "C07",
+      "from": "A07",
+      "to": "A08",
+      "label": "验收后交付",
+      "variant": "default"
+    },
+    {
+      "id": "C08",
+      "from": "A10",
+      "to": "A11",
+      "label": "固定评分规则",
+      "variant": "dashed",
+      "labelAt": [
+        1170,
+        329
+      ]
+    },
+    {
+      "id": "C09",
+      "from": "A07",
+      "to": "A11",
+      "label": "分层验收记录",
+      "variant": "dashed"
+    },
+    {
+      "id": "C10",
+      "from": "A11",
+      "to": "A12",
+      "label": "按题组织结果",
+      "variant": "dashed",
+      "labelAt": [
+        1170,
+        539
+      ]
+    },
+    {
+      "id": "C11",
+      "from": "A09",
+      "to": "A02",
+      "label": "检查点恢复 / 停止",
+      "variant": "emphasis"
+    },
+    {
+      "id": "C12",
+      "from": "A02",
+      "to": "A06",
+      "label": "状态读写",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "right",
+      "via": [
+        [
+          660,
+          275
+        ],
+        [
+          660,
+          695
+        ]
+      ]
+    },
+    {
+      "id": "C13",
+      "from": "A02",
+      "to": "A04",
+      "label": "直接 HTTP 审查／视觉",
+      "variant": "default",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [
+        [
+          350,
+          275
+        ],
+        [
+          350,
+          380
+        ],
+        [
+          150,
+          380
+        ]
+      ],
+      "labelAt": [
+        245,
+        380
+      ]
+    }
+  ],
+  "semantics": {
+    "A02": "start.py:152 accepts bug/feature; autopilot.py:767 selects reproduce for bugs and implement for features. No separate service is implied.",
+    "A07": "cli.py:247 requires feature-doc/test-result/independent-review for features; bug additionally requires reproduction and resolution. autopilot.py:943-950 checks functional documentation.",
+    "A05": "Docker isolates target execution; CLI and model service calls remain on host.",
+    "A08": "SQLite pilot PR #2 verified; ten-bug benchmark intentionally retains local candidates.",
+    "A10-A12": "Local benchmark/evaluation/organized evidence, not a feature-task production success claim.",
+    "A09": "External Codex coordination is not a built-in autonomous scheduler."
+  },
+  "limits": [
+    "Ten cases are all bug tasks; no same-scale requirement-development evaluation.",
+    "To-Be nodes are recommendations; retaining an interface does not mean new behavior is implemented.",
+    "Diagram is a component view; card text states feature/bug acceptance differences."
+  ]
+}

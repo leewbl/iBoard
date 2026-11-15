@@ -1,0 +1,67 @@
+{
+  "kind": "Manually composed paper overview, not native Archify SVG export",
+  "sources": [
+    {
+      "path": "../architecture/architecture-inventory.json",
+      "sha256": "8e841e51282201b97d6d2058128ad0fa7dd9467124ca3f4971bb7e17c4485aa2"
+    },
+    {
+      "path": "../architecture/iboard_as_is.archify.json",
+      "sha256": "09792212e9af274f7b5922ea5a27562a162dd1aaa320691114ac9eff5a6806ca"
+    },
+    {
+      "path": "../architecture/iboard_to_be.archify.json",
+      "sha256": "374b3600e0d4df1fad8477ba75d8e1e0579747466abc90827a089024db3a787a"
+    }
+  ],
+  "component_mapping": {
+    "task_input": [
+      "A01"
+    ],
+    "protocol": [
+      "A02"
+    ],
+    "host_model_group": [
+      "A03",
+      "A04"
+    ],
+    "docker": [
+      "A05"
+    ],
+    "evidence": [
+      "A06"
+    ],
+    "review": [
+      "A07"
+    ],
+    "PR": [
+      "A08"
+    ],
+    "bottom_scope": [
+      "A09",
+      "A10",
+      "A11",
+      "A12"
+    ]
+  },
+  "relationship_scope": "Overview preserves core control, both model-service interfaces, target isolation, evidence binding and public/local boundaries; detailed 13-edge topology remains in Archify. Bottom experimental/planned functions are grouped rather than claiming a new service.",
+  "minimum_font_size": 20,
+  "frozen_original_figures": {
+    "fig1-harness-overview.png": "9c08181c27d74cc9d35fd8f0f5cb34dbe8cb054b66555873fdb1809395bd2b3d",
+    "fig3-evidence-chain.svg": "043fa9e1d1b6f966dacd949a0757b230c89a4157c13603328ed652b0a7c12df4",
+    "fig3-evidence-chain.png": "4fecfc7d47a06c0cf470b59714e97ce522748e86ed225239ffa0c24dff777b10",
+    "fig1-harness-overview.svg": "fe6e0ff658e334cccfa2cd38ae318649edf8e9bdc9e0989ddcb933822fc02dea",
+    "fig2-benchmark-results.png": "6d277b673989e2ffe5aa246f55134c3ef07d37aa84814cf2e32f4958a6c8ab87",
+    "fig2-benchmark-results.svg": "26cad0e29850543e90602bc15fd2835745b1e3360bdb4a0863a57158d30059fd"
+  },
+  "outputs": {
+    "fig4-current-architecture.svg": "64e0516a2df5504c277db6a66a68ea5f78d88cbdc68fecd6cd57be1a7ee31306",
+    "fig5-target-architecture.svg": "4c809b00e9eb2136ec53851ab87909d4a88d5f093c2f9e8843190b94190a5c6c"
+  },
+  "validation": {
+    "minimum_font_size_verified": 20,
+    "original_figures_unchanged": true,
+    "browser_geometry": "architecture-render-check.json",
+    "visual_review": "architecture-visual-verdict.json"
+  }
+}

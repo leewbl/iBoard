@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="830" viewBox="0 0 1440 830" role="img" aria-labelledby="title"><title id="title">功能验收与流程交付：两个独立研究的证据链</title><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 1 L7 4.5 L0 8" fill="none" stroke="#3b6bdc" stroke-width="1.5"/></marker><pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M-2 2L2-2 M0 8L8 0 M6 10L10 6" stroke="#dde3ec" stroke-width="1"/></pattern></defs><rect width="1440" height="830" fill="white"/><g font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" fill="#162a4b">
+<text x="40" y="42" fill="#7757c9" font-size="26" font-weight="650" text-anchor="start">(a) #180815：功能证据成立，工作台自身流程未完成</text>
+<text x="40" y="78" fill="#61718c" font-size="20" font-weight="400" text-anchor="start">十题评测中的一题 · 补充验收候选 72ef11ed · 取得10分</text>
+<rect x="40" y="103" width="1360" height="270" rx="16" fill="#fcfaff" stroke="#a896d8" stroke-width="1.6" stroke-dasharray="7 6"/>
+<rect x="65" y="142" width="290" height="141" rx="12" fill="#edf3fc" stroke="#3b6bdc" stroke-width="1.6"/>
+<g transform="translate(83,161)" fill="none" stroke="#3b6bdc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 1H18L26 9V31H4Z M18 1V9H26 M9 16H21 M9 22H21"/></g>
+<text x="128" y="185" fill="#3b6bdc" font-size="22" font-weight="600" text-anchor="start">原版本故障</text>
+<text x="210.0" y="228" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">键盘无法按预期</text>
+<text x="210.0" y="255" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">跳过记录直达输入框</text>
+<rect x="405" y="142" width="290" height="141" rx="12" fill="#eaf6ef" stroke="#278a71" stroke-width="1.6"/>
+<g transform="translate(423,161)" fill="none" stroke="#278a71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="16" cy="16" r="14"/><path d="M8 16L14 22L24 10"/></g>
+<text x="468" y="185" fill="#278a71" font-size="22" font-weight="600" text-anchor="start">补充候选验证</text>
+<text x="550.0" y="228" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">156项单测 + 54项浏览器测试</text>
+<text x="550.0" y="255" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">独立补充审计支持冻结验收</text>
+<rect x="745" y="142" width="290" height="141" rx="12" fill="#fff4e5" stroke="#c57a28" stroke-width="1.6"/>
+<g transform="translate(763,161)" fill="none" stroke="#c57a28" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="16" cy="16" r="14"/><path d="M16 7V16L23 20"/></g>
+<text x="808" y="185" fill="#c57a28" font-size="22" font-weight="600" text-anchor="start">终审未完成</text>
+<text x="890.0" y="228" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">补充 GLM 审查约420秒超时</text>
+<text x="890.0" y="255" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">没有有效审查输出</text>
+<rect x="1085" y="142" width="290" height="141" rx="12" fill="#f1ecfa" stroke="#7757c9" stroke-width="1.6"/>
+<g transform="translate(1103,161)" fill="none" stroke="#7757c9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="8" cy="6" r="4"/><circle cx="8" cy="27" r="4"/><circle cx="26" cy="10" r="4"/><path d="M8 10V23 M8 21C8 15 26 19 26 14"/></g>
+<text x="1148" y="185" fill="#7757c9" font-size="22" font-weight="600" text-anchor="start">尚未交付</text>
+<text x="1230.0" y="228" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">未发布或合并该题 PR</text>
+<text x="1230.0" y="255" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">不能记为工作台自主完成</text>
+<path d="M362 212H394" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M702 212H734" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1042 212H1074" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="720" y="331" fill="#7757c9" font-size="19" font-weight="400" text-anchor="middle">原流程候选 dd0e84b9 与补充候选不同：补充验收通过不能写回为原流程终审通过。</text>
+<text x="40" y="432" fill="#278a71" font-size="26" font-weight="650" text-anchor="start">(b) SQLite #186875：接纳已有补丁后，实际走通独立验收与 PR 合并</text>
+<text x="40" y="468" fill="#61718c" font-size="20" font-weight="400" text-anchor="start">另一个交付试点 · 与十题评分分开报告 · 采用不同内存配置</text>
+<rect x="40" y="493" width="1360" height="254" rx="16" fill="#f9fdfa" stroke="#7ab49b" stroke-width="1.6" stroke-dasharray="7 6"/>
+<rect x="65" y="530" width="290" height="141" rx="12" fill="#edf3fc" stroke="#3b6bdc" stroke-width="1.6"/>
+<g transform="translate(83,549)" fill="none" stroke="#3b6bdc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 1H18L26 9V31H4Z M18 1V9H26 M9 16H21 M9 22H21"/></g>
+<text x="128" y="573" fill="#3b6bdc" font-size="22" font-weight="600" text-anchor="start">真实锁竞争</text>
+<text x="210.0" y="616" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">接纳已有候选补丁</text>
+<text x="210.0" y="643" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">原版本在锁竞争下启动失败</text>
+<rect x="405" y="530" width="290" height="141" rx="12" fill="#eaf6ef" stroke="#278a71" stroke-width="1.6"/>
+<g transform="translate(423,549)" fill="none" stroke="#278a71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="16" cy="16" r="14"/><path d="M8 16L14 22L24 10"/></g>
+<text x="468" y="573" fill="#278a71" font-size="22" font-weight="600" text-anchor="start">候选恢复行为</text>
+<text x="550.0" y="616" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">短暂占锁：第3次尝试恢复</text>
+<text x="550.0" y="643" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">持续占锁：4次后明确失败</text>
+<rect x="745" y="530" width="290" height="141" rx="12" fill="#eaf6ef" stroke="#278a71" stroke-width="1.6"/>
+<g transform="translate(763,549)" fill="none" stroke="#278a71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M16 1L29 6V16Q29 26 16 32Q3 26 3 16V6Z M9 16L14 21L24 11"/></g>
+<text x="808" y="573" fill="#278a71" font-size="22" font-weight="600" text-anchor="start">独立复验与终审</text>
+<text x="890.0" y="616" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">两名验证角色各109项用例</text>
+<text x="890.0" y="643" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">工作台自身终审通过</text>
+<rect x="1085" y="530" width="290" height="141" rx="12" fill="#edf3fc" stroke="#3b6bdc" stroke-width="1.6"/>
+<g transform="translate(1103,549)" fill="none" stroke="#3b6bdc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="8" cy="6" r="4"/><circle cx="8" cy="27" r="4"/><circle cx="26" cy="10" r="4"/><path d="M8 10V23 M8 21C8 15 26 19 26 14"/></g>
+<text x="1148" y="573" fill="#3b6bdc" font-size="22" font-weight="600" text-anchor="start">真实 PR 交付</text>
+<text x="1230.0" y="616" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">个人仓库 PR #2 已合并</text>
+<text x="1230.0" y="643" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">上游 Issue 未关闭</text>
+<path d="M362 600H394" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M702 600H734" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1042 600H1074" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="720" y="719" fill="#278a71" font-size="19" font-weight="400" text-anchor="middle">该次运行验证已有候选的复验和交付，不表示从零生成新补丁；不计入十题80分。</text>
+<text x="40" y="795" fill="#162a4b" font-size="20" font-weight="550" text-anchor="start">分析含义：应分别记录功能验收、工作台流程完成和实际交付，避免将其中一个结果替代另外两个。</text>
+</g></svg>

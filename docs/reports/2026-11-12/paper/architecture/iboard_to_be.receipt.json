@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "deliver",
+  "type": "architecture",
+  "input": "iboard_to_be.archify.json",
+  "output": "iboard_to_be.archify.html",
+  "specification": {
+    "sha256": "374b3600e0d4df1fad8477ba75d8e1e0579747466abc90827a089024db3a787a",
+    "bytes": 7436
+  },
+  "artifact": {
+    "sha256": "d23d0fe77d391c1ee098a820c3180459a91740982f14a9f1e4889e33a48466bc",
+    "bytes": 816752
+  },
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  }
+}

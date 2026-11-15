@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "deliver",
+  "type": "architecture",
+  "input": "iboard_as_is.archify.json",
+  "output": "iboard_as_is.archify.html",
+  "specification": {
+    "sha256": "09792212e9af274f7b5922ea5a27562a162dd1aaa320691114ac9eff5a6806ca",
+    "bytes": 9270
+  },
+  "artifact": {
+    "sha256": "6351c09716ae55183d016479b0666c374644cbb9c39df4d548d9fc30d4021dd3",
+    "bytes": 819773
+  },
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  },
+  "evidence": {
+    "verified": true,
+    "repository": "https://github.com/leewbl/iBoard",
+    "revision": "effc347df42f45037dad0a4bbe2a2cb7e53d363a",
+    "references": 19
+  }
+}

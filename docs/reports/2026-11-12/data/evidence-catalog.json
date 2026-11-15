@@ -1,0 +1,252 @@
+{
+  "published_on": "2026-11-15",
+  "experiment_materials_as_of": "2026-11-07",
+  "records": [
+    {
+      "path": "tasks/benchmark-v1-20261101/benchmark-final-score-time-evidence.json",
+      "sha256": "572bbc9e9d59f2eea46d330a6e8c229c7653f21bfb9b9c9269b7269f74a4b322",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/README.md",
+      "sha256": "b933f2a4517340a5fba07de2e613e3447dd61d6ef282483d25badeb325dc0648",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/independent-final-audit-180815-72ef11ed-lint-repair-v3.json",
+      "sha256": "afffaac40922daac2e11d2fe1ea02b0f5403313922dc9d49e3789cc1fa5b6e36",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/180815-lint-repair-v3/model-final-review/model-result.json",
+      "sha256": "118f33fce5220747fe3fb6d0a977b9079b1c9d977afd75bd24b322a1aad84c1a",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-149994/README.md",
+      "sha256": "8803a575b2b982ddd08c5583b8c2693803f58f485b13e193eac43c9752b51055",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180815/README.md",
+      "sha256": "f1ae316af4a5a2a4bef1345af3980d2b8fa0688aaedc966abcd1e82136eb2dfb",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180379/README.md",
+      "sha256": "4c913bfa324f492528b51ed9b2a03ec07a5db0f49a03646bf0b4d95297ff2453",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183389/README.md",
+      "sha256": "502f80ea98522d2f1ff39b1a43b0da1034b0bc073ad1c5d75ab38a2278a2ef9b",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-186914/README.md",
+      "sha256": "32c970c78cf1b96a4bc413cefcbce8ba1d0962260b5901c030da8f85eeb8cfe4",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185317/README.md",
+      "sha256": "433ad2f2d1e3bd0d182b00d5a4d513559d4a28770e98b013ac85648780bab2c0",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183700/README.md",
+      "sha256": "071d1f387e907d92c485277417cf9814456a54eacb68d203bcde61fa7bba96a7",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-159790/README.md",
+      "sha256": "0b5d084ed97ec7158d94650bec4c5d7b1ba564d051c8c09ccb8cc5e4dc2d5fc5",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185079/README.md",
+      "sha256": "9fe34784d5389c715a87b8710f85ef3e543cfe1be32e9a292a72b904b7d5a13b",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185534/README.md",
+      "sha256": "450669cfe4bcd791c525729f47e008b630fc5ea818da18469d0897c740fed841",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/run.json",
+      "sha256": "27b3a2f3f29dbdd8ca73131b1691227a6dd4d93b896a79bbce414e5668ea8cac",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-149994/复现/README.md",
+      "sha256": "37c3ecd6f563c7cdcbfbe37a9c2df594f88d328e0bc77019b83aafb15756a37a",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-149994/验证关闭/README.md",
+      "sha256": "b95d32e9ab27e10322b6540e391ba86af2c92b8b1fbf517f6731921657316e27",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-149994/测试结果/README.md",
+      "sha256": "45e29f8ef00195c6aa58b5a4393512e6c89fc71fa40dc633a564449edca5c2e4",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180815/复现/README.md",
+      "sha256": "16af9f0138ce5d0c5dee8e089894f59808dd20fc26581f42ef64da3e9bb89f16",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180815/验证关闭/README.md",
+      "sha256": "18a4b8d3f97c4e9844eb592bc0ca0c7578a50fd9395a02f7fda2863ac0a5b198",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180815/测试结果/README.md",
+      "sha256": "f47a0544dc89bcda44da143fd0a87e4549ca89639deed8507bd6941d756ccc03",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180379/复现/README.md",
+      "sha256": "4768bf5f73d0da6333bce392a4254270f5bce3f989bf8f0fddc93e6641b93ade",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180379/验证关闭/README.md",
+      "sha256": "01b1674092097f6de81d8b42a86a4581c3dc6cb89ac0f53e07e3ec2b0f02e046",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-180379/测试结果/README.md",
+      "sha256": "dd2cbd0bb811743a70d955896e63202405441360f85f56904b4a80ce369bc3d4",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183389/复现/README.md",
+      "sha256": "f08f6f977a249c3814c901e5cbf7dff32f88f17da4c1e8b97935e9d8208760ac",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183389/验证关闭/README.md",
+      "sha256": "a279689e1a0ad2386b08c9e858996f1262404865e1f3c93432a4d0116d388552",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183389/测试结果/README.md",
+      "sha256": "f6bcbb4a219b81b6824b07d59f6156877743b3e0d9150febcfda2ab7333cfc7f",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-186914/复现/README.md",
+      "sha256": "9d8337ee3b46c26f74991baf8b1620f7f79ea8f133e48784af9a1554f2c916a2",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-186914/验证关闭/README.md",
+      "sha256": "6f1cda9b8b742365cad5b3217421047057e3ddbfe26b6cd44d81e15bece005ab",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-186914/测试结果/README.md",
+      "sha256": "6f203589d28179dd5ef7b46cf6bf50e0a3bce3e2587de1cc6deaf64cb877febe",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185317/复现/README.md",
+      "sha256": "5d8293b6fde6fba152a79e52068b3231c9571707eb2f9c8ec34dd9d451e4643c",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185317/验证关闭/README.md",
+      "sha256": "c9e06ec7731ae4ae302a74a6ecc4b702d7836aeff04a52920e2bac8255a69183",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185317/测试结果/README.md",
+      "sha256": "7a79630aee77a78fe80c407d4c4f4f72cb37766ddd77df7fba6f998480df02c3",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183700/复现/README.md",
+      "sha256": "f38011fdf73da0b4f9fdab67c0523f31df0012ac46d19b2192bba38aa3bc1b3f",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183700/验证关闭/README.md",
+      "sha256": "f0a3139c66eb2856dafc8301f9ebb58a39955c0173548d57063dd9feeed7bea8",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-183700/测试结果/README.md",
+      "sha256": "bbf6212413f215f27e883442ce8836ebb304c71e959866574c6673172ff4286f",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-159790/复现/README.md",
+      "sha256": "01faa94e8f9e4ff984b92cdd3563edb18772a308c12f6695c9da9c3e36d9016b",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-159790/验证关闭/README.md",
+      "sha256": "929a300abc7301bbec48f4f185435547703c1f3dcd24893d8367520b50f0f169",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-159790/测试结果/README.md",
+      "sha256": "04da99835f60f9137bac77d580ac9ed17a1c25d1c738bf5f4199961b87da79bb",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185079/复现/README.md",
+      "sha256": "3f1194d5661c0ee5db6f3f490c12eca9199ec6a1842cc2c5a7bc72888976cdcf",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185079/验证关闭/README.md",
+      "sha256": "41d639e9419213f23f33c59200a534437a64f6234f4ab1a2bfbc66dbd4f99b83",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185079/测试结果/README.md",
+      "sha256": "0228b452b4e54c7234ed0f4493708ec0aa7a21f63035fd0ef3a7eb9fd94be2c4",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185534/复现/README.md",
+      "sha256": "2a1c9a74735465b17059a510e0b1e50a3c005f1064bfd96940883bbc42b8a16d",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185534/验证关闭/README.md",
+      "sha256": "6e8f83e3584cf1b5d0390318e4e0fe9e7c7dc949b85285c42d30619bed400b36",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/results/issue-185534/测试结果/README.md",
+      "sha256": "e32ee701f0170cffcc80096bb5a544bd6a2f63c3980b956339390c132ea858dd",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/benchmark-v1-20261101/collect_scores.py",
+      "sha256": "3d817b109cf47d9e825c5a426305f9684b0313ede4f368b4f901dc97ef3e1219",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/openclaw-186875-gate/task.json",
+      "sha256": "613aac25179dec905d1b60c6f94f4b97110c1c3194dff3e00c51b806183dbfc3",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/openclaw-186875-gate/autopilot.json",
+      "sha256": "b5e8016728e2c534954dc688968d00c18c411ad94699c454770f091e0ea7b9f7",
+      "availability": "local-only; original runtime evidence not included"
+    },
+    {
+      "path": "tasks/openclaw-186875-gate/input-stage.json",
+      "sha256": "13fca6952fcb9565065495421dd19403134117635e96500bbb72d05f4f40587a",
+      "availability": "local-only; original runtime evidence not included"
+    }
+  ],
+  "note": "Catalog identifies source records and does not prove behavioral acceptance."
+}

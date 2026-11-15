@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title"><title id="title">iBoard：面向自动化产品开发的 Harness 概念框架</title><defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 1 L7 4.5 L0 8" fill="none" stroke="#3b6bdc" stroke-width="1.5"/></marker><pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M-2 2L2-2 M0 8L8 0 M6 10L10 6" stroke="#dde3ec" stroke-width="1"/></pattern></defs><rect width="1440" height="820" fill="white"/><g font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" fill="#162a4b">
+<text x="40" y="40" fill="#162a4b" font-size="27" font-weight="650" text-anchor="start">(a) 面向自动化产品开发的 Harness 工作台</text>
+<text x="40" y="73" fill="#61718c" font-size="20" font-weight="400" text-anchor="start">把需求或故障描述组织为可执行、可验证、可追查的工程交付过程。</text>
+<rect x="275" y="105" width="910" height="290" rx="20" fill="#f9fbff" stroke="#3b6bdc" stroke-width="1.6" stroke-dasharray="7 6"/>
+<text x="300" y="139" fill="#3b6bdc" font-size="20" font-weight="600" text-anchor="start">iBoard 任务控制</text>
+<text x="1160" y="139" fill="#61718c" font-size="18" font-weight="400" text-anchor="end">单机 · 顺序执行</text>
+<rect x="40" y="190" width="200" height="132" rx="12" fill="#f1f5fe" stroke="#3b6bdc" stroke-width="1.6"/>
+<g transform="translate(54,207)" fill="none" stroke="#3b6bdc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4 1H18L26 9V31H4Z M18 1V9H26 M9 16H21 M9 22H21"/></g>
+<text x="96" y="229" fill="#3b6bdc" font-size="22" font-weight="600" text-anchor="start">输入任务</text>
+<text x="140.0" y="270" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">需求 / GitHub Issue</text>
+<text x="140.0" y="297" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">截图 · 日志 · 文档</text>
+<rect x="300" y="190" width="240" height="132" rx="12" fill="#eeeafb" stroke="#7757c9" stroke-width="1.6"/>
+<g transform="translate(314,207)" fill="none" stroke="#7757c9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M1 9L16 1L31 9L16 17Z M1 17L16 25L31 17 M1 24L16 32L31 24"/></g>
+<text x="356" y="229" fill="#7757c9" font-size="22" font-weight="600" text-anchor="start">定义与编排</text>
+<text x="420.0" y="270" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">固定验收条件</text>
+<text x="420.0" y="297" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">阶段 · 工作区 · 预算</text>
+<rect x="590" y="190" width="250" height="132" rx="12" fill="#eaf5ee" stroke="#278a71" stroke-width="1.6"/>
+<g transform="translate(604,207)" fill="none" stroke="#278a71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M10 6L1 16L10 26 M22 6L31 16L22 26 M19 3L13 29"/></g>
+<text x="646" y="229" fill="#278a71" font-size="22" font-weight="600" text-anchor="start">代码实现</text>
+<text x="715.0" y="270" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">Claude Code → GLM</text>
+<text x="715.0" y="297" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">代码 · 测试 · 功能文档</text>
+<rect x="890" y="190" width="270" height="132" rx="12" fill="#eaf2fd" stroke="#3b6bdc" stroke-width="1.6"/>
+<g transform="translate(904,207)" fill="none" stroke="#3b6bdc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<path d="M16 1L29 6V16Q29 26 16 32Q3 26 3 16V6Z M9 16L14 21L24 11"/></g>
+<text x="946" y="229" fill="#3b6bdc" font-size="22" font-weight="600" text-anchor="start">验证与独立审查</text>
+<text x="1025.0" y="270" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">Docker 内运行目标代码</text>
+<text x="1025.0" y="297" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">日志 · 测试 · 截图证据</text>
+<rect x="1220" y="190" width="180" height="132" rx="12" fill="#fff4e5" stroke="#c57a28" stroke-width="1.6"/>
+<g transform="translate(1234,207)" fill="none" stroke="#c57a28" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="8" cy="6" r="4"/><circle cx="8" cy="27" r="4"/><circle cx="26" cy="10" r="4"/><path d="M8 10V23 M8 21C8 15 26 19 26 14"/></g>
+<text x="1276" y="229" fill="#c57a28" font-size="22" font-weight="600" text-anchor="start">交付产物</text>
+<text x="1310.0" y="270" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">PR + 验证证据</text>
+<text x="1310.0" y="297" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">风险说明</text>
+<path d="M245 255H292" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M545 255H582" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M845 255H882" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1165 255H1212" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1025 329V368H715V330" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<text x="870" y="359" fill="#3b6bdc" font-size="18" font-weight="400" text-anchor="middle">不通过时，在预算内修复与重验</text>
+<text x="40" y="432" fill="#7757c9" font-size="24" font-weight="600" text-anchor="start">(b) 需求验收：证明所需功能已经实现</text>
+<text x="750" y="432" fill="#278a71" font-size="24" font-weight="600" text-anchor="start">(c) 故障验收：证明原问题已经消失</text>
+<rect x="40" y="454" width="650" height="252" rx="15" fill="#fcfaff" stroke="#7757c9" stroke-width="1.6" stroke-dasharray="6 5"/>
+<rect x="750" y="454" width="650" height="252" rx="15" fill="#f9fdfa" stroke="#278a71" stroke-width="1.6" stroke-dasharray="6 5"/>
+<rect x="60" y="508" width="170" height="122" rx="10" fill="#f2ecfc" stroke="#c2b3e5" stroke-width="1.6"/>
+<text x="145" y="541" fill="#7757c9" font-size="22" font-weight="600" text-anchor="middle">功能说明</text>
+<text x="145" y="578" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">用户行为</text>
+<text x="145" y="604" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">边界与约束</text>
+<rect x="280" y="508" width="170" height="122" rx="10" fill="#f2ecfc" stroke="#c2b3e5" stroke-width="1.6"/>
+<text x="365" y="541" fill="#7757c9" font-size="22" font-weight="600" text-anchor="middle">验收用例</text>
+<text x="365" y="578" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">预期结果</text>
+<text x="365" y="604" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">可重复步骤</text>
+<rect x="500" y="508" width="170" height="122" rx="10" fill="#f2ecfc" stroke="#c2b3e5" stroke-width="1.6"/>
+<text x="585" y="541" fill="#7757c9" font-size="22" font-weight="600" text-anchor="middle">行为证据</text>
+<text x="585" y="578" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">测试结果</text>
+<text x="585" y="604" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">截图 / 响应 / 日志</text>
+<path d="M236 569H271" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M456 569H491" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="772" y="508" width="138" height="122" rx="10" fill="#edf7ef" stroke="#9eccb5" stroke-width="1.6"/>
+<text x="841" y="543" fill="#278a71" font-size="21" font-weight="600" text-anchor="middle">基线复现</text>
+<text x="841" y="585" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">原版本失败</text>
+<rect x="928" y="508" width="138" height="122" rx="10" fill="#edf7ef" stroke="#9eccb5" stroke-width="1.6"/>
+<text x="997" y="543" fill="#278a71" font-size="21" font-weight="600" text-anchor="middle">候选验证</text>
+<text x="997" y="585" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">相同检查通过</text>
+<rect x="1084" y="508" width="138" height="122" rx="10" fill="#edf7ef" stroke="#9eccb5" stroke-width="1.6"/>
+<text x="1153" y="543" fill="#278a71" font-size="21" font-weight="600" text-anchor="middle">回归测试</text>
+<text x="1153" y="585" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">保护既有行为</text>
+<rect x="1240" y="508" width="138" height="122" rx="10" fill="#edf7ef" stroke="#9eccb5" stroke-width="1.6"/>
+<text x="1309" y="543" fill="#278a71" font-size="21" font-weight="600" text-anchor="middle">独立复验</text>
+<text x="1309" y="585" fill="#61718c" font-size="18" font-weight="400" text-anchor="middle">证据支持结论</text>
+<path d="M913 569H922" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1069 569H1078" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1225 569H1234" fill="none" stroke="#3b6bdc" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="365" y="679" fill="#7757c9" font-size="18" font-weight="400" text-anchor="middle">已具备需求验收入口；本轮没有专门的新需求任务集</text>
+<text x="1075" y="679" fill="#278a71" font-size="18" font-weight="400" text-anchor="middle">十题故障评测是先行验证切片，不能替代需求开发实验</text>
+<path d="M40 738L1400 738" stroke="#d9e4f7" stroke-width="1"/>
+<text x="40" y="770" fill="#61718c" font-size="18" font-weight="400" text-anchor="start">概念框架，不表示所有分支均已充分验证。Docker 隔离目标测试；宿主机运行 Claude Code 和模型调用。</text>
+<text x="40" y="797" fill="#61718c" font-size="18" font-weight="400" text-anchor="start">PR 交付受独立验收和任务策略约束；本轮十题保留本地，SQLite 试点另行验证真实合并。</text>
+</g></svg>

@@ -1,0 +1,129 @@
+{
+  "status": "pass",
+  "published_on": "2026-11-15",
+  "report_revision": "2026-11-12",
+  "experiment_materials_as_of": "2026-11-07",
+  "scope": "Documentation package; no model/product experiments rerun",
+  "score": 80,
+  "accepted_cases": 8,
+  "total_cases": 10,
+  "local_link_occurrences_checked": 254,
+  "archify": [
+    {
+      "diagram": "iboard_as_is",
+      "showcase_checks": 9,
+      "errors": 0,
+      "warnings": 0,
+      "specification_sha256": "09792212e9af274f7b5922ea5a27562a162dd1aaa320691114ac9eff5a6806ca",
+      "html_sha256": "6351c09716ae55183d016479b0666c374644cbb9c39df4d548d9fc30d4021dd3"
+    },
+    {
+      "diagram": "iboard_to_be",
+      "showcase_checks": 9,
+      "errors": 0,
+      "warnings": 0,
+      "specification_sha256": "374b3600e0d4df1fad8477ba75d8e1e0579747466abc90827a089024db3a787a",
+      "html_sha256": "d23d0fe77d391c1ee098a820c3180459a91740982f14a9f1e4889e33a48466bc"
+    }
+  ],
+  "browser": {
+    "status": "pass",
+    "checks": [
+      {
+        "width": 1440,
+        "scrollWidth": 1440,
+        "h2": [
+          "01问题定义",
+          "02问题分析",
+          "03解决方案",
+          "04实验结果",
+          "05结果分析",
+          "06下一步改进验证"
+        ],
+        "figures": 5,
+        "brokenImages": [],
+        "tables": 2,
+        "abstractParagraphs": 2
+      },
+      {
+        "width": 1920,
+        "scrollWidth": 1920,
+        "h2": [
+          "01问题定义",
+          "02问题分析",
+          "03解决方案",
+          "04实验结果",
+          "05结果分析",
+          "06下一步改进验证"
+        ],
+        "figures": 5,
+        "brokenImages": [],
+        "tables": 2,
+        "abstractParagraphs": 2
+      },
+      {
+        "width": 390,
+        "scrollWidth": 390,
+        "h2": [
+          "01问题定义",
+          "02问题分析",
+          "03解决方案",
+          "04实验结果",
+          "05结果分析",
+          "06下一步改进验证"
+        ],
+        "figures": 5,
+        "brokenImages": [],
+        "tables": 2,
+        "abstractParagraphs": 2
+      }
+    ],
+    "htmlSha256": "ffb8cecb34ca961237fbab9eccac4a93740ead0e1edd64ab12c4184f121b4d11"
+  },
+  "artifacts": {
+    "README.md": "3f6e03c88a4ba43aad9032cd47378c0095739d3679aaefbc21be090b97197781",
+    ".gitignore": "0fc36df9b6afd9c3b3d93970697975d5b3bfa0cf3c397557563a65c1e63c4bed",
+    "iboard-experiment-report.html": "ffb8cecb34ca961237fbab9eccac4a93740ead0e1edd64ab12c4184f121b4d11",
+    "iboard-experiment-report.pdf": "4ee9fbbba0db35623beb53c9831970e69869bec400553721a51a59a4c6de8b8f",
+    "technical-notes.md": "c5ce4dfa5ef073d58404a62e2e71d3cba1f6c70a1ad009e4bf7a0a787b2bea3e",
+    "technical-notes.html": "692311b88912f84bedfe2ec1a4570beffef6e8af1c345dd4504bd667002c341d",
+    "iboard-experiment-report.md": "0db2a047c8b12581b90c542d0ba9e5672d487f42f62313308736205fd49a75c3",
+    "paper/paper.css": "2ee7dd697550f0aed70bfe701878ef025824ef75168eb307b91914d1de516d0f",
+    "paper/README.md": "30ecb60e60f3d246111311356a74bfe140ad1a9c752005ab898014b55e51eb78",
+    "paper/render-paper.mjs": "e34dedc410ab10e084c3af31f583f303389ba44a1a41c84596c0d21aeca3a70d",
+    "paper/runtime.mjs": "e4b5594754497d3456aecc36af1919033887843b734abe3f312100a5a4d187a5",
+    "paper/check-publication.py": "31d827f61780e9d539324f39b43ded014d097af4fdb1e2e4abedc9c167b37f38",
+    "paper/check-paper.mjs": "9b6f1a4961d607af36fba7621cc7c3760b53daa0cf681fd0b59f56d781394fec",
+    "paper/architecture/iboard_as_is.archify.json": "09792212e9af274f7b5922ea5a27562a162dd1aaa320691114ac9eff5a6806ca",
+    "paper/architecture/iboard_to_be.archify.json": "374b3600e0d4df1fad8477ba75d8e1e0579747466abc90827a089024db3a787a",
+    "paper/architecture/architecture-inventory.json": "8e841e51282201b97d6d2058128ad0fa7dd9467124ca3f4971bb7e17c4485aa2",
+    "paper/architecture/iboard_as_is.png": "98e08c784723e9974b2f241c42be843beb8e774ec2ddf674db97ef71d69af050",
+    "paper/architecture/iboard_to_be.png": "35374982f340b440cd29fde3cc0aff4881cf5c69c34abdb3a2c5151515bed24e",
+    "paper/architecture/iboard_as_is.receipt.json": "3484c8c08cca0e60516265805a9c901668ff942cddc30c7052cbd5ec8668b68d",
+    "paper/architecture/iboard_to_be.archify.html": "d23d0fe77d391c1ee098a820c3180459a91740982f14a9f1e4889e33a48466bc",
+    "paper/architecture/iboard_to_be.receipt.json": "e582812869ad09a068a3aa06b3bdf8117a62f2f139094dfa1f15449237b65f62",
+    "paper/architecture/iboard_as_is.archify.html": "6351c09716ae55183d016479b0666c374644cbb9c39df4d548d9fc30d4021dd3",
+    "paper/architecture/iboard_to_be.svg": "4d816d68045371a3d076aecf48c078801b0643292cb86ef6ead4d6e153957178",
+    "paper/architecture/iboard_as_is.svg": "a1092c71166db7dcdc61780fa35376c7a99cd324a328794b93a184b269503d1b",
+    "paper/figures/fig1-harness-overview.png": "9c08181c27d74cc9d35fd8f0f5cb34dbe8cb054b66555873fdb1809395bd2b3d",
+    "paper/figures/generate_figures.py": "30a50aa456575873cd6c44bb71ab8c0947b4f81be166b144058772dee1d50311",
+    "paper/figures/fig4-current-architecture.svg": "64e0516a2df5504c277db6a66a68ea5f78d88cbdc68fecd6cd57be1a7ee31306",
+    "paper/figures/fig3-evidence-chain.svg": "043fa9e1d1b6f966dacd949a0757b230c89a4157c13603328ed652b0a7c12df4",
+    "paper/figures/fig4-current-architecture.png": "6d6681eeb30374fed97c54e59c8aa6c9abb305e89fe26ec2f32ce88a5010b373",
+    "paper/figures/fig3-evidence-chain.png": "4fecfc7d47a06c0cf470b59714e97ce522748e86ed225239ffa0c24dff777b10",
+    "paper/figures/fig1-harness-overview.svg": "fe6e0ff658e334cccfa2cd38ae318649edf8e9bdc9e0989ddcb933822fc02dea",
+    "paper/figures/figure-data.json": "023f996ee47ab8fea3a5aafdb1cbcb7818a4c207dd31317cb89e947d7c039ba4",
+    "paper/figures/generate_architecture_overviews.py": "e8b7d9b748d469732866e3c8272beaf5affcf32722ef4f33f0a74e6736f4bfa7",
+    "paper/figures/fig5-target-architecture.png": "997a7be251280c30be79acddf9630940640cd9e0e2158b5284a18089b72e1ec6",
+    "paper/figures/architecture-overview-data.json": "62fa58829de7a859701377e8bea57e058dca2e7c695e47c865a12d7bbef31d89",
+    "paper/figures/fig2-benchmark-results.png": "6d277b673989e2ffe5aa246f55134c3ef07d37aa84814cf2e32f4958a6c8ab87",
+    "paper/figures/fig2-benchmark-results.svg": "26cad0e29850543e90602bc15fd2835745b1e3360bdb4a0863a57158d30059fd",
+    "paper/figures/fig5-target-architecture.svg": "4c809b00e9eb2136ec53851ab87909d4a88d5f093c2f9e8843190b94190a5c6c",
+    "data/metrics.json": "f97aa5c21fea076e12539354e5d184ce505f357774bd4d4d46548989a1a00f20",
+    "data/evidence-index.md": "e8acf7cf7768b08b4f0925cb7dc7c562e959288eae1219579c6bf447871bdfdb",
+    "data/external-sources.md": "6dbaf770a19970c4a727248e2502fc72cfc096057cd56ba3ec8f3e8d38d37d78",
+    "data/evidence-catalog.json": "8d671d3bb71ac41a3475dfd958e8831733794939f101843572b4bd06eda6bda1",
+    "data/architecture-diagnosis.md": "8c1dd74470058baf92498d743cf2956c9185cfb8f1c063c80206f74b650814a8"
+  },
+  "errors": []
+}

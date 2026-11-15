@@ -1,0 +1,95 @@
+{
+  "source": "../../data/metrics.json",
+  "sha256": "f97aa5c21fea076e12539354e5d184ce505f357774bd4d4d46548989a1a00f20",
+  "figures": {
+    "fig3-evidence-chain.svg": {
+      "sha256": "043fa9e1d1b6f966dacd949a0757b230c89a4157c13603328ed652b0a7c12df4",
+      "vector": true,
+      "text_editable": true
+    },
+    "fig1-harness-overview.svg": {
+      "sha256": "fe6e0ff658e334cccfa2cd38ae318649edf8e9bdc9e0989ddcb933822fc02dea",
+      "vector": true,
+      "text_editable": true
+    },
+    "fig2-benchmark-results.svg": {
+      "sha256": "26cad0e29850543e90602bc15fd2835745b1e3360bdb4a0863a57158d30059fd",
+      "vector": true,
+      "text_editable": true
+    }
+  },
+  "score_breakdown_note": "The frozen scoring maximum is 2+4+2+2. Accepted cases have 10/10, therefore every stage receives its full award; zero-score cases receive no repair credit. This visualization does not assert that zero-credit cases failed every executed test.",
+  "effective_time_note": "Per-case active monotonic elapsed includes preparation and discarded/interrupted calls; user pause excluded via recorded segments. Overall wall time includes queue/environment preparation and user pause, reported separately.",
+  "case_values": [
+    {
+      "issue": 149994,
+      "points": 10,
+      "active_seconds": 14137.317827458766,
+      "active_hms": "3:55:37",
+      "outcome": "solved"
+    },
+    {
+      "issue": 180815,
+      "points": 10,
+      "active_seconds": 31072.34860325086,
+      "active_hms": "8:37:52",
+      "outcome": "solved"
+    },
+    {
+      "issue": 180379,
+      "points": 10,
+      "active_seconds": 6974.064,
+      "active_hms": "1:56:14",
+      "outcome": "solved"
+    },
+    {
+      "issue": 183389,
+      "points": 0,
+      "active_seconds": 24026.426,
+      "active_hms": "6:40:26",
+      "outcome": "already_fixed"
+    },
+    {
+      "issue": 186914,
+      "points": 10,
+      "active_seconds": 10655.047,
+      "active_hms": "2:57:35",
+      "outcome": "solved"
+    },
+    {
+      "issue": 185317,
+      "points": 10,
+      "active_seconds": 14920.13885724893,
+      "active_hms": "4:08:40",
+      "outcome": "solved"
+    },
+    {
+      "issue": 183700,
+      "points": 10,
+      "active_seconds": 11347.691,
+      "active_hms": "3:09:08",
+      "outcome": "solved"
+    },
+    {
+      "issue": 159790,
+      "points": 0,
+      "active_seconds": 445.989,
+      "active_hms": "0:07:26",
+      "outcome": "unreproduced"
+    },
+    {
+      "issue": 185079,
+      "points": 10,
+      "active_seconds": 10116.253999999999,
+      "active_hms": "2:48:36",
+      "outcome": "solved"
+    },
+    {
+      "issue": 185534,
+      "points": 10,
+      "active_seconds": 5985.066000000001,
+      "active_hms": "1:39:45",
+      "outcome": "solved"
+    }
+  ]
+}
