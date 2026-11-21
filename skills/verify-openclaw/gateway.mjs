@@ -100,7 +100,7 @@ try {
       if (error.code !== 'ENOENT') throw error;
       return '';
     });
-    emit('gateway-log', { tail: contents.slice(-16000) });
+    emit('gateway-log', { tail: contents.slice(-4000) });
   } finally {
     await rm(root, { recursive: true, force: true });
     emit('cleanup', { exit: result ?? null, scratchRemoved: true });

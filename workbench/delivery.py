@@ -718,6 +718,11 @@ def guarded_merge(task_path, repo, number, github=None):
     if issues:
         raise DeliveryError('local evidence gate failed: ' + '; '.join(issues))
     _independent_verification(data, head)
+    from workbench import verify_openclaw
+    try:
+        verify_openclaw.require(data, head, repo)
+    except verify_openclaw.GatewayGateError as error:
+        raise DeliveryError(str(error)) from error
     if local_policy:
         from workbench import local_gate
         try:

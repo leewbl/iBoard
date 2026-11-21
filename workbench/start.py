@@ -145,7 +145,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           iterations, seconds, image, pr_repo=None, tasks_root, workspaces_root,
           source_mode='workspace', candidate_image=None, build_source_image=False, memory_mb=2048,
           log_files=(), screenshot_files=(), required_ci_workflows=None, ci_skip_policy=None, ci_skip_reason=None,
-          implementer='glm-implementer', prepare=workflow.prepare, run=autopilot.run,
+          publish_only=False, implementer='glm-implementer', prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
         raise StartError('provide exactly one issue file or GitHub issue URL')
@@ -160,10 +160,12 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
     if pr_repo and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pr_repo):
         raise StartError('invalid personal fork name')
     try:
-        required_ci_workflows = workflow.validate_required_ci_workflows(required_ci_workflows, required=bool(pr_repo))
+        required_ci_workflows = workflow.validate_required_ci_workflows(required_ci_workflows, required=bool(pr_repo) and not publish_only)
         ci_skip_policy = workflow.validate_ci_skip_policy(ci_skip_policy, ci_skip_reason, required_ci_workflows)
     except workflow.WorkflowError as error:
         raise StartError(str(error)) from error
+    if publish_only and not pr_repo:
+        raise StartError('publish-only requires a personal fork')
     if source_mode not in ('workspace', 'image') or type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
         raise StartError('invalid source mode or memory limit')
     if (candidate_image and source_mode != 'image') or (build_source_image and (source_mode != 'image' or candidate_image)):
@@ -235,6 +237,10 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
     try:
         with task_lock(task):
             try:
+                if publish_only:
+                    data = cli.read(task)
+                    data['publish_only'] = True
+                    cli.write(task, data)
                 request.write_text(issue_with_logs, encoding='utf-8')
                 request.chmod(0o600)
                 if logs or screenshots:
@@ -299,6 +305,7 @@ def main(argv=None):
     parser.add_argument('--seconds', type=int, required=True)
     parser.add_argument('--image', required=True)
     parser.add_argument('--pr-repo')
+    parser.add_argument('--publish-only', action='store_true', help='create the verified PR without waiting for CI or merging')
     parser.add_argument('--required-ci-workflow', action='append', dest='required_ci_workflows',
                         help='GitHub Actions workflow name required for delivery; may be repeated')
     parser.add_argument('--ci-skip-policy', choices=cli.CI_SKIP_POLICIES)
@@ -317,7 +324,7 @@ def main(argv=None):
                    workspaces_root=args.workspaces_root, source_mode=args.source_mode,
                    candidate_image=args.candidate_image, build_source_image=args.build_source_image,
                    memory_mb=args.memory_mb, log_files=args.log_file, screenshot_files=args.screenshot,
-                   required_ci_workflows=args.required_ci_workflows,
+                   required_ci_workflows=args.required_ci_workflows, publish_only=args.publish_only,
                    ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
