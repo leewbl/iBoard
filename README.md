@@ -73,7 +73,7 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 ### OpenClaw 可复用验证
 
-[verify-openclaw](skills/verify-openclaw/SKILL.md) 提供断网 Docker 验证入口：从空状态启动 Gateway，检查就绪，通过实际 CLI 查询健康状态，保留日志与清理报告，再由独立验证者复跑。该入口独立于自动交付门禁，可用于需求验收和提交 PR 前复查。
+[verify-openclaw](skills/verify-openclaw/SKILL.md) 提供断网 Docker 验证入口：从空状态启动 Gateway，检查就绪，通过实际 CLI 查询健康状态，保留日志与清理报告，再由独立验证者复跑。OpenClaw 任务创建或更新 PR 前必须有同一候选镜像的两份通过报告，并通过独立审查；失败时不会推送候选或创建 PR。启动交付任务时使用 `--source-mode image --build-source-image`。仅需要提交 PR 时加 `--publish-only`；自动合并仍走原有交付门禁。
 
 ### 工作台插件原型
 

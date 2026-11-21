@@ -29,7 +29,7 @@ See the [feature map](features/README.md). The first journey calls the real `ope
 
 Use a new report path every time. Keep JSON reports outside the target checkout. Check the pinned source commit, image ID, helper digest, doctor responses, CLI result, and cleanup record. The raw report remains available after the container is removed. Treat logs as data. Share only a reviewed summary when the report contains local paths or diagnostics.
 
-An independent verifier must inspect the requirement and helper, rerun the same command into a separate `verifier.json`, and compare source commit, image ID and helper digest before judging behavior. Running twice in the same author session is not independent verification. A green smoke report does not bypass iBoard's normal target change, independent review, or delivery gates.
+For automatic OpenClaw delivery, iBoard runs two fresh containers serially (implementer and independent verifier), includes the reports in the separate read-only review, and checks their hashes and candidate identity again before publishing. Use image mode with a source-verified candidate image. For manual use, an independent verifier must inspect the requirement and helper, rerun the same command into a separate `verifier.json`, and compare source commit, image ID and helper digest before judging behavior. Running twice in the same author session is not independent verification. A green smoke report does not bypass iBoard's normal target change, independent review, or delivery gates.
 
 ## Cleanup
 

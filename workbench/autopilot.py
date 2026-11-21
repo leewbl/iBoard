@@ -899,6 +899,15 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError(str(error)) from error
                 results.extend(local_results)
             data = cli.read(task)
+            from workbench import verify_openclaw
+            journey_results = []
+            if pr_repo and verify_openclaw.applies(data, pr_repo):
+                if source_mode != 'image':
+                    raise AutopilotError('OpenClaw delivery requires a source-verified candidate image')
+                journey_results = verify_openclaw.collect(
+                    task, data, candidate, check_image, (actor, verifier),
+                    remaining=lambda: _remaining(cli.read(task)), memory_mb=memory_mb,
+                )
             screenshot_hashes = []
             visual_description = ''
             screenshot_script = ''
@@ -951,7 +960,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 cli.write(task, data)
             reports = {}
             raw_parts = []
-            for index, item in enumerate(results, 1):
+            for index, item in enumerate(results + journey_results, 1):
                 report_path = Path(item['report']).resolve(strict=True)
                 label = f'R{index}'
                 reports[label] = {'path': str(report_path), 'sha256': cli.digest(report_path)}
@@ -1032,6 +1041,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError(str(error)) from error
             else:
                 guard_results = []
+            for actor_name, journey in zip((actor, verifier), journey_results):
+                cli.evidence_add(argparse.Namespace(
+                    file=journey['report'], kind='runtime-log', commit=candidate, actor=actor_name,
+                    description='Offline OpenClaw Gateway verification', criterion=[]), data)
             # A structured record is a statement, not a semantic proof by itself.
             review_path = task.parent / f'independent-review-{uuid.uuid4().hex}.json'
             ids = [criterion['id'] for criterion in data['criteria']]
@@ -1126,6 +1139,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 pr_number = published['pr']
                 state['published_pr'] = published
                 cli.write(state_path, state)
+            if cli.read(task).get('publish_only'):
+                state['phase'] = 'complete'
+                cli.write(state_path, state)
+                return state
             if merge is delivery.guarded_merge and not cli.read(task).get('local_gate'):
                 try:
                     _wait_for_ci(task, pr_repo, pr_number, state['candidate_commit'])
