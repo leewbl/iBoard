@@ -558,8 +558,8 @@ def publish(task_path, repo, github=None):
     head, issues = cli.gate(data, 'HEAD')
     if issues:
         raise PublishError('local evidence gate failed: ' + '; '.join(issues))
-    delivery._independent_verification(data, head)
     _require_gateway(data, head, repo)
+    delivery._independent_verification(data, head, destination=repo)
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -636,8 +636,8 @@ def republish(task_path, repo, number, previous_head, github=None):
     head, issues = cli.gate(data, 'HEAD')
     if issues or head == previous_head:
         raise PublishError('new candidate is not independently verified or unchanged')
-    delivery._independent_verification(data, head)
     _require_gateway(data, head, repo)
+    delivery._independent_verification(data, head, destination=repo)
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -678,7 +678,7 @@ def republish(task_path, repo, number, previous_head, github=None):
     checked_head, issues = cli.gate(checked, head)
     if issues or checked_head != head:
         raise PublishError('evidence or budget changed before PR description update')
-    delivery._independent_verification(checked, head)
+    delivery._independent_verification(checked, head, destination=repo)
     if _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
         raise PublishError('published evidence changed during PR update')
     if pulls[0].get('body') != body:

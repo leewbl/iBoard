@@ -12,11 +12,12 @@ class GatewayGateTests(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
         self.head = 'a' * 40
-        self.data = {'id': 'pilot', 'implementer': 'builder', 'evidence': [], 'criteria': [{'id': 'x', 'text': 'x'}]}
+        self.data = {'id': 'pilot', 'base_commit': 'b' * 40, 'implementer': 'builder', 'evidence': [], 'criteria': [{'id': 'x', 'text': 'x'}]}
         self.destination = 'owner/myopenclaw'
 
     def reports(self, *, same_workspace=False, fail=False, report_head=None):
         refs = {}
+        self.data['evidence'] = []
         for actor in ('builder', 'independent-verifier'):
             path = self.root / (actor + '.json')
             image = 'sha256:' + 'f' * 64
@@ -25,16 +26,19 @@ class GatewayGateTests(unittest.TestCase):
                 'image': image, 'verified_image_id': image,
                 'helper_sha256': cli.digest(verify_openclaw.SKILL / 'gateway.mjs'),
                 'passed': not fail, 'exit_code': int(fail), 'cleanup_confirmed': True, 'timed_out': False,
+                'container_created': True, 'source_root': '/app', 'command': ['node', '/workspace/gateway.mjs'],
                 'workspace_read_only': True, 'workspace': 'shared' if same_workspace else actor,
                 'stdout': 'VERIFY_OPENCLAW_GATEWAY_HEALTH_PASS\n',
             })
             refs[actor] = {'path': str(path), 'sha256': cli.digest(path)}
+            self.data['evidence'].append({'kind': 'runtime-log', 'commit': self.head, 'actor': actor, **refs[actor]})
         path = self.root / 'review.json'
-        cli.write(path, {'verdict': 'PASS', 'candidate_commit': self.head, 'reports': refs})
-        self.data['evidence'] = [{
+        cli.write(path, {'verdict': 'PASS', 'candidate_commit': self.head, 'reports': refs,
+                         'baseline_commit': self.data['base_commit'], 'criterion_digest': cli.criteria_digest(self.data)})
+        self.data['evidence'].append({
             'kind': 'independent-review', 'actor': 'independent-verifier', 'commit': self.head,
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
-        }]
+        })
 
     def test_publish_and_republish_block_before_any_github_call(self):
         github = Mock()

@@ -304,7 +304,7 @@ def _valid_screenshot(evidence, actor, commit, repo):
     return _valid_run({**evidence, 'path': report_path}, actor, 'screenshot', commit, repo)
 
 
-def _independent_verification(data, target):
+def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
     desired_ids = {criterion['id'] for criterion in data['criteria']}
     for item in data['evidence']:
@@ -376,6 +376,12 @@ def _independent_verification(data, target):
                     evidence.get('sha256') in hashes and _valid_screenshot(evidence, actor, target, data['repo']) and
                     any(available.get(ref) == evidence.get('execution_report') for ref in cited)
                     for evidence in data['evidence']):
+                    continue
+            if destination is not None:
+                from workbench import verify_openclaw
+                try:
+                    verify_openclaw.require(data, target, destination, review_item=item)
+                except verify_openclaw.GatewayGateError:
                     continue
             return
     raise DeliveryError('independent PASS and independent sandbox reruns are not proven')
@@ -717,7 +723,7 @@ def guarded_merge(task_path, repo, number, github=None):
     head, issues = cli.gate(data, 'HEAD')
     if issues:
         raise DeliveryError('local evidence gate failed: ' + '; '.join(issues))
-    _independent_verification(data, head)
+    _independent_verification(data, head, destination=repo)
     from workbench import verify_openclaw
     try:
         verify_openclaw.require(data, head, repo)

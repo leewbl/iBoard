@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import tempfile
@@ -76,13 +77,13 @@ def collect(task, data, head, image, actors, *, remaining, memory_mb):
     return results
 
 
-def require(data, head, destination):
+def require(data, head, destination, *, review_item=None):
     """Require two distinct, reviewed Gateway executions for the target commit."""
     if not applies(data, destination):
         return
     helper, marker = JOURNEYS['gateway-health']
     expected_helper = cli.digest(SKILL / helper)
-    for item in data['evidence']:
+    for item in data['evidence'] if review_item is None else (review_item,):
         if (item.get('superseded') or item.get('kind') != 'independent-review'
                 or item.get('commit') != head or item.get('actor') != 'independent-verifier'
                 or item.get('actor') == data['implementer']
@@ -92,20 +93,29 @@ def require(data, head, destination):
             if cli.digest(item['path']) != item.get('sha256'):
                 continue
             review = json.loads(Path(item['path']).read_text())
-            if review.get('verdict') != 'PASS' or review.get('candidate_commit') != head:
+            if (review.get('verdict') != 'PASS' or review.get('candidate_commit') != head
+                    or review.get('baseline_commit') != data['base_commit']
+                    or review.get('criterion_digest') != cli.criteria_digest(data)):
                 continue
             reports = []
             for entry in review['reports'].values():
                 if 'path' not in entry or cli.digest(entry['path']) != entry['sha256']:
                     continue
                 run = json.loads(Path(entry['path']).read_text())
+                if not any(e.get('kind') == 'runtime-log' and e.get('commit') == head
+                           and e.get('actor') == run.get('actor') and not e.get('superseded')
+                           and e.get('path') == entry['path'] and e.get('sha256') == entry['sha256']
+                           for e in data['evidence']):
+                    continue
                 if (run.get('journey') == 'gateway-health' and run.get('commit') == head
                         and run.get('helper_sha256') == expected_helper and run.get('passed') is True
                         and run.get('exit_code') == 0 and run.get('cleanup_confirmed') is True
+                        and run.get('container_created') is True and run.get('source_root') == '/app'
+                        and run.get('command') == ['node', f'/workspace/{helper}']
                         and run.get('workspace_read_only') is True and run.get('timed_out') is False
                         and not run.get('error') and marker in run.get('stdout', '').splitlines()
                         and run.get('verified_image_id') == run.get('image') and
-                        str(run.get('image')).startswith('sha256:') and run.get('workspace')):
+                        re.fullmatch(r'sha256:[0-9a-f]{64}', str(run.get('image'))) and run.get('workspace')):
                     reports.append({**run, 'sha256': entry['sha256']})
             for a in reports:
                 for b in reports:
