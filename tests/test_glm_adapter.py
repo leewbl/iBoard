@@ -42,6 +42,16 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(seen['settings']['sandbox']['allowUnsandboxedCommands'])
         self.assertIn('--restricted', seen['args'])
 
+    def test_file_tool_mode_removes_shell_from_both_tool_lists(self):
+        with patch.object(claude_glm, 'ROOT', self.root), patch.object(Path, 'home', return_value=self.root), patch.object(claude_glm.subprocess, 'Popen') as spawn:
+            spawn.return_value.communicate.return_value = ('done', '')
+            spawn.return_value.returncode = 0
+            claude_glm.execute(self.workspace, 'implement', 75, file_tools_only=True)
+            args = spawn.call_args.args[0]
+            for flag in ('--tools', '--allowedTools'):
+                self.assertEqual(args[args.index(flag) + 1], 'Read,Edit,Write,Glob,Grep')
+            self.assertEqual(spawn.return_value.communicate.call_args.kwargs['timeout'], 75)
+
     def test_rejects_untrusted_endpoint(self):
         (self.root / '.claude/settings.json').write_text(json.dumps({'env': {'ANTHROPIC_BASE_URL': 'https://example.com'}}))
         with patch.object(claude_glm, 'ROOT', self.root), patch.object(Path, 'home', return_value=self.root):
