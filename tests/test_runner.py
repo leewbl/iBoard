@@ -79,6 +79,13 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(report['container_workdir'], '/app/packages')
         self.assertEqual(report['workdir'], 'packages')
 
+    def test_read_only_workspace_has_no_writable_bind(self):
+        report = self.run_it(workspace_read_only=True)
+        args = next(args for args, _ in self.calls if args[1] == "create")
+        self.assertEqual(args.count("--mount"), 1)
+        self.assertIn(f"type=bind,src={self.workspace.resolve()},dst=/workspace,readonly", args)
+        self.assertTrue(report["workspace_read_only"])
+
     def test_other_source_roots_are_rejected_before_docker_operations(self):
         for root in ('', '/', '/tmp', '/app/../tmp', '/app/', Path('/app'), None, True):
             with self.subTest(root=root):

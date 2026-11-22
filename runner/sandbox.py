@@ -88,11 +88,13 @@ def _copy_screenshot(directory, output):
 
 
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
-                find_executable=shutil.which, screenshot_output=None, source_root="/workspace"):
+                find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
+                workspace_read_only=False):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
-    relative workdirs must still exist inside the host workspace.
+    relative workdirs must still exist inside the host workspace. Set
+    workspace_read_only when the command must not modify the mounted files.
     ``invoke`` and ``find_executable`` permit unit testing without a Docker daemon.
     """
     docker = find_executable("docker")
@@ -153,12 +155,13 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
               "--pids-limit=256", f"--memory={memory_mb}m", "--cpus=2", "--init",
               "--user", f"{os.getuid()}:{os.getgid()}",
               "--tmpfs", f"/tmp:rw,nosuid,nodev,size={TMPFS_MB}m",
-              "--mount", f"type=bind,src={source},dst=/workspace",
+              "--mount", f"type=bind,src={source},dst=/workspace" + (",readonly" if workspace_read_only else ""),
               "--workdir", container_dir, "--entrypoint", command[0], image, *command[1:]]
     started = time.monotonic()
     report = {"workspace": str(source), "image": image, "command": command,
               "workdir": str(relative), "source_root": source_root, "container_workdir": container_dir,
               "timeout_seconds": timeout, "memory_mb": memory_mb,
+              "workspace_read_only": workspace_read_only,
               "tmpfs_mb": TMPFS_MB,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
               "exit_code": None, "create_exit_code": None, "timed_out": False, "cleanup_confirmed": False}
