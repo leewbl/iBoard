@@ -416,6 +416,14 @@ def _pr_body(data, head):
             summary, excerpt = _report_summary(data, item, commit)
             body += f"- {summary}; commit `{commit}`; report SHA-256 `{item['sha256']}`\n"
             body += '\n' + '\n'.join('      ' + line for line in excerpt.splitlines()) + '\n'
+    gateway = _require_gateway(data, head, data.get('delivery_repo'))
+    if gateway:
+        author, verifier = gateway
+        body += ('\n## Offline Gateway verification\n\n'
+                 'The implementer and independent verifier used separate containers on the same source-verified '
+                 'image. Both completed startup, HTTP readiness and liveness, the real CLI health query, and cleanup.\n\n'
+                 f"- Implementer report SHA-256: `{author['sha256']}`\n"
+                 f"- Independent rerun report SHA-256: `{verifier['sha256']}`\n")
     body += '\nLog excerpts are bounded and common credentials, URLs, email addresses, and paths are redacted.\n'
     if len(body.encode('utf-8')) > 60000:
         raise PublishError('PR evidence summary exceeds the publication size limit')
@@ -522,7 +530,16 @@ class Publisher(delivery.GitHub):
             raise PublishError('PR description update failed; inspect remote before retrying')
 
 
+def _require_gateway(data, head, repo):
+    from workbench import verify_openclaw
+    try:
+        return verify_openclaw.require(data, head, repo)
+    except verify_openclaw.GatewayGateError as error:
+        raise PublishError(str(error)) from error
+
+
 def _local_remote_guard(task_path, data, head, github, repo):
+    _require_gateway(cli.read(task_path), head, repo)
     if data.get('local_gate'):
         try:
             delivery.require_local_write(task_path, data, head, github, repo)
@@ -541,7 +558,8 @@ def publish(task_path, repo, github=None):
     head, issues = cli.gate(data, 'HEAD')
     if issues:
         raise PublishError('local evidence gate failed: ' + '; '.join(issues))
-    delivery._independent_verification(data, head)
+    _require_gateway(data, head, repo)
+    delivery._independent_verification(data, head, destination=repo)
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -618,7 +636,8 @@ def republish(task_path, repo, number, previous_head, github=None):
     head, issues = cli.gate(data, 'HEAD')
     if issues or head == previous_head:
         raise PublishError('new candidate is not independently verified or unchanged')
-    delivery._independent_verification(data, head)
+    _require_gateway(data, head, repo)
+    delivery._independent_verification(data, head, destination=repo)
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -659,7 +678,7 @@ def republish(task_path, repo, number, previous_head, github=None):
     checked_head, issues = cli.gate(checked, head)
     if issues or checked_head != head:
         raise PublishError('evidence or budget changed before PR description update')
-    delivery._independent_verification(checked, head)
+    delivery._independent_verification(checked, head, destination=repo)
     if _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
         raise PublishError('published evidence changed during PR update')
     if pulls[0].get('body') != body:
