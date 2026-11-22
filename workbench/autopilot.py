@@ -391,6 +391,7 @@ def _repair_context(raw):
     for stream in ('stdout', 'stderr'):
         output = report.get(stream, '')
         if isinstance(output, str):
+            output = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output)
             # Preserve the first actionable diagnostics as well as the final summary.
             hits = [line[:400] for line in output.splitlines() if re.search(
                 r'Error|FAIL|Assertion|expected|heap|→', line, re.IGNORECASE)][:12]
