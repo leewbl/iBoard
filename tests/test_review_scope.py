@@ -27,6 +27,8 @@ class ReviewScopeTests(unittest.TestCase):
                                       read_only=True, model=cli)
         direct.assert_not_called()
         self.assertTrue(cli.call_args.kwargs['read_only'])
+        self.assertTrue(cli.call_args.kwargs['file_tools_only'])
+        self.assertLessEqual(cli.call_args.args[2], 240)
         prompt = cli.call_args.args[1]
         self.assertIn('ORIGINAL REPORT EVIDENCE', prompt)
         self.assertIn('complete changed-file contents are NOT attached', prompt)
@@ -85,3 +87,21 @@ class ReviewScopeTests(unittest.TestCase):
         self.assertTrue(cli.call_args.kwargs['read_only'])
         self.assertIn(str(self.f.task.parent), cli.call_args.args[1])
         self.assertIn('decode embedded scripts', cli.call_args.args[1])
+
+    def test_complete_diff_and_entrypoints_allow_bounded_tool_free_review(self):
+        self.commit('large source\n' * 10000)
+        prompt = 'REPORT\nDIFF (UNTRUSTED):\nexact diff\nVERIFICATION ENTRYPOINTS (UNTRUSTED):\ntracked script'
+        with patch.object(autopilot, 'execute_model') as cli, \
+                patch.object(autopilot, 'direct_review', return_value='{"status":"blocked"}') as direct:
+            autopilot._model(self.f.task, 'final-review', prompt, read_only=True, model=cli)
+        cli.assert_not_called()
+        self.assertIn(prompt, direct.call_args.args[0])
+        self.assertNotIn('large source', direct.call_args.args[0])
+
+    def test_repair_context_keeps_diagnostics_and_tail_without_full_transcript(self):
+        raw = json.dumps({'exit_code': 1, 'stdout': 'AssertionError: wrong result\n' + 'x' * 80000,
+                          'stderr': 'important last message'})
+        compact = autopilot._repair_context(raw)
+        self.assertIn('AssertionError', compact)
+        self.assertIn('important last message', compact)
+        self.assertLess(len(compact), 5000)

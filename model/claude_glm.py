@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=()):
+def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(), file_tools_only=False):
     workspace = workspace.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not prompt.strip() or not 1 <= timeout <= 86400:
         raise ValueError("a workspace, nonempty prompt and valid timeout are required")
@@ -73,9 +73,13 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
         path.write_text(json.dumps(settings), encoding="utf-8")
         path.chmod(0o600)
         tools = "Bash,Read,Glob,Grep" if read_only else "Bash,Read,Edit,Write,Glob,Grep"
+        if file_tools_only:
+            tools = tools.removeprefix("Bash,")
         cmd = ["claude", "--bare", "--restricted", "--tools", tools, "--allowedTools", tools,
                "--permission-mode", "acceptEdits", "--settings", str(path), "--strict-mcp-config",
                "--no-session-persistence", "--print"]
+        if file_tools_only:
+            cmd.extend(["--effort", "low"])
         process = subprocess.Popen(cmd, cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:

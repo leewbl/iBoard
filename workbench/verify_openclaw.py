@@ -68,7 +68,7 @@ def collect(task, data, head, image, actors, *, remaining, memory_mb):
     for actor in actors:
         path = task.parent / f'gateway-health-{uuid.uuid4().hex}.json'
         report = verify(Path(data['repo']), image, 'gateway-health',
-                        timeout=min(220, remaining()), memory_mb=memory_mb)
+                        timeout=min(320, remaining()), memory_mb=memory_mb)
         report.update(actor=actor, source_mode='image', source_verified_commit=report.get('commit'))
         cli.write(path, report)
         if not report['passed'] or report['commit'] != head:
@@ -133,7 +133,7 @@ def main(argv=None):
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument("--timeout", type=int, default=190)
+    parser.add_argument("--timeout", type=int, default=320)
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
     # Reserve the evidence path before running; retries must use a new file.

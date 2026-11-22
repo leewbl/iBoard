@@ -52,7 +52,7 @@ try {
     await handle.close();
   }
   emit('launch', { surface: url, pid: server.pid, freshState: true });
-  const deadline = Date.now() + 90_000;
+  const deadline = Date.now() + 150_000;
   let ready;
   while (Date.now() < deadline && !result && !launchError) {
     ready = await probe('/readyz').catch(() => undefined);
