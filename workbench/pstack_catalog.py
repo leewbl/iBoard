@@ -10,6 +10,7 @@ from workbench.benchmark import PSTACK_SOURCE as BENCHMARK_SOURCE
 from workbench.decisions import PSTACK_SOURCE as DECISION_SOURCE
 from workbench.hillclimb import PSTACK_SOURCE as HILLCLIMB_SOURCE
 from workbench.investigate import SOURCES as INVESTIGATION_SOURCES
+from workbench.multiphase import PSTACK_SOURCE as MULTIPHASE_SOURCE
 from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
 from workbench.project_verify import PSTACK_COMMANDS as PROJECT_VERIFICATION_COMMANDS
 from workbench.pr_watch import PSTACK_SOURCE as PR_WATCH_SOURCE
@@ -67,6 +68,8 @@ def main():
                                  if source == ARCHITECT_SOURCE else []) +
                                 (['python3 -m workbench.benchmark'] if source == BENCHMARK_SOURCE else []) +
                                 (['python3 -m workbench.hillclimb'] if source == HILLCLIMB_SOURCE else []) +
+                                (['python3 -m workbench.multiphase', 'python3 -m workbench.phase_audit']
+                                 if source == MULTIPHASE_SOURCE else []) +
                                 ([f'python3 -m workbench.project_verify {PROJECT_VERIFICATION_COMMANDS[source]}']
                                  if source in PROJECT_VERIFICATION_COMMANDS else []) +
                                 (['python3 -m workbench.project_verify discover', 'python3 -m workbench.project_triage']
