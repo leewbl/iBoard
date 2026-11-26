@@ -62,6 +62,8 @@ def main():
                                 (['python3 -m workbench.arena'] if source == ARENA_SOURCE else []) +
                                 ([f'python3 -m workbench.project_verify {PROJECT_VERIFICATION_COMMANDS[source]}']
                                  if source in PROJECT_VERIFICATION_COMMANDS else []) +
+                                (['python3 -m workbench.project_verify discover', 'python3 -m workbench.project_triage']
+                                 if PROJECT_VERIFICATION_COMMANDS.get(source) == 'maintain' else []) +
                                 ([PICKUP_SOURCES[source]] if source in PICKUP_SOURCES else [])),
         }
     print(json.dumps(result, ensure_ascii=False, indent=2))

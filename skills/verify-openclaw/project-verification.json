@@ -66,6 +66,7 @@
       "id": "skills-inspect",
       "helper": "skills-inspect.mjs",
       "marker": "VERIFY_OPENCLAW_SKILLS_INSPECT_PASS",
+      "failure_marker": "VERIFY_OPENCLAW_SKILLS_INSPECT_FAIL",
       "reach": "List available skills and inspect one named skill from a local OpenClaw terminal.",
       "drive": "Run openclaw skills list and openclaw skills info with JSON and the main agent in a disposable workspace.",
       "observe": "The list includes the eligible workspace skill. Info shows the exact metadata and SKILL.md path. An absent name exits one with a structured not-found error. Inputs are unchanged.",

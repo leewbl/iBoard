@@ -19,6 +19,7 @@ const env = {
   PATH: process.env.PATH, HOME: home, OPENCLAW_HOME: home,
   OPENCLAW_STATE_DIR: state, OPENCLAW_CONFIG_PATH: config, TMPDIR: root,
 };
+let missingFromListing = false;
 
 async function run(args, expectedExit) {
   const command = ['skills', ...args, '--agent', 'main', '--json'];
@@ -50,8 +51,14 @@ try {
 
   const listed = await run(['list'], 0);
   assert.equal(listed.result.workspaceDir, workspace, 'list resolved a different workspace');
+  assert.ok(Array.isArray(listed.result.skills), 'list did not return a skills array');
   const row = listed.result.skills.find(skill => skill.name === fixture);
-  assert.ok(row, 'list did not discover the fixture skill');
+  if (!row) {
+    assert.equal(await readFile(config, 'utf8'), configContents);
+    assert.equal(await readFile(skillFile, 'utf8'), skillContents);
+    missingFromListing = true;
+    throw new Error('observed fixture absent from list');
+  }
   assert.ok(!listed.result.skills.some(skill => skill.name === absent), 'list reported the absent skill');
   assert.equal(row.description, description);
   assert.equal(row.source, 'openclaw-workspace');
@@ -76,9 +83,17 @@ try {
     listed: { ...listed, result: { workspaceDir: listed.result.workspaceDir, skill: row } },
     details, missing, inputsUnchanged: true,
   }));
+} catch (error) {
+  if (!missingFromListing) throw error;
+  console.log(JSON.stringify({ observation: 'fixture absent from successful skills list', fixture }));
 } finally {
   await rm(root, { recursive: true, force: true });
   await assert.rejects(stat(root), { code: 'ENOENT' });
   console.log(JSON.stringify({ phase: 'cleanup', scratchRemoved: true }));
 }
-console.log('VERIFY_OPENCLAW_SKILLS_INSPECT_PASS');
+if (missingFromListing) {
+  console.log('VERIFY_OPENCLAW_SKILLS_INSPECT_FAIL');
+  process.exitCode = 1;
+} else {
+  console.log('VERIFY_OPENCLAW_SKILLS_INSPECT_PASS');
+}

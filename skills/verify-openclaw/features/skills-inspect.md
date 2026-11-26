@@ -15,3 +15,5 @@ Run `python3 -m workbench.verify_openclaw skills-inspect` with the local atteste
 ## Gotchas
 
 Bundled skills are disabled to keep the fixture deterministic. Installation, library, search and Workshop have their own prerequisites in the project verification contract.
+
+Use [the independent probe](../skills-inspect-oracle.mjs) with `workbench.project_triage` to investigate a successful list response that omits the expected skill. The probe emits `VERIFY_OPENCLAW_SKILLS_ORACLE_PASS` or `VERIFY_OPENCLAW_SKILLS_ORACLE_FAIL` after verified cleanup. Use the original source image and known-good OpenClaw commit for the comparison.

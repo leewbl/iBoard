@@ -22,6 +22,17 @@ python3 -m workbench.project_verify maintain --repo "$TARGET_REPO" --revision "$
 
 The report checks the skill's index, files, source anchors and every mapped journey. It also checks any declared entrypoint inventory and withholds a clean verdict if a command is unmapped, stale or could not be read. The coordinator runs doctor before driving and again after a failed drive. Each drive has its own offline container. Raw stdout, stderr, screenshots when configured, and cleanup evidence survive the pass. Source and file drift are reported separately from failed behavior. Diagnose a behavior failure using the real command or a known-good revision before calling it a product regression.
 
+For a journey that declares a `failure_marker`, run a comparison with an independently written probe that verifies the same user-visible behavior. The failing marker must come from an observed mismatch after cleanup. Setup errors, child crashes and timeouts should produce ordinary errors.
+
+```sh
+python3 -m workbench.project_triage --repo "$TARGET_REPO" --base "$KNOWN_GOOD" \
+  --revision "$CANDIDATE" --image "$KNOWN_GOOD_IMAGE" --manifest "$SKILL_DIR/contract.json" \
+  --helpers "$SKILL_DIR/helpers" --journey "$JOURNEY" --oracle "$INDEPENDENT_PROBE" \
+  --oracle-marker "$PROBE_PASS" --oracle-failure-marker "$PROBE_FAIL" --out "$TRIAGE_EVIDENCE"
+```
+
+The comparison freezes all scripts, checks the baseline image, and overlays the candidate's tracked source on the same runtime. Each script runs twice per revision in fresh containers. A product regression needs passing baseline runs, repeated observed failures from both candidate probes, and healthy doctor checks. A harness gap needs a failing primary probe and repeated independent success. Other conflicts remain inconclusive. Keep the reports with the original failed audit. Candidates that require dependency installation or compilation need a separate runtime comparison before drawing broader conclusions.
+
 When a correction belongs in the skill, rerun maintenance with `--manifest "$CORRECTED_CONTRACT" --helpers "$CORRECTED_HELPERS"` and a new evidence directory. Review the full map, exact source citations and runtime proof. A successful changed run exports a verified bundle and a skill-scoped diff. Submit one PR for proven corrections if the task authorizes it. Leave a suspected product regression open with its original evidence and affected path.
 
 - `clean` means the map matches the bundle and all journeys passed on the selected revision.

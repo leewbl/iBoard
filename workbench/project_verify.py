@@ -59,7 +59,8 @@ def _load_contract(path):
     ids, markers = set(), set()
     for check in [raw["doctor"], *features]:
         fields = {"id", "helper", "marker", "reach", "drive", "observe", "gotchas", "source"}
-        if not isinstance(check, dict) or set(check) - fields - {"screenshot", "entrypoints"} or not fields <= set(check):
+        if (not isinstance(check, dict) or set(check) - fields - {"screenshot", "entrypoints", "failure_marker"}
+                or not fields <= set(check)):
             raise ValueError("each check needs id, helper, marker, reach, drive, observe, gotchas and source")
         check_id = _slug(check["id"])
         marker = _text(check["marker"], "marker", 100)
@@ -67,6 +68,11 @@ def _load_contract(path):
             raise ValueError("checks need distinct identifiers and standalone uppercase pass markers")
         ids.add(check_id)
         markers.add(marker)
+        if "failure_marker" in check:
+            failure = _text(check["failure_marker"], "failure marker", 100)
+            if failure in markers or not re.fullmatch(r"[A-Z][A-Z0-9_]+_FAIL", failure):
+                raise ValueError("behavior failure markers must be distinct standalone uppercase lines")
+            markers.add(failure)
         helper = _text(check["helper"], "helper", 100)
         if (not re.fullmatch(r"[a-zA-Z0-9_-]+\.(mjs|py|sh)", helper)
                 or type(check.get("screenshot", False)) is not bool):
