@@ -411,6 +411,12 @@ def _pr_body(data, head):
         body += (f"\n## Screenshot\n\n[View verified screenshot](https://github.com/{destination}/blob/"
                  f"{artifact['commit']}/screenshot.png) (SHA-256 `{artifact['sha256']}`). "
                  f"[View screenshot provenance](https://github.com/{destination}/blob/{artifact['commit']}/manifest.json).\n")
+    if data.get('visual_baseline'):
+        from workbench import visual_parity
+        proof = visual_parity.require(data, head)
+        states = cli.read(Path(proof['path']))['states']
+        body += (f'\n## Visual parity\n\nZero changed pixels in both independent captures of '
+                 f'each frozen state: {", ".join(states)}. Evidence SHA-256 `{proof["sha256"]}`.\n')
     if data.get('kind') == 'feature':
         body += f'\n## Functional documentation\n\n[View documentation at the verified commit]({_feature_doc_link(data, head)})\n'
     if data.get('phase_binding'):
@@ -568,6 +574,10 @@ def _local_remote_guard(task_path, data, head, github, repo):
             delivery.require_local_write(task_path, data, head, github, repo)
         except delivery.DeliveryError as error:
             raise PublishError(str(error)) from error
+    try:
+        delivery.recheck_visual_write(task_path, data, head, repo)
+    except delivery.DeliveryError as error:
+        raise PublishError(str(error)) from error
 
 
 @locked_task('task_path')

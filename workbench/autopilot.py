@@ -800,6 +800,18 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     state = cli.read(state_path) if state_exists else {'schema': cli.SCHEMA, 'phase': 'plan'}
     from workbench import phase_contract
     try:
+        parity = data.get('visual_baseline')
+        if state_exists and state.get('visual_baseline') != parity:
+            raise AutopilotError('visual baseline changed after the task began')
+        if parity is not None:
+            from workbench import visual_parity
+            if data['surface'] != 'ui' or source_mode != 'image' or not build_source_image:
+                raise AutopilotError('visual parity requires a source-built UI image')
+            _, frozen_visual, visual_plan = visual_parity.read_baseline(parity, data['base_commit'])
+            if not state_exists:
+                visual_parity.bind(parity['path'], parity['sha256'], data['base_commit'])
+            state['visual_baseline'] = parity
+            image = frozen_visual['image']
         phase = phase_contract.read(data)
         replay_candidate = phase.get('replayed_candidate') if phase else None
         phase_binding = data.get('phase_binding')
@@ -880,6 +892,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         raise AutopilotError('implementer and verifier must be different')
     if feature:
         issue += feature_context.prompt(feature)
+    if parity is not None:
+        state_names = ', '.join(item['id'] for item in visual_plan['states'])
+        issue += (f'\nFROZEN VISUAL ACCEPTANCE\nRequire exact pixels for baseline states {state_names}. '
+                  'The independent parity harness is immutable. Preserve the selectors and behavior used to reach those states.\n')
     regression = data.get('regression_test')
 
     def verify_candidate_scope(head=None):
@@ -1202,6 +1218,19 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 results.append(_check(task, check_image, state['plan'][spec], kind, actor, check, source_mode=source_mode, memory_mb=memory_mb))
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests')]:
                 results.append(_check(task, check_image, state['plan'][spec], kind, verifier, check, source_mode=source_mode, memory_mb=memory_mb))
+            parity_result = None
+            if parity is not None:
+                try:
+                    parity_result, identical = visual_parity.compare_candidate(
+                        workspace, current['base_commit'], parity, candidate, check_image,
+                        task.parent / f'visual-parity-{uuid.uuid4().hex}', _remaining(cli.read(task)), memory_mb)
+                except (OSError, ValueError, KeyError, cli.WorkbenchError, subprocess.SubprocessError) as error:
+                    raise AutopilotError(f'visual parity could not capture equivalent states: {error}') from error
+                if not identical:
+                    differences = cli.read(Path(parity_result['path']))['states']
+                    failed = [name for name, roles in differences.items() if any(not item['equal'] for item in roles.values())]
+                    raise VerificationFailure('pixel difference from frozen visual baseline in ' + ', '.join(failed) +
+                                              f'; evidence: {parity_result["path"]}')
             if regression is not None:
                 code, marker = tdd.expected(regression, 'tdd-green')
                 regression_check = {'command': tdd.command(regression), 'exit_code': code, 'marker': marker}
@@ -1442,6 +1471,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                     'reports':reports}
             if regression is not None:
                 review_record['regression_sha256'] = tdd.digest(regression)
+            if parity_result is not None:
+                data['visual_parity_result'] = parity_result
+                review_record['visual_parity_sha256'] = parity_result['sha256']
             if 'impact_review' in data:
                 review_record['impact'] = impact
             if architecture is not None:

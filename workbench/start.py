@@ -168,7 +168,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           log_files=(), screenshot_files=(), required_ci_workflows=None, ci_skip_policy=None, ci_skip_reason=None,
           publish_only=False, verification_target=None, criteria=(), retained_contract=None,
           local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
-          feature_arena_out=None,
+          feature_arena_out=None, visual_baseline=None, visual_baseline_sha256=None,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
@@ -191,6 +191,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('feature handoff requires its manifest and expected SHA-256')
     if feature_arena_out and not feature_manifest:
         raise StartError('feature Arena requires an approved comparison manifest')
+    if bool(visual_baseline) != bool(visual_baseline_sha256) or (visual_baseline and (
+            surface != 'ui' or source_mode != 'image' or not build_source_image or candidate_image or verification_target)):
+        raise StartError('visual parity requires a frozen baseline digest and a new image-based UI task')
     handoff = None
     if feature_manifest:
         if kind != 'feature' or verification_target is not None or criteria:
@@ -309,6 +312,10 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 data['impact_review'] = 'runtime-v1'
                 if publish_only:
                     data['publish_only'] = True
+                if visual_baseline:
+                    from workbench import visual_parity
+                    data['visual_baseline'] = visual_parity.bind(visual_baseline, visual_baseline_sha256,
+                                                                data['base_commit'])
                 cli.write(task, data)
                 if criteria:
                     autopilot._add_criteria(task, criteria)
@@ -417,6 +424,8 @@ def main(argv=None):
     parser.add_argument('--feature-manifest', help='authorized Feature handoff manifest for a new feature task')
     parser.add_argument('--feature-sha256', help='expected SHA-256 of the authorized Feature handoff manifest')
     parser.add_argument('--feature-arena-out', help='run an approved two-design comparison before Feature verification')
+    parser.add_argument('--visual-baseline', help='frozen screenshot baseline record for this new UI task')
+    parser.add_argument('--visual-baseline-sha256', help='expected SHA-256 of the screenshot baseline record')
     args = parser.parse_args(argv)
     result = start(task_id=args.id, repo=args.repo, issue_file=args.issue_file, issue_url=args.issue_url,
                    source=args.source, kind=args.kind, surface=args.surface, iterations=args.iterations,
@@ -427,7 +436,8 @@ def main(argv=None):
                    required_ci_workflows=args.required_ci_workflows, publish_only=args.publish_only,
                    ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason,
                    feature_manifest=args.feature_manifest, feature_sha256=args.feature_sha256,
-                   feature_arena_out=args.feature_arena_out)
+                   feature_arena_out=args.feature_arena_out, visual_baseline=args.visual_baseline,
+                   visual_baseline_sha256=args.visual_baseline_sha256)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

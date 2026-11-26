@@ -445,10 +445,11 @@ def validate_phase_citations(assessments, reports, required):
 
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
-    from workbench import feature_context, phase_contract, tdd
+    from workbench import feature_context, phase_contract, tdd, visual_parity
     try:
         feature = feature_context.read(data)
         phase_contract.require_delivery(data, target, destination=destination)
+        parity = visual_parity.require(data, target)
     except (OSError, ValueError, cli.WorkbenchError) as error:
         raise DeliveryError(str(error)) from error
     require_feature_arena_delivery(data, feature, target, destination)
@@ -459,7 +460,7 @@ def _independent_verification(data, target, *, destination=None):
                 or item['criteria_digest'] != cli.criteria_digest(data)):
             continue
         try:
-            if feature and cli.digest(item['path']) != item['sha256']:
+            if (feature or parity) and cli.digest(item['path']) != item['sha256']:
                 continue
             report = json.loads(Path(item['path']).read_text())
         except (OSError, ValueError, cli.WorkbenchError):
@@ -468,6 +469,8 @@ def _independent_verification(data, target, *, destination=None):
                 or report.get('baseline_commit') != data['base_commit']
                 or set(report.get('criteria', [])) != desired_ids
                 or report.get('criterion_digest') != cli.criteria_digest(data)):
+            continue
+        if report.get('visual_parity_sha256') != (parity['sha256'] if parity else None):
             continue
         assessments, reports = report.get('assessments'), report.get('reports')
         if not isinstance(assessments, list) or len(assessments) != len(desired_ids) or not isinstance(reports, dict):
@@ -556,6 +559,17 @@ def _independent_verification(data, target, *, destination=None):
                     continue
             return item
     raise DeliveryError('independent PASS and independent sandbox reruns are not proven')
+
+
+def recheck_visual_write(task_path, expected, head, destination):
+    """Keep a frozen visual binding through the last preflight before a remote mutation."""
+    if not expected.get('visual_baseline'):
+        return
+    latest = cli.read(Path(task_path))
+    if (latest.get('visual_baseline') != expected['visual_baseline']
+            or latest.get('visual_parity_result') != expected.get('visual_parity_result')):
+        raise DeliveryError('visual parity binding changed before GitHub write')
+    _independent_verification(latest, head, destination=destination)
 
 
 def _checks_pass(pull, *, required=True):
@@ -1001,6 +1015,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         if revalidate:
             revalidate()
         recheck_phase()
+        recheck_visual_write(task_path, data, head, repo)
         github.merge(repo, number, head)
     else:
         # Do not use an indirect merge if protection appeared while validating.
@@ -1017,6 +1032,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         if revalidate:
             revalidate()
         recheck_phase()
+        recheck_visual_write(task_path, data, head, repo)
         github.fast_forward(data['repo'], repo, data['base_commit'], head)
     try:
         final = github.pull(repo, number)

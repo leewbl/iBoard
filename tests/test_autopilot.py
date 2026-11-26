@@ -1294,6 +1294,36 @@ class AutopilotTests(unittest.TestCase):
             autopilot.run(self.task, self.issue, 'image', model=self.model, check=check)
         self.assertEqual(cli.read(self.task)['iterations'], 1)
 
+    def test_frozen_visual_difference_stops_automatic_delivery(self):
+        from workbench import visual_parity
+        data = cli.read(self.task)
+        baseline = {'path': str(self.task.with_name('baseline.json')), 'sha256': '1'*64}
+        data.update(kind='feature', surface='ui', visual_baseline=baseline)
+        data['limits']['iterations'] = 1
+        cli.write(self.task, data)
+        self.plan.update(feature_doc='feature.md',
+                         screenshot={'command': ['node', '/workspace/capture.js'], 'marker': 'SHOT', 'exit_code': 0})
+        evidence = self.task.with_name('parity-result.json')
+        cli.write(evidence, {'schema': 1, 'states': {'open': {'independent-verifier': {'equal': False}}}})
+
+        def check(**kwargs):
+            kwargs.pop('source_mode')
+            return self.check(**kwargs)
+
+        with patch.object(visual_parity, 'read_baseline', return_value=(
+                self.task, {'image': 'sha256:'+'a'*64}, {'states': [{'id': 'open'}]})), \
+                patch.object(visual_parity, 'bind', return_value=baseline), \
+                patch.object(visual_parity, 'compare_candidate', return_value=(
+                    {'path': str(evidence), 'sha256': cli.digest(evidence)}, False)), \
+                patch.object(workflow, 'build_source_image', return_value='sha256:'+'b'*64):
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'iteration limit reached'):
+                autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork', source_mode='image',
+                              build_source_image=True, model=self.model, check=check,
+                              publisher=lambda *_: self.fail('published a differing state'))
+        retained = json.loads(self.task.with_name('verification-failure-1.json').read_text())
+        self.assertIn('frozen visual baseline in open', retained['reason'])
+        self.assertNotIn('final-review', self.calls)
+
     def test_confirmed_child_oom_pauses_without_spending_a_repair_iteration(self):
         def check(**kwargs):
             if kwargs['kind'] == 'resolution':
