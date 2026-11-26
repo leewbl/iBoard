@@ -155,7 +155,7 @@ class Arena:
         frame = json.dumps({'request':self.config['request'],'editable_files':sources},ensure_ascii=False)
         return _bounded(frame,42_000,'candidate prompt input')
 
-    def snapshot(self, workspace, anchor, compare):
+    def snapshot(self, workspace, anchor, compare, message='Save arena candidate'):
         if self.git(workspace,'rev-parse','HEAD').decode().strip()!=anchor:
             raise ArenaError('a model changed Git history')
         diff = self.git(workspace,'diff','--name-only','-z','--no-renames',anchor,'--')
@@ -177,7 +177,7 @@ class Arena:
         if paths:
             self.git(workspace,'add','-A','--',*sorted(paths))
             self.git(workspace,'-c','user.name=iBoard Arena','-c','user.email=arena@example.invalid',
-                     'commit','-m','Save arena candidate')
+                     'commit','-m',message)
         head = self.git(workspace,'rev-parse','HEAD').decode().strip()
         patch = self.git(workspace,'diff','--no-ext-diff','--no-textconv',compare,head,'--').decode('utf-8')
         if not patch or self.git(workspace,'status','--porcelain','--untracked-files=all'):
