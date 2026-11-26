@@ -20,6 +20,8 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/
 
 接续或查看已留存任务时，使用 [`workbench.pickup`](../skills/pickup/SKILL.md) 或 `workbench.resume --inspect`。工具观察现有任务锁，核对工作树、输入和证据哈希，区分已记录的发布与合并结果。可用 `--since` 查看指定时间后的事件，用 `--check-pr` 查询对应 PR 的当前提交和检查状态。该入口提供接续判断，执行仍经过原有恢复和交付门禁。
 
+长任务的阶段决定保存在任务目录的 `decisions.tsv`。每行记录时间、阶段、决定、理由、证据和结果。[`workbench.decisions audit`](../skills/show-me-your-work/SKILL.md) 核对保留文件的哈希和 Git 提交，显示哪些链接仍需在线查看。新的运行会列出继承记录的时间范围，人工可追加说明或纠正。自动对照会话和跨供应商复核待接入。
+
 | 能力 | iBoard 状态 | 等效能力的验收条件 |
 | --- | --- | --- |
 | 项目验证和功能地图 | 已有 Gateway 健康检查。本分支新增技能发现与状态检查。 | 从空状态启动或运行真实命令，完成明确的用户操作，记录结果、副作用和清理。回归脚本能检出已知错误。 |

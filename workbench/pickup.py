@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from workbench import autopilot, cli, delivery, start
+from workbench import autopilot, cli, decisions, delivery, start
 from workbench.task_lock import observe_task_lock
 
 
@@ -129,6 +129,12 @@ def _inspect(task, lock, since):
     workspace = Path(data['repo']).resolve()
     report.update(phase=phase, candidate=candidate, original_source=data.get('original_source', data.get('source')),
                   criteria=data.get('criteria', []), evidence=_evidence(task, data, candidate, workspace))
+    try:
+        rows = decisions.read(task)
+        if rows:
+            report['decisions'] = {'file':str(task.with_name('decisions.tsv')), 'total':len(rows), 'recent':rows[-6:]}
+    except (OSError, ValueError, decisions.DecisionError) as error:
+        report['decisions'] = {'error':f'could not read retained decisions: {error}'}
     report['bound_review_record'] = _bound_review(data, candidate, report['evidence']['retained'])
     try:
         head = cli.sha(workspace, 'HEAD', timeout=12)

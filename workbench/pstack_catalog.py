@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from workbench.decisions import PSTACK_SOURCE as DECISION_SOURCE
 from workbench.investigate import SOURCES as INVESTIGATION_SOURCES
 from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
 from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
@@ -43,6 +44,8 @@ def main():
             ],
             'native_commands': ([f'python3 -m workbench.investigate {mode}'
                                  for mode, path in INVESTIGATION_SOURCES.items() if path == source] +
+                                (['python3 -m workbench.decisions audit', 'python3 -m workbench.decisions record']
+                                 if source == DECISION_SOURCE else []) +
                                 ([PICKUP_SOURCES[source]] if source in PICKUP_SOURCES else [])),
         }
     print(json.dumps(result, ensure_ascii=False, indent=2))

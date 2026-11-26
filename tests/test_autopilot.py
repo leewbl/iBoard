@@ -830,6 +830,13 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual(result['phase'], 'complete')
         self.assertEqual(events, [('publish', 'user/fork'), ('merge', 'user/fork', 12)])
         self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['published_pr']['pr'], 12)
+        from workbench import decisions
+        journal = decisions.audit(self.task)
+        self.assertEqual([row['phase'] for row in journal['rows']],
+                         ['start', 'plan', 'reproduce', 'implement', 'verify', 'delivery', 'delivery'])
+        self.assertEqual(journal['unresolved_rows'], [])
+        self.assertEqual([row['evidence_status'] for row in journal['rows'][1:5]],
+                         ['hash-matches', 'hash-matches', 'commit-resolves', 'hash-matches'])
 
     def test_issue_close_failure_can_resume_without_merging_twice(self):
         data = cli.read(self.task)

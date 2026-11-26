@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
-from workbench import cli, workflow, delivery, publish, prompt_profiles
+from workbench import cli, decisions, workflow, delivery, publish, prompt_profiles
 from workbench.task_lock import task_lock
 
 
@@ -714,11 +714,27 @@ def _failure_details(task, error):
 
 
 def run(task_path, issue_path, image, **kwargs):
-    with task_lock(task_path):
-        return _run_locked(task_path, issue_path, image, **kwargs)
+    task = Path(task_path).expanduser().resolve(strict=True)
+    with task_lock(task):
+        cli.read(task)
+        try:
+            journal = decisions.begin(task)
+        except (OSError, decisions.DecisionError) as error:
+            raise AutopilotError(f'decision log unavailable: {error}') from error
+        try:
+            return _run_locked(task, issue_path, image, journal=journal, **kwargs)
+        except AutopilotError as error:
+            try:
+                decisions.record(task, journal, 'blocked', 'Stopped task advancement.',
+                                 'The current execution attempt cannot proceed under its guards.',
+                                 'record:task.json', 'See the retained task status and pause reason.')
+            except (OSError, decisions.DecisionError) as log_error:
+                raise AutopilotError(f'{error}; could not record the stop in the decision log: {log_error}') from error
+            raise
 
 
 def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
+        journal,
         source_mode='workspace', candidate_image=None, memory_mb=2048, build_source_image=False, reverify=False,
         model=execute_model, check=workflow.run_check, merge=delivery.guarded_merge,
         publisher=publish.publish, closer=delivery.close_verified_issue, vision=describe_screenshot):
@@ -782,6 +798,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     actor, verifier = data['implementer'], 'independent-verifier'
     if actor == verifier:
         raise AutopilotError('implementer and verifier must be different')
+
+    def append_decision(phase, decision, why, proof, result):
+        decisions.record(task, journal, phase, decision, why, proof, result)
+
     try:
         if reverify:
             if state['phase'] != 'delivery' or not _clean(workspace) or cli.sha(workspace, 'HEAD') != state.get('candidate_commit'):
@@ -790,6 +810,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             cli.write(task, data)
             state['phase'] = 'verify'
             cli.write(state_path, state)
+            append_decision('verify', 'Rerun checks on the retained candidate.',
+                   'Reverification was requested before delivery.', 'commit:' + state['candidate_commit'],
+                   'Previous candidate preserved.')
         if state['phase'] == 'plan':
             if not _clean(workspace) or cli.sha(workspace, 'HEAD') != data['base_commit']:
                 raise AutopilotError('planning requires the clean baseline')
@@ -835,6 +858,11 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 _add_criteria(task, criteria)
             state.update(phase='reproduce' if data['kind'] == 'bug' else 'implement', plan=plan)
             cli.write(state_path, state)
+            snapshot = task.parent / f'plan-decision-{uuid.uuid4().hex}.json'
+            cli.write(snapshot, {'baseline': data['base_commit'], 'plan': plan,
+                                 'criteria': cli.read(task)['criteria']})
+            append_decision('plan', 'Accepted an execution plan.', 'The plan identifies checks for the original task.',
+                   decisions.artifact(task, snapshot), f'Next phase: {state["phase"]}.')
 
         if state['phase'] == 'reproduce':
             if not _clean(workspace) or cli.sha(workspace, 'HEAD') != data['base_commit']:
@@ -853,6 +881,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 raise AutopilotError('baseline reproduction lacks independent semantic confirmation')
             state.update(phase='implement', baseline_reports=[first['report'], second['report']])
             cli.write(state_path, state)
+            append_decision('reproduce', 'Accepted the reproduced behavior before implementation.',
+                   'Two baseline runs and an independent assessment supported the reported failure.',
+                   decisions.artifact(task, second['report']), 'Independent baseline review passed.')
 
         if state['phase'] in ('implement', 'adopting') and data.get('adoption'):
             # Baseline checks append evidence to the persisted task. Re-read it
@@ -896,6 +927,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 cli.write(task, data)
             state.update(phase='verify', candidate_commit=candidate)
             cli.write(state_path, state)
+            append_decision('implement', 'Selected the adopted candidate.', 'Its baseline and adoption contract were checked.',
+                   'commit:' + candidate, 'Ready for candidate verification.')
 
         if state['phase'] == 'implement':
             data = cli.read(task)
@@ -922,6 +955,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             _commit_changes(workspace)
             state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
             cli.write(state_path, state)
+            append_decision('implement', 'Committed the implementation candidate.',
+                   'The implementation left changes to verify in the task worktree.',
+                   'commit:' + state['candidate_commit'], 'Ready for candidate verification.')
 
         if state['phase'] in ('implementing', 'repairing'):
             raise AutopilotError('implementation was interrupted; inspect the retained worktree before resuming')
@@ -1131,20 +1167,23 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             # A structured record is a statement, not a semantic proof by itself.
             review_path = task.parent / f'independent-review-{uuid.uuid4().hex}.json'
             ids = [criterion['id'] for criterion in data['criteria']]
-            record = {'verdict':'PASS', 'candidate_commit':candidate,
+            review_record = {'verdict':'PASS', 'candidate_commit':candidate,
                                     'baseline_commit':data['base_commit'], 'criteria':ids,
                                     'criterion_digest':cli.criteria_digest(data),
                                     'screenshot_hashes':screenshot_hashes, 'assessments':assessments, 'guard_assessments':guard_results,
                                     'reports':reports}
             if 'impact_review' in data:
-                record['impact'] = impact
-            cli.write(review_path, record)
+                review_record['impact'] = impact
+            cli.write(review_path, review_record)
             args = argparse.Namespace(file=str(review_path), kind='independent-review', commit=candidate,
                                       actor=verifier, description='Independent evidence review', criterion=ids)
             cli.evidence_add(args, data)
             cli.write(task, data)
             state['phase'] = 'delivery'
             cli.write(state_path, state)
+            append_decision('verify', 'Accepted the independently reviewed candidate.',
+                   'The verifier confirmed the versioned acceptance conditions.',
+                   decisions.artifact(task, review_path), 'Independent evidence review passed.')
 
 
         while state['phase'] == 'verify':
@@ -1164,7 +1203,12 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 break
             data = cli.read(task)
             failure_path = task.parent / f'verification-failure-{data["iterations"]}.json'
+            if failure_path.exists():
+                failure_path = failure_path.with_stem(f'{failure_path.stem}-{uuid.uuid4().hex}')
             cli.write(failure_path, failure)
+            append_decision('verify', 'Withheld delivery after verification failed.',
+                   'The candidate did not yet meet the recorded checks.',
+                   decisions.artifact(task, failure_path), 'Failed verification retained.')
             if failure.get('execution_blocked'):
                 raise AutopilotError(f'verification environment unavailable; failure saved at {failure_path}')
             if cli.iteration_limit_reached(data):
@@ -1193,6 +1237,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             _commit_changes(workspace)
             state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
             cli.write(state_path, state)
+            append_decision('repair', 'Committed a repair for the failed verification.',
+                   'Verification output was supplied to the repair stage.',
+                   'commit:' + state['candidate_commit'], 'Fresh verification required.')
 
         if state['phase'] == 'delivery':
             _validate_adoption(task, cli.read(task), issue_path, image, pr_repo, source_mode, candidate_image,
@@ -1222,11 +1269,15 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 state['published_pr'] = published
                 del state['ci_republish']
                 cli.write(state_path, state)
+                append_decision('delivery', 'Updated the existing pull request.', 'The repaired head passed reverification.',
+                       f'https://github.com/{pr_repo}/pull/{pr_number}', 'PR update recorded.')
             if not pr_number:
                 published = publisher(task, pr_repo)
                 pr_number = published['pr']
                 state['published_pr'] = published
                 cli.write(state_path, state)
+                append_decision('delivery', 'Published the verified candidate.', 'The candidate passed the publication gate.',
+                       f'https://github.com/{pr_repo}/pull/{pr_number}', 'PR publication recorded.')
             if cli.read(task).get('publish_only'):
                 state['phase'] = 'complete'
                 cli.write(state_path, state)
@@ -1242,6 +1293,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     evidence = {**error.evidence, 'repo': pr_repo, 'pr': pr_number, 'base': data['base_commit']}
                     failure_path = task.parent / f'ci-failure-{uuid.uuid4().hex}.json'
                     cli.write(failure_path, evidence)
+                    append_decision('delivery', 'Withheld merge after a required CI failure.',
+                           'The failing CI run belongs to the published candidate.',
+                           decisions.artifact(task, failure_path), 'Failed CI run retained.')
                     if cli.iteration_limit_reached(data):
                         raise AutopilotError(f'iteration limit reached after CI failure; evidence saved at {failure_path}') from error
                     if source_mode == 'image' and not build_source_image:
@@ -1279,7 +1333,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     _commit_changes(workspace)
                     state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
                     cli.write(state_path, state)
+                    append_decision('repair', 'Committed a repair for the failed CI run.', 'The repair used the retained CI evidence.',
+                           'commit:' + state['candidate_commit'], 'Fresh verification required.')
                     return _run_locked(task, issue_path, image, pr_repo=pr_repo, pr_number=pr_number,
+                                       journal=journal,
                                        source_mode=source_mode, candidate_image=candidate_image,
                                        memory_mb=memory_mb, build_source_image=build_source_image,
                                        model=model, check=check, merge=merge, publisher=publisher,
@@ -1287,6 +1344,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             result = merge(task, pr_repo, pr_number)
             state.update(phase='close-issue', delivery=result, delivery_repo=pr_repo, delivery_pr=pr_number)
             cli.write(state_path, state)
+            if result.get('merged') is True:
+                append_decision('delivery', 'Recorded the guarded merge.', 'The merge guard returned a successful receipt.',
+                       f'https://github.com/{pr_repo}/pull/{pr_number}', 'Merge recorded.')
         if state['phase'] == 'close-issue':
             data = cli.read(task)
             _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
@@ -1301,7 +1361,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             cli.write(state_path, state)
         return state
     except (AutopilotError, workflow.WorkflowError, cli.WorkbenchError, delivery.DeliveryError, publish.PublishError,
-            OSError, ValueError, KeyError) as error:
+            decisions.DecisionError, OSError, ValueError, KeyError) as error:
         _pause(task, str(error))
         raise AutopilotError(str(error)) from error
 
