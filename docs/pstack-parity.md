@@ -2,10 +2,24 @@
 
 对标版本为 [公开 pstack 0.15.48](https://github.com/cursor/plugins/tree/41e400932eca14f289e7db717a70455256b6d388/pstack)。工程先以 OpenClaw 验证实际可用性，执行端沿用 Claude Code + GLM。验证使用断网容器和独立复验。以每个入口实际产出的结果验收，记录运行条件、版本与未覆盖项。
 
+[逐项源码目录](pstack/catalog.json) 收录 118 份文件，包括 62 个技能、22 个工作流程、4 份代理和工作者提示词、3 个自动化模板、13 份参考和 14 份指南。条目含固定版本、内容哈希、标题结构、可解析的内部文档引用，以及同路径的 Claude Code 生成版本哈希。上游的状态图测试快照属于测试产物。
+
+- [技能和工作流程](pstack/workflows.md) 记录主技能、工作流程的触发条件、产物、工具依赖和接入差距。
+- [原则、代理提示词和 Benny](pstack/principles-agents.md) 记录工程原则和协作契约，以及从事件入口到外部服务的适配范围。
+- [提示词参考和指南](pstack/references.md) 追溯示例、使用方法与宿主差异。
+
+```sh
+python3 -m workbench.pstack_catalog list --role skill
+python3 -m workbench.pstack_catalog show skills/poteto-mode/playbooks/bug-fix.md
+python3 scripts/update_pstack_catalog.py /path/to/pinned-cursor-plugins --check
+```
+
+iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/feature 规划、基线审查、实现、修复和终审。模型回执的 `workflow_guidance` 记录来源路径和实际所用提示词的哈希。目录用于查询，上游文档和脚本不会被直接交给执行器。
+
 | 能力 | iBoard 状态 | 等效能力的验收条件 |
 | --- | --- | --- |
 | 项目验证和功能地图 | 已有 Gateway 健康检查。本分支新增技能发现与状态检查。 | 从空状态启动或运行真实命令，完成明确的用户操作，记录结果、副作用和清理。回归脚本能检出已知错误。 |
-| 功能地图维护 | 有人工维护的索引。 | 对照源码与实际操作检查地图，识别入口漂移、遗漏、环境阻断和产品故障，并验证地图修订。 |
+| 功能地图维护 | 新增 `verify_openclaw audit`，核对索引和注册表并执行地图中的场景。 | 对照源码和实际操作发现缺失、过期的用户路径，并区分文档、驱动和产品原因。目前巡检只验证已注册的场景。 |
 | Bug 修复 | 有双份基线复现、修复、候选复验及 PR 门禁。 | 用同一场景复现并对照候选，确认故障机制，检查影响范围，缺失复现或必要证据时暂停。 |
 | 需求、原型与架构 | 有需求实现、功能文档和测试；有真实 PR。 | 复杂需求先验证关键设计和边界，再拆分和交付。能在真实使用入口验证可见行为及副作用。 |
 | 性能、运行诊断与形式化验证 | 当前有日志、截图与单项诊断试验。 | 性能给出可重跑的对照，运行诊断给出机制证据，形式化检查明确模型及假设并能报告已知反例。 |

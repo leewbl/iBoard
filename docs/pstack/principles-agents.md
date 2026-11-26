@@ -1,0 +1,61 @@
+# pstack 原则、代理提示词和 Benny 自动化
+
+覆盖固定提交 `41e400932eca14f289e7db717a70455256b6d388` 的 24 条原则、两个代理提示词、一份工作者提示词和 Benny 的 12 个文件。这里描述每项的触发条件、可核对结果及 iBoard 接入点。表中“需”“待”等表述表示尚未验证的能力。
+
+## 工程原则
+
+这些原则可作为提示词行为约定或工程检查。原则本身没有 Cursor 专属运行接口。部分原则借助委派、性能工具或测试命令，其可用性由 iBoard 执行环境决定。
+
+| 原则（源目录名省略 `principle-`） | 何时使用 | 操作结果或验收条件 | iBoard 接入 |
+| --- | --- | --- | --- |
+| [`attack-the-premise`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-attack-the-premise/SKILL.md) | 同一前提支撑的两个方案都在同一门禁失败。 | 写出共同前提，设计可证伪的运行观察，解释证据如何改变下一轮。 | `autopilot.py` 有修复重试，尚需识别重复失败并先记下假设和观测，避免沿旧假设重试。 |
+| [`boundary-discipline`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-boundary-discipline/SKILL.md) | CLI、配置或外部 API 接入与错误处理。 | 入口解析外部输入成明确类型，把业务判断和传输细节分开。 | `start.py` 校验输入，`verify_openclaw.py` 核对报告；新增适配器先定义输入和结果契约。 |
+| [`build-the-lever`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-build-the-lever/SKILL.md) | 需要执行或证明非平凡工作。 | 先手工证明一个样本，再留一条可重复运行的小脚本或技能，并用同一样本验证。 | 已有 Gateway 及技能 CLI 的可重跑脚本；后续将人工复现、性能采样和批量检查固化为最小脚本。 |
+| [`encode-lessons-in-structure`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-encode-lessons-in-structure/SKILL.md) | 同一条纠正或指令反复出现。 | 优先落成类型、Lint、元数据校验或脚本。需要判断时保留简短说明和失败示例。 | 已有报告归属检查及本地门禁；需把重复失败归类，给新增约束保存旧版本或反例的拒绝证据。 |
+| [`exhaust-the-design-space`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-exhaust-the-design-space/SKILL.md) | 新交互或架构决策缺少先例。 | 用 2 至 3 个小原型在同一任务与条件下比较，记录差异后选择。 | 尚无原型工作区、共用验收口径和证据对照入口；可复用现有独立容器执行。 |
+| [`experience-first`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-experience-first/SKILL.md) | 产品、交互或功能范围取舍。 | 从直接使用者的路径评价反馈、错误状态及核心流程，必要时用原型比较。 | 任务已记录用户条件；功能地图应纳入失败反馈、等待和恢复状态，验证以可观察行为为准。 |
+| [`explain-the-number`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-explain-the-number/SKILL.md) | 测量或解释性能、吞吐、时延及评估分数。 | 预先写明决策阈值和噪声，记录样本量、分布与运行中观测的瓶颈并排除跳过、失败或缓存干扰。 | 现有日志有时长及退出记录；仍需规范配对输入、采样统计和瓶颈证据，额度报错不能换算消费金额。 |
+| [`fix-root-causes`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-fix-root-causes/SKILL.md) | 排查故障。 | 先复现，追到第一个错误决策，区分合法状态和上游错误状态，并检查同类错误。 | Bug 路线有基线复现和模型终审；需增加可核对的原因、触发条件、受影响入口及验证结果。 |
+| [`foundational-thinking`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-foundational-thinking/SKILL.md) | 选数据类型、安排基础设施与功能顺序、决定是否共享状态。 | 先列访问路径和不变量，基础能力先于依赖它的功能。 | `verify_openclaw.py` 已集中场景选择；PR 栈、多任务资源和可恢复阶段需要先定记录结构和并发边界。 |
+| [`guard-the-context-window`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-guard-the-context-window/SKILL.md) | 日志、源码或并行计划挤满上下文。 | 限制读入范围和阶段预算，大段材料在窄范围内分析，保留精简结论及原证据路径。 | `autopilot.py` 已压缩审查及修复输入并保留原报告；可补明确的遗漏说明和只读分工。 |
+| [`laziness-protocol`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-laziness-protocol/SKILL.md) | 评估重构、补丁规模或新增抽象。 | 同一决策集中定义，做足以满足行为要求的最小修改。 | 场景选择集中在 `required_journeys`，收集和发布共用；新的提示词也需避免复制门禁逻辑。 |
+| [`make-operations-idempotent`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-make-operations-idempotent/SKILL.md) | 可能重试、中断或重启的写入。 | 从实际状态推导下一步，原子写本地记录；测试重复调用和关键中断点。 | `cli.write` 已原子替换，发布可识别已有 PR；仍需验收阶段恢复及远端写入后的状态对账。 |
+| [`migrate-callers-then-delete-legacy-apis`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md) | 替换无外部兼容负担的内部接口。 | 同批迁移全部调用方并移除旧接口，用测试覆盖新契约。 | 场景报告结构的变更要一起更新收集、交付和正文；持久化任务格式如有旧记录须单独处理兼容。 |
+| [`minimize-reader-load`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-minimize-reader-load/SKILL.md) | 调用层深、状态难追。 | 删纯透传层并缩小状态作用域；让维护者能快速追到来源和改写点。 | 计划、候选及交付证据需共用可查的来源，优先去掉无价值状态镜像，保留可读的报告索引。 |
+| [`model-the-domain`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-model-the-domain/SKILL.md) | 状态分散、多处分支或重复假设数据形状。 | 用状态机、带类型的记录或注册表表达合法状态，避免引入没有减少分支的抽象。 | 已有运行阶段和场景表；当前任务总状态与阶段结论仍可不一致，需明确状态转换并验证。 |
+| [`never-block-on-the-human`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-never-block-on-the-human/SKILL.md) | 执行中遇到可撤销、授权范围内的选择。 | 自行完成并记录选择，遇到部署、共享历史改写或外部发信等超出授权的操作停下。 | 沿用 iBoard 的明确任务入口和授权仓库；提示词不能扩大任务范围、自动领取事项或授权外部写入。 |
+| [`outcome-oriented-execution`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-outcome-oriented-execution/SKILL.md) | 计划内的迁移或重写有明确阶段。 | 约定可逆的阶段边界和临时影响，完成时用静态和运行证据检查目标状态。 | 可结合固定基线和候选提交；跨阶段迁移还需要记录阶段验证和终态一致性。 |
+| [`prove-it-works`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-prove-it-works/SKILL.md) | 任务将完成，需要证实交付。 | 通过真实功能入口或直接观察产物验证，记录可重复的步骤和结果。 | 已有断网 Docker、双复跑、逐项终审和身份绑定；环境缺口或无法复现必须按实际结果记录。 |
+| [`redesign-from-first-principles`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-redesign-from-first-principles/SKILL.md) | 新要求改变现有设计的基础假设。 | 读受影响的代码，重推匹配新条件的结构，分步更新类型、文档、实例及原有说明。 | 可以用在任务状态与适配协议演进；尚需把设计假设和分段验收纳入计划。 |
+| [`separate-before-serializing-shared-state`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-separate-before-serializing-shared-state/SKILL.md) | 多个执行者可能写同一记录、分支或资源。 | 独立事实先各写一份，需要共同更新时再用单写者、锁或条件更新。 | 每任务有工作树和锁，每次容器运行有报告；跨任务的资源排队与同仓库交付顺序仍需验证。 |
+| [`sequence-verifiable-units`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-sequence-verifiable-units/SKILL.md) | 多步迁移、成批修改、提交或 PR 栈。 | 为每个可独立检查的小步骤留基线、改动和检查，按证明顺序交付。 | 有 bug 基线和候选分段检查；多候选及依赖 PR 的验证顺序仍需自动化。 |
+| [`subtract-before-you-add`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-subtract-before-you-add/SKILL.md) | 功能演进、重构及提示词整理。 | 先清理死代码和重复指令，扩展已观测需要的行为，保留删减前后的运行证据。 | 可集中审查和调用规则；减少包装层或说明之前须核对旧用例和任务记录。 |
+| [`test-behavior-not-implementation`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-test-behavior-not-implementation/SKILL.md) | 新增、重写或判断是否保留某条测试。 | 断言对调用者可见的结果；用错误行为会失败、等效内部重构仍通过检验断言。 | 真实 CLI 已检查用户可见的诊断、可用状态及输入文件不变；每个新场景还需证明能捕捉记录中的实际回归。 |
+| [`type-system-discipline`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-type-system-discipline/SKILL.md) | 设计类型、函数签名或处理外部数据。 | 解析外部数据，区分语义不同的值，覆盖所有已声明变体，并让类型来源一致。 | Python 入口已有显式校验；报告、阶段结果和工具响应变体还需统一契约及拒绝用例。 |
+
+## 代理和工作者
+
+| 来源 | 何时使用 | 操作结果或验收条件 | iBoard 接入与宿主依赖 |
+| --- | --- | --- | --- |
+| [`agents/poteto-agent.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/agents/poteto-agent.md) | 父任务委派限定的读或写工作。 | 每个新任务优先新代理，在有上下文需求时才续用。父任务持有流程和待办，子代理读取入口及适用原则。 | Cursor 的模型字段、后台模式和安装目录需由 Claude 适配；iBoard 可用明确输入、预期产物和工具白名单约束委派，交付仍归工作台。已有独立验证者，任意子任务调度待实测。 |
+| [`agents/comment-sicko.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/agents/comment-sicko.md) | 评审指定 diff 或文件的注释。 | 检查真实代码与历史后识别冗余注释、保留许可证和确证的外部约束，报告文件、计数、需改造的符号和跳过原因。 | 需要范围限定的注释审查。已有证据终审侧重行为，未覆盖此项。保留项目约定和必要安全解释，检查前后不改变外部行为。 |
+| [`skills/poteto-mode/worker.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/poteto-mode/worker.md) | 父级启动受委派的工作者。 | 传递目标和验收条件，限制新增要求和外部写入，提出可核对的结果。上游默认短 PR 正文，长证据另存。 | 任务边界可作为委派契约；`publish.py` 已有证据摘要和目标检查。iBoard 的交付权限及用户指定的 PR 模式优先，Benny 的草稿 PR 另有边界。 |
+
+## Benny 自动化包
+
+上游提供两条配合的流程，分别判断报告归属、验证已确认的产品缺陷。Benny 的运行动作与外部系统权限由独立配置决定。iBoard 当前仍处理用户明确选中的任务。接入先走本地结构化输入和可验证证据，连接 Slack、追踪器及远端写入须另按目标授权。
+
+| 文件（相对 `automations/benny/`） | 何时使用 | 操作结果或验收条件 | iBoard 接入与宿主依赖 |
+| --- | --- | --- | --- |
+| [`FOR_AGENTS.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/FOR_AGENTS.md) | 安装、更新或启用两项工作流的操作入口。 | 复制包时保留用户配置和已有修改，确认仓库内容及新会话可用的共享技能，分别配置两项流程。 | 项目应有单独配置与能力探测。依赖 Cursor 项目插件及 Automations 编辑器的步骤需要独立适配。 |
+| [`README.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/README.md) | 操作者安装与验收入口。 | 向操作者说明两项流程、包和配置分离、试验时核对来源线程。 | iBoard 已有明确任务入口；独立集成说明应核对实际配置、可用能力与授权。 |
+| [`skills/setup-benny/SKILL.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/setup-benny/SKILL.md) | 变更来源、追踪器、仓库、应用控制、模型或预算时。 | 验证配置、项目技能及应用驱动能力，区分新建和已有流程，启用前在测试环境检查线程和故障边界。 | 要补集成预检、配置快照和能力证明。上游依赖 Cursor `automate`、项目插件与编辑器；配置化集成须独立验证。 |
+| [`skills/triage-issue-reports/SKILL.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/triage-issue-reports/SKILL.md) | 授权来源中的单条报告。 | 查看全文、附件、代码和历史，按症状、影响层与重复项分类；只有符合条件才生成一份归档建议。原流程还有追踪器与原线程回执，需要核对写入及失败回补。 | 当前可读取指定 GitHub Issue；可先生成只读分类、归属和查重报告。Slack 和追踪器写入需单独授权、精确目标校验和实测。 |
+| [`skills/reproduce-and-fix-issues/SKILL.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/reproduce-and-fix-issues/SKILL.md) | 收到原线程中可信分诊结论的普通产品缺陷。 | 有人认领时让出；已有候选时验证它；固定同一用户路径和前置条件，基线及候选重复验证，保存可见结果和独立检查；上游仅开草稿 PR。 | iBoard 可复用固定基线、容器和双复验。真实 UI 的稳定驱动、录制、可信报告衔接及已有候选只读验证仍需补齐。 |
+| [`templates/triage-automation-prompt.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/templates/triage-automation-prompt.md) | 为单条报告提供分诊的运行输入。 | 输入含固定渠道与线程、目标配置和正确的仓库内流程文件；输出单一类别，原流程仅由协调者回写来源线程。 | 将入口适配为显式授权报告和固定身份的结构化事件；Cursor 自动触发和外部写入不能从文案继承授权。 |
+| [`templates/reproduce-automation-prompt.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/templates/reproduce-automation-prompt.md) | 同一报告进入验证流程。 | 输入同一组来源坐标和可信分诊结论，确认控制适配器及仓库；产出复现、既有修复验证或受限的补丁路径。 | 可接现有任务记录和本地预算，补同一报告的身份核对、时间限额与 UI 能力预检；上游依赖 Cursor 的触发器及工具配置。 |
+| [`templates/configuration.example.yaml`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/templates/configuration.example.yaml) | 为某项目声明工作流配置。 | 包括事件来源、身份、目标仓库、追踪器路由、应用控制、证据保留、模型和分阶段预算，秘密值留在外部。 | iBoard 当前由 CLI 或任务记录传入仓库、预算和镜像；外部适配器还需可验证的权限和配置版本。 |
+| [`skills/triage-issue-reports/references/routing.example.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/triage-issue-reports/references/routing.example.md) | 可选的区域、路径、证据特征到维护归属映射。 | 凭报告或调用链证据匹配；找不到则归属未知。上游默认关闭通知。 | 可用只读归属建议消费范围映射，保留匹配依据，无需获得跨渠道通知权限。 |
+| [`skills/reproduce-and-fix-issues/references/control-adapter.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/reproduce-and-fix-issues/references/control-adapter.md) | 验证开始前检查应用控制能力。 | 确认目标身份，真实操作、状态复位、只读检查、截图、录制和清理，缺能力即标记阻断。 | 已有 `verify-openclaw` 的 Gateway 和技能 CLI 两个真实路径；通用 UI 控制、录制和能力预检待补。 |
+| [`skills/reproduce-and-fix-issues/references/feature-map.example.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/reproduce-and-fix-issues/references/feature-map.example.md) | 为能验证的用户路径编制地图。 | 记录稳定入口和选择器、初始条件、相关状态、复位方式及截图、录制和交叉检查，标记不适用项。 | 已有两条 OpenClaw 地图；扩展至实际 UI 时须补状态覆盖和证据类型，并用既有故障验证地图能观察到差别。 |
+| [`skills/reproduce-and-fix-issues/references/verify-existing-fix.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/reproduce-and-fix-issues/references/verify-existing-fix.md) | 已有 PR 或提交可能解决报告。 | 核实候选版本与其基线，同环境和数据下各两次走真实路径，区分已证实、仍失败和无法判断。独立工作区清理。 | 已有候选接纳与独立检查可复用；需要直接的只读验收入口，保存原 PR 归属且禁止创建竞争补丁。 |

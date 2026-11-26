@@ -51,6 +51,44 @@ def verify(repo, image, journey, *, timeout, memory_mb):
     return report
 
 
+def audit(repo, image, *, timeout, memory_mb):
+    """Check the documented feature map and exercise every registered journey."""
+    report = {'journey': 'audit', 'requested_image': image, 'runs': {}, 'passed': False}
+    feature_dir = SKILL / 'features'
+    try:
+        links = re.findall(r'^\|\s*\[[^\]\n]+\]\(([a-z0-9-]+)\.md\)\s*\|',
+                           (feature_dir / 'README.md').read_text(encoding='utf-8'), re.MULTILINE)
+        documented = {p.stem for p in feature_dir.glob('*.md') if p.name != 'README.md'}
+        expected = set(JOURNEYS)
+        if len(links) != len(set(links)) or set(links) != expected or documented != expected:
+            report.update(status='map-drift', listed=links, documented=sorted(documented),
+                          registered=sorted(expected))
+            return report
+    except (OSError, ValueError) as error:
+        report.update(status='map-unavailable', error=str(error))
+        return report
+
+    deadline = time.monotonic() + timeout
+    commit, pinned = None, None
+    for journey in links:
+        remaining = int(deadline - time.monotonic())
+        if remaining < 1:
+            report['status'] = 'timeout'
+            return report
+        run = verify(repo, pinned or image, journey, timeout=remaining, memory_mb=memory_mb)
+        report['runs'][journey] = run
+        if not run['passed']:
+            report['status'] = 'check-failed'
+            return report
+        if commit is None:
+            commit, pinned = run['commit'], run['verified_image_id']
+        if run['commit'] != commit or run['verified_image_id'] != pinned:
+            report['status'] = 'target-changed'
+            return report
+    report.update(status='map-verified', commit=commit, verified_image_id=pinned, passed=True)
+    return report
+
+
 class GatewayGateError(cli.WorkbenchError):
     pass
 
@@ -158,7 +196,7 @@ def require(data, head, destination, *, review_item=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("journey", choices=JOURNEYS)
+    parser.add_argument("journey", choices=(*JOURNEYS, "audit"))
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--report", type=Path, required=True)
@@ -170,7 +208,11 @@ def main(argv=None):
         return os.open(path, flags, 0o600)
 
     with open(args.report.expanduser(), "x", encoding="utf-8", opener=private_create) as output:
-        report = verify(args.repo, args.image, args.journey, timeout=args.timeout, memory_mb=args.memory_mb)
+        options = dict(timeout=args.timeout, memory_mb=args.memory_mb)
+        if args.journey == 'audit':
+            report = audit(args.repo, args.image, **options)
+        else:
+            report = verify(args.repo, args.image, args.journey, **options)
         json.dump(report, output, indent=2)
         output.write("\n")
     print(f"{'PASS' if report['passed'] else 'FAIL'}: {args.report}")

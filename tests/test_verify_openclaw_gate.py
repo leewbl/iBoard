@@ -90,3 +90,16 @@ class GatewayGateTests(unittest.TestCase):
             for actor in ('builder', 'independent-verifier'):
                 digest = cli.digest(self.root / f'{journey}-{actor}.json')
                 self.assertIn(digest, body)
+
+    def test_map_audit_stops_when_a_registered_journey_is_missing_from_index(self):
+        features = self.root / 'features'
+        features.mkdir()
+        (features / 'README.md').write_text('| [gateway-health](gateway-health.md) | Health |')
+        for name in verify_openclaw.JOURNEYS:
+            (features / f'{name}.md').write_text(name)
+        with patch.object(verify_openclaw, 'SKILL', self.root), patch.object(verify_openclaw, 'verify') as run:
+            report = verify_openclaw.audit(self.root, 'local', timeout=30, memory_mb=512)
+        self.assertEqual(report['status'], 'map-drift')
+        self.assertFalse(report['passed'])
+        self.assertIn('skills-check', report['registered'])
+        run.assert_not_called()

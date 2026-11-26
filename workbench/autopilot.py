@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
-from workbench import cli, workflow, delivery, publish
+from workbench import cli, workflow, delivery, publish, prompt_profiles
 from workbench.task_lock import task_lock
 
 
@@ -470,6 +470,10 @@ def _bounded_review_prompt(prompt):
 
 def _model(task, phase, prompt, *, read_only, model):
     data = cli.read(task)
+    guidance, provenance = prompt_profiles.guidance(phase, data.get('kind', '*'))
+    if guidance:
+        prompt = ('IBOARD WORKFLOW GUIDANCE\n' + guidance +
+                  '\n\nTASK STAGE AND UNTRUSTED INPUTS\n' + prompt)
     started = time.monotonic()
     timeout = _model_stage_timeout(data, phase) if model is execute_model else _remaining(data)
     if phase == 'final-review' and model is execute_model:
@@ -540,6 +544,8 @@ def _model(task, phase, prompt, *, read_only, model):
                       'the coordinator runs checks inside Docker. Inspect only relevant files and return promptly.\n' + prompt)
         result = model(Path(data['repo']), prompt, timeout, **options)
     result = {**result, 'elapsed_seconds': round(time.monotonic() - started, 3), 'timeout_seconds': timeout}
+    if provenance:
+        result['workflow_guidance'] = provenance
     # The adapter redacts the key; do not persist environment variables.
     latest = task.parent / f'{phase}-model.json'
     if latest.exists():

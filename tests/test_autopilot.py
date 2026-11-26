@@ -904,7 +904,7 @@ class AutopilotTests(unittest.TestCase):
                 raise workflow.WorkflowError(f'check failed; raw report saved at {report}')
             return self.check(**kwargs)
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 repair_prompts.append(prompt)
                 (workspace / 'code.txt').write_text('repaired after failure')
                 return {'exit_code':0, 'timed_out':False, 'stdout':'repaired', 'stderr':''}
@@ -924,7 +924,7 @@ class AutopilotTests(unittest.TestCase):
         failure = {'workflow': 'CI', 'run_id': 12, 'attempt': 1, 'head': 'old',
                    'jobs': [{'id': 5, 'name': 'test', 'annotations': [{'message': 'assertion failed'}]}]}
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the verified candidate'):
+            if 'Repair the verified candidate' in prompt:
                 prompts.append(prompt)
                 (workspace / 'code.txt').write_text('fixed after CI')
                 return {'exit_code': 0, 'timed_out': False, 'stdout': 'done', 'stderr': ''}
@@ -1006,7 +1006,7 @@ class AutopilotTests(unittest.TestCase):
                 raise workflow.WorkflowError('assertion failed')
             return self.check(**kwargs)
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 (workspace / 'code.txt').write_text('repaired')
                 return {'exit_code': 0, 'timed_out': False, 'stdout': 'repaired', 'stderr': ''}
             return self.model(workspace, prompt, timeout, read_only=read_only)
@@ -1037,7 +1037,7 @@ class AutopilotTests(unittest.TestCase):
         reviews = []
         events = []
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 self.assertIn('unsafe behavior remains', prompt)
                 (workspace / 'code.txt').write_text('independently repaired')
                 return {'exit_code':0, 'timed_out':False, 'stdout':'repaired', 'stderr':''}
@@ -1082,7 +1082,7 @@ class AutopilotTests(unittest.TestCase):
                 raise workflow.WorkflowError('candidate assertion failed')
             return self.check(**kwargs)
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 (workspace / 'partial.txt').write_text('partial work')
                 return {'exit_code':None, 'timed_out':True, 'stdout':'', 'stderr':'timeout'}
             return self.model(workspace, prompt, timeout, read_only=read_only)

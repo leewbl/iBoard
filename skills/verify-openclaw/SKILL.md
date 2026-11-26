@@ -38,3 +38,5 @@ The helper stops only the child it started and deletes only its own temporary st
 ## Helpers
 
 `python3 -m workbench.verify_openclaw --help` lists the supported journeys and resource options. Run the helper through that command, never on the host.
+
+When maintaining this map, use `audit` in place of the journey name to check that the documentation and runner list the same journeys and exercise each one against a single commit and image. Give it a total time budget that covers both runs, for example `--timeout 500`. An audit report records map drift or the first blocked journey and retains preceding run results. Treat a failing journey as a diagnostic to investigate. This audit verifies the mapped entries; use the relevant source and user entry points to find missing scenarios.

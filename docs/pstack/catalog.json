@@ -1,0 +1,2185 @@
+{
+  "version": "0.15.48",
+  "commit": "41e400932eca14f289e7db717a70455256b6d388",
+  "source": "https://github.com/cursor/plugins",
+  "scope": "Skills, playbooks, agent prompts, automation templates, and documented references and guides. Generated test fixtures are excluded.",
+  "counts": {
+    "agent-prompt": 4,
+    "automation-template": 3,
+    "guide": 14,
+    "playbook": 22,
+    "reference": 13,
+    "skill": 62
+  },
+  "entries": [
+    {
+      "source": "README.md",
+      "role": "guide",
+      "sha256": "3b21e8b4c6f894b4f3c44fbfd85ab49ad4aed6c329b27933b3134ee039083dd2",
+      "claude_sha256": "5c22954a6556c39c8777f27e9080376ca52778b6563126a9b1e5475f990ba45c",
+      "metadata": {},
+      "headings": [
+        "pstack",
+        "install",
+        "get started",
+        "usage",
+        "just use [`/poteto-mode`](./skills/poteto-mode/SKILL.md)",
+        "skills",
+        "examples",
+        "the `poteto-agent` and Comment Sicko subagents",
+        "principles",
+        "not shipped here",
+        "why are there no planning skills?",
+        "make it yours",
+        "automations",
+        "license"
+      ],
+      "references": [
+        "agents/comment-sicko.md",
+        "agents/poteto-agent.md",
+        "automations/benny/FOR_AGENTS.md",
+        "docs/guide/README.md",
+        "docs/harness/claude-code.md",
+        "skills/architect/SKILL.md",
+        "skills/arena/SKILL.md",
+        "skills/automate-me/SKILL.md",
+        "skills/benchmark-checklist/SKILL.md",
+        "skills/blast-radius/SKILL.md",
+        "skills/bro/SKILL.md",
+        "skills/correct/SKILL.md",
+        "skills/create-formal-verification-skill/SKILL.md",
+        "skills/create-verification-skill/SKILL.md",
+        "skills/figure-it-out/SKILL.md",
+        "skills/how/SKILL.md",
+        "skills/in-your-own-words/SKILL.md",
+        "skills/interrogate/SKILL.md",
+        "skills/ketchup-video/SKILL.md",
+        "skills/ketchup/SKILL.md",
+        "skills/maintain-formal-verification-skill/SKILL.md",
+        "skills/maintain-verification-skill/SKILL.md",
+        "skills/make-bot-ui/SKILL.md",
+        "skills/no-comments/SKILL.md",
+        "skills/poteto-help/SKILL.md",
+        "skills/poteto-mode/SKILL.md",
+        "skills/poteto-mode/playbooks/authoring-a-skill.md",
+        "skills/poteto-mode/playbooks/autonomous-run.md",
+        "skills/poteto-mode/playbooks/autopilot-full.md",
+        "skills/poteto-mode/playbooks/autopilot-stack.md",
+        "skills/poteto-mode/playbooks/babysit.md",
+        "skills/poteto-mode/playbooks/bug-fix.md",
+        "skills/poteto-mode/playbooks/eval.md",
+        "skills/poteto-mode/playbooks/feature.md",
+        "skills/poteto-mode/playbooks/hillclimb.md",
+        "skills/poteto-mode/playbooks/investigation.md",
+        "skills/poteto-mode/playbooks/multi-phase-plan.md",
+        "skills/poteto-mode/playbooks/opening-a-pr.md",
+        "skills/poteto-mode/playbooks/pause-safely.md",
+        "skills/poteto-mode/playbooks/perf-issue.md",
+        "skills/poteto-mode/playbooks/prototype.md",
+        "skills/poteto-mode/playbooks/refactoring.md",
+        "skills/poteto-mode/playbooks/runtime-forensics.md",
+        "skills/poteto-mode/playbooks/session-pickup.md",
+        "skills/poteto-mode/playbooks/shipping.md",
+        "skills/poteto-mode/playbooks/trace-forensics.md",
+        "skills/poteto-mode/playbooks/visual-parity.md",
+        "skills/poteto-mode/playbooks/worktree-cleanup.md",
+        "skills/principle-attack-the-premise/SKILL.md",
+        "skills/principle-boundary-discipline/SKILL.md",
+        "skills/principle-build-the-lever/SKILL.md",
+        "skills/principle-encode-lessons-in-structure/SKILL.md",
+        "skills/principle-exhaust-the-design-space/SKILL.md",
+        "skills/principle-experience-first/SKILL.md",
+        "skills/principle-explain-the-number/SKILL.md",
+        "skills/principle-fix-root-causes/SKILL.md",
+        "skills/principle-foundational-thinking/SKILL.md",
+        "skills/principle-guard-the-context-window/SKILL.md",
+        "skills/principle-laziness-protocol/SKILL.md",
+        "skills/principle-make-operations-idempotent/SKILL.md",
+        "skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md",
+        "skills/principle-minimize-reader-load/SKILL.md",
+        "skills/principle-model-the-domain/SKILL.md",
+        "skills/principle-never-block-on-the-human/SKILL.md",
+        "skills/principle-outcome-oriented-execution/SKILL.md",
+        "skills/principle-prove-it-works/SKILL.md",
+        "skills/principle-redesign-from-first-principles/SKILL.md",
+        "skills/principle-separate-before-serializing-shared-state/SKILL.md",
+        "skills/principle-sequence-verifiable-units/SKILL.md",
+        "skills/principle-subtract-before-you-add/SKILL.md",
+        "skills/principle-test-behavior-not-implementation/SKILL.md",
+        "skills/principle-type-system-discipline/SKILL.md",
+        "skills/recall/SKILL.md",
+        "skills/reflect/SKILL.md",
+        "skills/reframe/SKILL.md",
+        "skills/setup-pstack/SKILL.md",
+        "skills/sharpen/SKILL.md",
+        "skills/show-me-your-work/SKILL.md",
+        "skills/statechart/SKILL.md",
+        "skills/swarm/SKILL.md",
+        "skills/tdd/SKILL.md",
+        "skills/teach/SKILL.md",
+        "skills/technical-writing/SKILL.md",
+        "skills/typescript-best-practices/SKILL.md",
+        "skills/unslop/SKILL.md",
+        "skills/why/SKILL.md"
+      ]
+    },
+    {
+      "source": "agents/comment-sicko.md",
+      "role": "agent-prompt",
+      "sha256": "0fb37221ab2a9159714d38f1528898e82b9758b5750f244bbe2e575bb593a1de",
+      "claude_sha256": "0fb37221ab2a9159714d38f1528898e82b9758b5750f244bbe2e575bb593a1de",
+      "metadata": {
+        "name": "comment-sicko"
+      },
+      "headings": [
+        "Comment Sicko"
+      ],
+      "references": []
+    },
+    {
+      "source": "agents/poteto-agent.md",
+      "role": "agent-prompt",
+      "sha256": "369065b46c217a5898cb1a400652c3399449252f4d5dbf8937eb8d4922d3cf6b",
+      "claude_sha256": "369065b46c217a5898cb1a400652c3399449252f4d5dbf8937eb8d4922d3cf6b",
+      "metadata": {
+        "name": "poteto-agent",
+        "model": "claude-opus-5-5-xhigh-fast"
+      },
+      "headings": [
+        "Poteto subagent"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/FOR_AGENTS.md",
+      "role": "agent-prompt",
+      "sha256": "17d370bf1d97e12924a5b291fa183f2270c310836c3355617fcc97d65b0b2bd1",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "benny automation intent",
+        "what i want to automate",
+        "automation 1: triage issue reports",
+        "automation 2: reproduce and fix confirmed bugs",
+        "shared rules",
+        "my configuration",
+        "for the agent"
+      ],
+      "references": [
+        "automations/benny/skills/reproduce-and-fix-issues/references/feature-map.example.md",
+        "automations/benny/templates/configuration.example.yaml"
+      ]
+    },
+    {
+      "source": "automations/benny/README.md",
+      "role": "guide",
+      "sha256": "ca3c42cbb7f0bf7068f7407eb355815e6c234d5c2786942f3cbe751a3690024b",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "benny",
+        "set it up"
+      ],
+      "references": [
+        "automations/benny/FOR_AGENTS.md",
+        "automations/benny/skills/reproduce-and-fix-issues/references/feature-map.example.md",
+        "automations/benny/templates/configuration.example.yaml"
+      ]
+    },
+    {
+      "source": "automations/benny/skills/reproduce-and-fix-issues/SKILL.md",
+      "role": "skill",
+      "sha256": "809659da0bbd0303d2a42dbe380dd117ae06b6fa3e19e4a31832a2756ae841fe",
+      "claude_sha256": null,
+      "metadata": {
+        "name": "reproduce-and-fix-issues",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Reproduce and fix issues",
+        "Hard safety rules",
+        "1. Freeze source coordinates",
+        "2. Wait for the triage contract",
+        "3. Apply ownership and fix-artifact gates",
+        "Someone is explicitly fixing it",
+        "A fix artifact already exists",
+        "4. Open an optional operations thread",
+        "5. Load and check the control adapter",
+        "6. Study the report",
+        "7. Reproduce",
+        "8. Capture and review evidence",
+        "9. Report the repro outcome",
+        "10. Verify an existing fix",
+        "11. Qualify a bounded fix",
+        "12. Root-cause and implement",
+        "13. Prove the fix",
+        "14. Open a draft pull request",
+        "15. Follow-ups and cleanup"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/skills/reproduce-and-fix-issues/references/control-adapter.md",
+      "role": "reference",
+      "sha256": "58b0615d2fca895f9a20df83266e280042b0d585b5f2fd324e2094a682fd846b",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "Control-adapter contract",
+        "Required capabilities",
+        "Bring up",
+        "Drive UI",
+        "Drive mapped features and states",
+        "Inspect state",
+        "Screenshot",
+        "Recording",
+        "Cleanup",
+        "Adapter behavior",
+        "Environment translation",
+        "Setup check"
+      ],
+      "references": [
+        "automations/benny/skills/reproduce-and-fix-issues/references/feature-map.example.md"
+      ]
+    },
+    {
+      "source": "automations/benny/skills/reproduce-and-fix-issues/references/feature-map.example.md",
+      "role": "reference",
+      "sha256": "1e5c7c8522daec3e43fcc2e73ceb97289ded65b552949ce65a11cc8eb3d2b6ee",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "Feature-map example",
+        "Per-feature template",
+        "`<feature name>`",
+        "How a user gets there",
+        "How the control adapter drives it",
+        "Stable selectors",
+        "States to exercise",
+        "Preconditions and setup",
+        "Evidence and cross-check",
+        "Gotchas",
+        "Fictional example",
+        "Sign in",
+        "How a user gets there",
+        "How the control adapter drives it",
+        "Stable selectors",
+        "States to exercise",
+        "Preconditions and setup",
+        "Evidence and cross-check",
+        "Gotchas",
+        "Item list and detail",
+        "How a user gets there",
+        "How the control adapter drives it",
+        "Stable selectors",
+        "States to exercise",
+        "Preconditions and setup",
+        "Evidence and cross-check",
+        "Gotchas",
+        "Item editor",
+        "How a user gets there",
+        "How the control adapter drives it",
+        "Stable selectors",
+        "States to exercise",
+        "Preconditions and setup",
+        "Evidence and cross-check",
+        "Gotchas",
+        "Settings",
+        "How a user gets there",
+        "How the control adapter drives it",
+        "Stable selectors",
+        "States to exercise",
+        "Preconditions and setup",
+        "Evidence and cross-check",
+        "Gotchas",
+        "Completeness checklist"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/skills/reproduce-and-fix-issues/references/verify-existing-fix.md",
+      "role": "reference",
+      "sha256": "c90eae00abcdec71a58fa8d60f2c495b082a526ad50b8e8e494837609129bf29",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "Verify an existing fix",
+        "Qualify the artifact",
+        "Protect the working tree",
+        "Measure the baseline",
+        "Measure the patched build",
+        "Outcomes",
+        "Confirmed",
+        "Insufficient fix",
+        "Inconclusive",
+        "Cleanup"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/skills/setup-benny/SKILL.md",
+      "role": "skill",
+      "sha256": "1b1298536804eef289718f497a42f48aec135c8f4175b03e5ecfa11075758c59",
+      "claude_sha256": null,
+      "metadata": {
+        "name": "setup-benny",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Set up Benny",
+        "1. Copy the pack and enable shared pstack skills",
+        "2. Adapt the configuration",
+        "3. Fill the required choices",
+        "4. Check integration capabilities",
+        "5. Prepare the routing map",
+        "6. Verify the control adapter",
+        "7. Prepare the live automations",
+        "First-time creation",
+        "Existing automations",
+        "Creation boundary",
+        "8. Test thread safety"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/skills/triage-issue-reports/SKILL.md",
+      "role": "skill",
+      "sha256": "e88bb1ccc619f93d4b787bd9156fba5159f061c653fca00b6f08c65b6c77701a",
+      "claude_sha256": null,
+      "metadata": {
+        "name": "triage-issue-reports",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Triage issue reports",
+        "Hard safety rules",
+        "1. Freeze source coordinates",
+        "2. Read the whole report",
+        "3. Trace cause before routing",
+        "4. Classify",
+        "Bug",
+        "Performance",
+        "Feature request",
+        "Question or feedback",
+        "Reroute",
+        "5. Apply configured routing",
+        "6. Use the issue-tracker adapter",
+        "7. Dedupe",
+        "8. Decide whether to create",
+        "9. Post one verdict",
+        "10. Watch one follow-up window"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/skills/triage-issue-reports/references/routing.example.md",
+      "role": "reference",
+      "sha256": "e5e53013692568cf69da8e8b302fff929fe2fbc9aec1a4651fd7997e2c7a4025",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "Routing map example",
+        "Rules"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/templates/configuration.example.yaml",
+      "role": "automation-template",
+      "sha256": "13e24b4ce9b9a0913916e85fe3b080b88d45f8e55dccfe8ae38e0751a997b6f5",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [],
+      "references": []
+    },
+    {
+      "source": "automations/benny/templates/reproduce-automation-prompt.md",
+      "role": "automation-template",
+      "sha256": "71ec574f1844e379394ae4ef14c48d7df10afbaa319d395c788d7f856f0e6899",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "Reproduce automation prompt"
+      ],
+      "references": []
+    },
+    {
+      "source": "automations/benny/templates/triage-automation-prompt.md",
+      "role": "automation-template",
+      "sha256": "e0bba594547834f013ec805915610eb597e7929efe3ffbe85ae00339ee16d474",
+      "claude_sha256": null,
+      "metadata": {},
+      "headings": [
+        "Triage automation prompt"
+      ],
+      "references": []
+    },
+    {
+      "source": "docs/guide/01-setup.md",
+      "role": "guide",
+      "sha256": "86f1343beb84df874b9f31b9ad53dc85852a68b004cd974fb37ee130f252de0c",
+      "claude_sha256": "86f1343beb84df874b9f31b9ad53dc85852a68b004cd974fb37ee130f252de0c",
+      "metadata": {},
+      "headings": [
+        "Set up pstack",
+        "Install the plugin",
+        "Pick your models",
+        "Accept the verification offers, or don't",
+        "Keep the cost in check",
+        "Run your first task"
+      ],
+      "references": [
+        "docs/guide/02-poteto-mode.md",
+        "docs/guide/06-verify-and-ship.md",
+        "docs/harness/claude-code.md",
+        "skills/create-formal-verification-skill/SKILL.md",
+        "skills/create-verification-skill/SKILL.md",
+        "skills/setup-pstack/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/02-poteto-mode.md",
+      "role": "guide",
+      "sha256": "264e3127a8fdfa6e3e2ac64645ae81e4f5fb8a3e6f00d5f98f7ffc528c8da8ff",
+      "claude_sha256": "264e3127a8fdfa6e3e2ac64645ae81e4f5fb8a3e6f00d5f98f7ffc528c8da8ff",
+      "metadata": {},
+      "headings": [
+        "Route work through `/poteto-mode`",
+        "What happens to your prompt",
+        "Say the goal, not the ceremony",
+        "What goes in a prompt",
+        "Follow up short",
+        "Switch tasks with \"new task\"",
+        "Give parallel work its own machine",
+        "Leave it running"
+      ],
+      "references": [
+        "docs/guide/01-setup.md",
+        "docs/guide/03-understand.md",
+        "docs/guide/07-overnight.md",
+        "skills/figure-it-out/SKILL.md",
+        "skills/in-your-own-words/SKILL.md",
+        "skills/poteto-mode/SKILL.md",
+        "skills/poteto-mode/playbooks/opening-a-pr.md",
+        "skills/poteto-mode/playbooks/worktree-cleanup.md",
+        "skills/reframe/SKILL.md",
+        "skills/sharpen/SKILL.md",
+        "skills/show-me-your-work/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/03-understand.md",
+      "role": "guide",
+      "sha256": "4486cf55f20b1a351b25a06b2a19f6a7081d6af4748a4178946907c2b7861392",
+      "claude_sha256": "4486cf55f20b1a351b25a06b2a19f6a7081d6af4748a4178946907c2b7861392",
+      "metadata": {},
+      "headings": [
+        "Understand the code before changing it",
+        "Start with a read-only investigation",
+        "Trace behavior with `/how`",
+        "Dig up history with `/why`",
+        "Actually understand it with `/teach`",
+        "Rebuild your own context with `/recall`",
+        "Take over prior work with Session pickup"
+      ],
+      "references": [
+        "docs/guide/02-poteto-mode.md",
+        "docs/guide/04-design.md",
+        "skills/how/SKILL.md",
+        "skills/poteto-mode/playbooks/investigation.md",
+        "skills/poteto-mode/playbooks/session-pickup.md",
+        "skills/recall/SKILL.md",
+        "skills/teach/SKILL.md",
+        "skills/why/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/04-design.md",
+      "role": "guide",
+      "sha256": "e41952810df24c07a21ad10ebc2674a3350a03d4961a273fb6f681de87150a13",
+      "claude_sha256": "e41952810df24c07a21ad10ebc2674a3350a03d4961a273fb6f681de87150a13",
+      "metadata": {},
+      "headings": [
+        "Design before you write code",
+        "Settle the shape with `/architect`",
+        "Fan out attempts with `/arena`",
+        "Cover slices and races with `/swarm`",
+        "Break it with `/interrogate`",
+        "Prototype instead of debating",
+        "Write the README first for shared code",
+        "Plan after the design settles",
+        "How much design work does a task deserve?"
+      ],
+      "references": [
+        "docs/guide/05-build-and-clean.md",
+        "skills/architect/SKILL.md",
+        "skills/arena/SKILL.md",
+        "skills/interrogate/SKILL.md",
+        "skills/poteto-mode/playbooks/multi-phase-plan.md",
+        "skills/poteto-mode/playbooks/prototype.md",
+        "skills/setup-pstack/SKILL.md",
+        "skills/swarm/SKILL.md",
+        "skills/technical-writing/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/05-build-and-clean.md",
+      "role": "guide",
+      "sha256": "4a0538dc0e52632a8871be9957e8177adaca6f5fa254f0bbb31d30b921d0cd1c",
+      "claude_sha256": "4a0538dc0e52632a8871be9957e8177adaca6f5fa254f0bbb31d30b921d0cd1c",
+      "metadata": {},
+      "headings": [
+        "Build the change and clean the diff",
+        "Prompt each build playbook with what you know",
+        "Write the failing test first with `/tdd`",
+        "Load the TypeScript rules by name",
+        "Clean before you commit",
+        "Strip the comments with `/no-comments`"
+      ],
+      "references": [
+        "agents/comment-sicko.md",
+        "docs/guide/06-verify-and-ship.md",
+        "skills/benchmark-checklist/SKILL.md",
+        "skills/no-comments/SKILL.md",
+        "skills/poteto-mode/playbooks/bug-fix.md",
+        "skills/poteto-mode/playbooks/feature.md",
+        "skills/poteto-mode/playbooks/hillclimb.md",
+        "skills/poteto-mode/playbooks/opening-a-pr.md",
+        "skills/poteto-mode/playbooks/perf-issue.md",
+        "skills/poteto-mode/playbooks/refactoring.md",
+        "skills/poteto-mode/playbooks/runtime-forensics.md",
+        "skills/poteto-mode/playbooks/trace-forensics.md",
+        "skills/tdd/SKILL.md",
+        "skills/typescript-best-practices/SKILL.md",
+        "skills/unslop/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/06-verify-and-ship.md",
+      "role": "guide",
+      "sha256": "31ab46936950c78989a51cffaebf2e321858580d286a83d92a504528fce24d2d",
+      "claude_sha256": "31ab46936950c78989a51cffaebf2e321858580d286a83d92a504528fce24d2d",
+      "metadata": {},
+      "headings": [
+        "Verify the result and open a PR",
+        "State the finish condition up front",
+        "Vet a measured number with `/benchmark-checklist`",
+        "Create a project verification skill",
+        "Keep the verification skill honest",
+        "Prove a property with a formal verification skill",
+        "Show the behavior as a statechart",
+        "Open the PR",
+        "Drive the PR to merge-ready with Babysit",
+        "Land the stack with Shipping"
+      ],
+      "references": [
+        "docs/guide/07-overnight.md",
+        "skills/benchmark-checklist/SKILL.md",
+        "skills/blast-radius/SKILL.md",
+        "skills/create-formal-verification-skill/SKILL.md",
+        "skills/create-verification-skill/SKILL.md",
+        "skills/maintain-formal-verification-skill/SKILL.md",
+        "skills/maintain-verification-skill/SKILL.md",
+        "skills/poteto-mode/playbooks/babysit.md",
+        "skills/poteto-mode/playbooks/opening-a-pr.md",
+        "skills/poteto-mode/playbooks/shipping.md",
+        "skills/poteto-mode/playbooks/visual-parity.md",
+        "skills/principle-build-the-lever/SKILL.md",
+        "skills/principle-explain-the-number/SKILL.md",
+        "skills/principle-prove-it-works/SKILL.md",
+        "skills/statechart/SKILL.md",
+        "skills/swarm/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/07-overnight.md",
+      "role": "guide",
+      "sha256": "5bd1a4336b09947832d3b58afb22bcdfbe698ff76c1bdaab23af545f04cf8e60",
+      "claude_sha256": "679a4642a9dac56b9d833fdaf1b9091c087b6386a0c52688e1aadc66f33ea61c",
+      "metadata": {},
+      "headings": [
+        "Run work while you sleep",
+        "Earn the trust before the loop",
+        "The overnight contract",
+        "What the loop does all night",
+        "The morning audit",
+        "When the night holds a queue, not a task",
+        "Run many projects in parallel",
+        "Let loops start themselves"
+      ],
+      "references": [
+        "automations/benny/FOR_AGENTS.md",
+        "automations/benny/README.md",
+        "docs/guide/08-principles.md",
+        "skills/figure-it-out/SKILL.md",
+        "skills/ketchup/SKILL.md",
+        "skills/poteto-mode/playbooks/autonomous-run.md",
+        "skills/poteto-mode/playbooks/autopilot-full.md",
+        "skills/poteto-mode/playbooks/autopilot-stack.md",
+        "skills/poteto-mode/playbooks/pause-safely.md",
+        "skills/poteto-mode/worker.md",
+        "skills/show-me-your-work/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/08-principles.md",
+      "role": "guide",
+      "sha256": "0b26b85292f0c09768abe727c9e92987dbf81f5b439a4871034c2fd1c4cb1723",
+      "claude_sha256": "0b26b85292f0c09768abe727c9e92987dbf81f5b439a4871034c2fd1c4cb1723",
+      "metadata": {},
+      "headings": [
+        "Steer with principle names",
+        "Steering in practice",
+        "The 24, briefly"
+      ],
+      "references": [
+        "docs/guide/09-make-it-yours.md",
+        "skills/benchmark-checklist/SKILL.md",
+        "skills/correct/SKILL.md",
+        "skills/principle-attack-the-premise/SKILL.md",
+        "skills/principle-boundary-discipline/SKILL.md",
+        "skills/principle-build-the-lever/SKILL.md",
+        "skills/principle-encode-lessons-in-structure/SKILL.md",
+        "skills/principle-exhaust-the-design-space/SKILL.md",
+        "skills/principle-experience-first/SKILL.md",
+        "skills/principle-explain-the-number/SKILL.md",
+        "skills/principle-fix-root-causes/SKILL.md",
+        "skills/principle-foundational-thinking/SKILL.md",
+        "skills/principle-guard-the-context-window/SKILL.md",
+        "skills/principle-laziness-protocol/SKILL.md",
+        "skills/principle-make-operations-idempotent/SKILL.md",
+        "skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md",
+        "skills/principle-minimize-reader-load/SKILL.md",
+        "skills/principle-model-the-domain/SKILL.md",
+        "skills/principle-never-block-on-the-human/SKILL.md",
+        "skills/principle-outcome-oriented-execution/SKILL.md",
+        "skills/principle-prove-it-works/SKILL.md",
+        "skills/principle-redesign-from-first-principles/SKILL.md",
+        "skills/principle-separate-before-serializing-shared-state/SKILL.md",
+        "skills/principle-sequence-verifiable-units/SKILL.md",
+        "skills/principle-subtract-before-you-add/SKILL.md",
+        "skills/principle-test-behavior-not-implementation/SKILL.md",
+        "skills/principle-type-system-discipline/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/09-make-it-yours.md",
+      "role": "guide",
+      "sha256": "4df83ef7dc44364921a9663c7d426a1b4d0acab6a0490ef1769257b51b74e65a",
+      "claude_sha256": "4df83ef7dc44364921a9663c7d426a1b4d0acab6a0490ef1769257b51b74e65a",
+      "metadata": {},
+      "headings": [
+        "Make it yours",
+        "Generate your own mode with `/automate-me`",
+        "Capture a session's lessons with `/reflect`",
+        "Fix the environment with `/correct`",
+        "Author a focused skill",
+        "Write docs to a standard with `/technical-writing`",
+        "Test a skill change blind",
+        "Build a bot UI with `/make-bot-ui`"
+      ],
+      "references": [
+        "docs/guide/06-verify-and-ship.md",
+        "docs/guide/07-overnight.md",
+        "docs/guide/10-recipes-and-pitfalls.md",
+        "skills/automate-me/SKILL.md",
+        "skills/correct/SKILL.md",
+        "skills/create-formal-verification-skill/SKILL.md",
+        "skills/create-verification-skill/SKILL.md",
+        "skills/maintain-formal-verification-skill/SKILL.md",
+        "skills/maintain-verification-skill/SKILL.md",
+        "skills/make-bot-ui/SKILL.md",
+        "skills/poteto-mode/playbooks/authoring-a-skill.md",
+        "skills/poteto-mode/playbooks/eval.md",
+        "skills/reflect/SKILL.md",
+        "skills/technical-writing/SKILL.md",
+        "skills/unslop/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/guide/10-recipes-and-pitfalls.md",
+      "role": "guide",
+      "sha256": "287815da2cbebe9b867d4da7d0a3632f069a32b6481815be9d6cad43b12b5fbf",
+      "claude_sha256": "287815da2cbebe9b867d4da7d0a3632f069a32b6481815be9d6cad43b12b5fbf",
+      "metadata": {},
+      "headings": [
+        "Recipes and pitfalls",
+        "Understand an unfamiliar subsystem",
+        "Restate a noisy report before touching code",
+        "Sharpen a prompt before you send it",
+        "Prototype before you pick",
+        "Turn a settled design into a plan",
+        "Get a second opinion on a design",
+        "Check independent slices in parallel",
+        "Review a branch skeptically",
+        "Fix a bug through a failing test",
+        "Repro and fix a report with proof",
+        "Prove a property tests rarely reach",
+        "Vet a number before you post it",
+        "Stop correcting the same mistake",
+        "Ask how without starting the work",
+        "Keep a run honest while you're away",
+        "Redirect a drifting run",
+        "Get the reply in plain words",
+        "Catch up on a chat you left running",
+        "The pitfalls"
+      ],
+      "references": [
+        "docs/guide/01-setup.md",
+        "docs/guide/07-overnight.md",
+        "docs/guide/08-principles.md",
+        "docs/guide/README.md",
+        "skills/bro/SKILL.md",
+        "skills/ketchup-video/SKILL.md",
+        "skills/ketchup/SKILL.md",
+        "skills/poteto-mode/playbooks/authoring-a-skill.md"
+      ]
+    },
+    {
+      "source": "docs/guide/README.md",
+      "role": "guide",
+      "sha256": "5c888d034d38f380789fad57c2c6fa7307ace803a0622cdde9e57fa2afe182de",
+      "claude_sha256": "5c888d034d38f380789fad57c2c6fa7307ace803a0622cdde9e57fa2afe182de",
+      "metadata": {},
+      "headings": [
+        "The pstack guide",
+        "If you only remember one thing"
+      ],
+      "references": [
+        "docs/guide/01-setup.md",
+        "docs/guide/02-poteto-mode.md",
+        "docs/guide/03-understand.md",
+        "docs/guide/04-design.md",
+        "docs/guide/05-build-and-clean.md",
+        "docs/guide/06-verify-and-ship.md",
+        "docs/guide/07-overnight.md",
+        "docs/guide/08-principles.md",
+        "docs/guide/09-make-it-yours.md",
+        "docs/guide/10-recipes-and-pitfalls.md",
+        "skills/poteto-help/SKILL.md"
+      ]
+    },
+    {
+      "source": "docs/harness/claude-code.md",
+      "role": "guide",
+      "sha256": "289a9127a3597d7b3fbbe10c40aea4aea3f15cd5361a75be43806a07b96f634f",
+      "claude_sha256": "289a9127a3597d7b3fbbe10c40aea4aea3f15cd5361a75be43806a07b96f634f",
+      "metadata": {},
+      "headings": [
+        "pstack in Claude Code",
+        "Tools",
+        "Subagent fields",
+        "Models",
+        "setup-pstack",
+        "Paths",
+        "Cursor-only features"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/architect/SKILL.md",
+      "role": "skill",
+      "sha256": "aea83d7aa109eb73402182701b14c289844663ad9c8f959fedbef2df66787ce0",
+      "claude_sha256": "f23b6e508f7ff0bec1245bd0e04509e788901e66b59eabe54a7779d0000e7358",
+      "metadata": {
+        "name": "architect",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Architect"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/arena/SKILL.md",
+      "role": "skill",
+      "sha256": "24366948a9546dcb7dfc15a5cf7a4571edd917a8c1efef060b458a0fad608053",
+      "claude_sha256": "85623708c7af425f5f8bdd3c537ebd4ef3e70cfec75ac06173afcfefcd1e0811",
+      "metadata": {
+        "name": "arena",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Arena",
+        "Phase A: Frame",
+        "Phase B: Fan out",
+        "Phase C: Cross-judge",
+        "Phase D: Pick a base",
+        "Phase E: Graft",
+        "Phase F: Verify",
+        "Outputs"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/automate-me/SKILL.md",
+      "role": "skill",
+      "sha256": "ffdb2db6d56b29518f50837d4e5d9194034bb3a767d77eb76efe82351ab1489c",
+      "claude_sha256": "f3f7df05694ecd5b916b7fb008d97214ab8de977bcd46ec4461e6bdddbc5b9ff",
+      "metadata": {
+        "name": "automate-me",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Automate me",
+        "Flow",
+        "0. Check for an existing skill",
+        "1. Mine their history",
+        "2. Ask the user directly",
+        "3. Cluster findings",
+        "4. Draft the skill",
+        "5. Iterate on prose",
+        "6. Land it",
+        "Guardrails",
+        "Evaluation",
+        "When not to use"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/benchmark-checklist/SKILL.md",
+      "role": "skill",
+      "sha256": "5efd79495e3eebf3b53814861330fe812458212958f8f009492e866c329161f6",
+      "claude_sha256": "5efd79495e3eebf3b53814861330fe812458212958f8f009492e866c329161f6",
+      "metadata": {
+        "name": "benchmark-checklist",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Benchmark checklist",
+        "Before you run anything",
+        "The questions",
+        "Report",
+        "Other perf material"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/blast-radius/SKILL.md",
+      "role": "skill",
+      "sha256": "4248d03e22365207d2e5f90c9542720f80a88a6b42fd542ef88dde3cf9f9223f",
+      "claude_sha256": "4248d03e22365207d2e5f90c9542720f80a88a6b42fd542ef88dde3cf9f9223f",
+      "metadata": {
+        "name": "blast-radius",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Blast radius",
+        "Don't trust your own writeup",
+        "How sure are you",
+        "Steps",
+        "What to hand back"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/bro/SKILL.md",
+      "role": "skill",
+      "sha256": "aa329d0ceeeecb6822a7174ad76bb07a7826a3c52ceb6a588dec4138815084bb",
+      "claude_sha256": "aa329d0ceeeecb6822a7174ad76bb07a7826a3c52ceb6a588dec4138815084bb",
+      "metadata": {
+        "name": "bro",
+        "disable-model-invocation": "true"
+      },
+      "headings": [],
+      "references": []
+    },
+    {
+      "source": "skills/correct/SKILL.md",
+      "role": "skill",
+      "sha256": "e347045d00c967a0b831ef883cc6ac79d21329aa10b5968637df95de7febf0ba",
+      "claude_sha256": "e347045d00c967a0b831ef883cc6ac79d21329aa10b5968637df95de7febf0ba",
+      "metadata": {
+        "name": "correct",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Correct",
+        "Find the mistake classes",
+        "Fix each class at the highest level that works",
+        "Fix and prove",
+        "Keep the rule table"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/create-formal-verification-skill/SKILL.md",
+      "role": "skill",
+      "sha256": "30ef0ac27612ecd16fdc081112113221d673053cef3f8603db11932193861211",
+      "claude_sha256": "78efd7c0e472f11d25399cd337fb3036b48411da75f426c22c363fe1048cd8bb",
+      "metadata": {
+        "name": "create-formal-verification-skill",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Create a formal verification skill",
+        "Choose the target from the code",
+        "Let the question choose the tool",
+        "What makes it good",
+        "Generate the verify skill",
+        "Prove it before you hand off",
+        "Hand off"
+      ],
+      "references": [
+        "skills/statechart/SKILL.md"
+      ]
+    },
+    {
+      "source": "skills/create-verification-skill/SKILL.md",
+      "role": "skill",
+      "sha256": "d353973547bf8ad8977eca645f4cd4feaed0d32f4b43d1448f906b0a76c4d694",
+      "claude_sha256": "b63d3cfb6d41725bd187d1df6085ba54a88391d5c25ca51fca8f2625a2de2288",
+      "metadata": {
+        "name": "create-verification-skill",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Create a verification skill",
+        "1. Interview the repo, not the user",
+        "2. Generate the skill",
+        "3. Seed the feature map",
+        "4. Prove the generated skill before handing it over",
+        "5. Offer the maintenance loop"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/create-verification-skill/references/feature-map-example/README.md",
+      "role": "reference",
+      "sha256": "cb7bd782cf89968a4ba3d58a5151db837430db92d19a6f52a906973b77b516ba",
+      "claude_sha256": "cb7bd782cf89968a4ba3d58a5151db837430db92d19a6f52a906973b77b516ba",
+      "metadata": {},
+      "headings": [
+        "Notes verification map",
+        "Baseline preconditions",
+        "Driving conventions",
+        "Proof and skip reporting",
+        "Feature entry contract",
+        "Features"
+      ],
+      "references": [
+        "skills/create-verification-skill/references/feature-map-example/create-note.md",
+        "skills/create-verification-skill/references/feature-map-example/search.md"
+      ]
+    },
+    {
+      "source": "skills/create-verification-skill/references/feature-map-example/create-note.md",
+      "role": "reference",
+      "sha256": "644a44c74f35d38c2feb7cd05a0121fdebbb623e8dc376c185b565a581d1ccf7",
+      "claude_sha256": "644a44c74f35d38c2feb7cd05a0121fdebbb623e8dc376c185b565a581d1ccf7",
+      "metadata": {},
+      "headings": [
+        "Create a note",
+        "Sub-features",
+        "How to get to it (user POV)",
+        "Driving it with control-notes",
+        "Gotchas"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/create-verification-skill/references/feature-map-example/search.md",
+      "role": "reference",
+      "sha256": "6e87b9e7f2791a7776ba1bb83f371cd285c306c67f19d245cc4dd6ca3015c823",
+      "claude_sha256": "6e87b9e7f2791a7776ba1bb83f371cd285c306c67f19d245cc4dd6ca3015c823",
+      "metadata": {},
+      "headings": [
+        "Search notes",
+        "Sub-features",
+        "How to get to it (user POV)",
+        "Driving it with control-notes",
+        "Gotchas"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/figure-it-out/SKILL.md",
+      "role": "skill",
+      "sha256": "30693f2510b111128a6bae0d0ac35f97d972a30c0b84364dc87290b9fdc3b699",
+      "claude_sha256": "b4d864df63f3045d064b73616331f66671b5207da6b2a8e35113df6b007435ff",
+      "metadata": {
+        "name": "figure-it-out",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Figure it out",
+        "Start",
+        "Phase A: Frame",
+        "Phase B: Design the workflow",
+        "Phase C: Run the loop",
+        "Phase D: Keep the audit trail",
+        "Phase E: Verify and hand back"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/how/SKILL.md",
+      "role": "skill",
+      "sha256": "23d5cc79a449b9838242e7af5563aa8a4f0417bab136bbcc054b4bebc7284680",
+      "claude_sha256": "50cd58f4a3e4df5616977ef92dcabd3d67cf09de30368eebd148cbfbac113d36",
+      "metadata": {
+        "name": "how",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "How",
+        "1. Explain",
+        "2. Present"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/in-your-own-words/SKILL.md",
+      "role": "skill",
+      "sha256": "fa8ba74e27d7be371dc270ec78bbf816411477d0dfab185356c861ac8dd413ad",
+      "claude_sha256": "fa8ba74e27d7be371dc270ec78bbf816411477d0dfab185356c861ac8dd413ad",
+      "metadata": {
+        "name": "in-your-own-words",
+        "disable-model-invocation": "true"
+      },
+      "headings": [],
+      "references": []
+    },
+    {
+      "source": "skills/interrogate/SKILL.md",
+      "role": "skill",
+      "sha256": "3f3c2e9b8cf6b180dba9f32a4aff85e5691b09805232468e37a0ba45437a9984",
+      "claude_sha256": "41358b680e1d585ee35f2b58d93e11eda8c02e3f1c5f5b50c565a173d8e37eed",
+      "metadata": {
+        "name": "interrogate",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Interrogate",
+        "Frame",
+        "Fan out",
+        "Verify",
+        "Output"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/ketchup-video/SKILL.md",
+      "role": "skill",
+      "sha256": "027aed9a01adf208aeac3a134f47d12f7c1e42d6fea03095aedc2bae58cdcfd1",
+      "claude_sha256": "027aed9a01adf208aeac3a134f47d12f7c1e42d6fea03095aedc2bae58cdcfd1",
+      "metadata": {
+        "name": "ketchup-video",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Ketchup video",
+        "Slides",
+        "Subtitles",
+        "Render"
+      ],
+      "references": [
+        "skills/ketchup/SKILL.md"
+      ]
+    },
+    {
+      "source": "skills/ketchup/SKILL.md",
+      "role": "skill",
+      "sha256": "f2923ffd14f6fc778f75a47aaed1f317fb5fd00b5701ca769d6446c74106dead",
+      "claude_sha256": "f2923ffd14f6fc778f75a47aaed1f317fb5fd00b5701ca769d6446c74106dead",
+      "metadata": {
+        "name": "ketchup",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Ketchup",
+        "Gather what changed",
+        "Write the reply",
+        "Visuals"
+      ],
+      "references": [
+        "skills/bro/SKILL.md"
+      ]
+    },
+    {
+      "source": "skills/maintain-formal-verification-skill/SKILL.md",
+      "role": "skill",
+      "sha256": "0c96f54293542d3818b68754562b338073958781a9684454611dca37592e2d2c",
+      "claude_sha256": "adea4eb5afe20fd07bb90e675ab6c0c6232e5447e29faa3ebf58049c57cdc060",
+      "metadata": {
+        "name": "maintain-formal-verification-skill",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Maintain a formal verification skill",
+        "Outcomes",
+        "Edit scope",
+        "Pass",
+        "Report"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/maintain-verification-skill/SKILL.md",
+      "role": "skill",
+      "sha256": "515c0eaa054b3f6be1b1fb06f2c2f173c80fddb58bbcac57576f89c479bc68e8",
+      "claude_sha256": "8eb22afe29058a689ab542dbd729b953cb1fe0d21f0214e54270477a1751b032",
+      "metadata": {
+        "name": "maintain-verification-skill",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Maintain a verification skill",
+        "Outcomes",
+        "Edit scope",
+        "Pass"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/make-bot-ui/SKILL.md",
+      "role": "skill",
+      "sha256": "ad19d0bc6764287ec08c2521701974e7dac941f72e4d0fe81a24f4614494586f",
+      "claude_sha256": "160a4847d7666130507fa8591feab07b684974fc07ebd0b79a33f70d5deef7ff",
+      "metadata": {
+        "name": "make-bot-ui",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "How to make a bot UI",
+        "Create the webhook routine",
+        "Copy the URL and the sender key",
+        "Request the sender key",
+        "Host the page on this computer",
+        "Put the page on the tailnet",
+        "Handle the webhook wake"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/no-comments/SKILL.md",
+      "role": "skill",
+      "sha256": "054a46f2662c725add02d9e0440d8dcb4351f3bd0afcf797acc22a501b527b54",
+      "claude_sha256": "bf4ed029ba60cd34e7f068079fd3e16a686a8c2b4cafeef26d0a77831bd22142",
+      "metadata": {
+        "name": "no-comments",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "No comments",
+        "Scope",
+        "Steps"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-help/SKILL.md",
+      "role": "skill",
+      "sha256": "ea4b36ba83fa7027b9637ad7d926d9a62b4b630a4525304245ae66e1d44c8713",
+      "claude_sha256": "9e6f0aea2041c95dd354eec4ee9acbc8b8217504f8c43438ad46024dca0b625f",
+      "metadata": {
+        "name": "poteto-help",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Poteto help",
+        "Find out what they need",
+        "Get set up",
+        "Start a task with `/poteto-mode`",
+        "Pick a skill",
+        "Playbooks and principles",
+        "Fix a run that went wrong",
+        "Make pstack my own",
+        "Reply"
+      ],
+      "references": [
+        "README.md",
+        "docs/guide/01-setup.md",
+        "docs/guide/02-poteto-mode.md",
+        "docs/guide/06-verify-and-ship.md",
+        "docs/guide/07-overnight.md",
+        "docs/guide/08-principles.md",
+        "docs/guide/09-make-it-yours.md",
+        "docs/guide/10-recipes-and-pitfalls.md",
+        "docs/harness/claude-code.md",
+        "skills/architect/SKILL.md",
+        "skills/arena/SKILL.md",
+        "skills/automate-me/SKILL.md",
+        "skills/benchmark-checklist/SKILL.md",
+        "skills/blast-radius/SKILL.md",
+        "skills/bro/SKILL.md",
+        "skills/correct/SKILL.md",
+        "skills/create-formal-verification-skill/SKILL.md",
+        "skills/create-verification-skill/SKILL.md",
+        "skills/figure-it-out/SKILL.md",
+        "skills/how/SKILL.md",
+        "skills/in-your-own-words/SKILL.md",
+        "skills/interrogate/SKILL.md",
+        "skills/ketchup-video/SKILL.md",
+        "skills/ketchup/SKILL.md",
+        "skills/maintain-formal-verification-skill/SKILL.md",
+        "skills/maintain-verification-skill/SKILL.md",
+        "skills/make-bot-ui/SKILL.md",
+        "skills/no-comments/SKILL.md",
+        "skills/poteto-help/references/prompting.md",
+        "skills/poteto-help/references/recipes.md",
+        "skills/poteto-mode/SKILL.md",
+        "skills/poteto-mode/playbooks/multi-phase-plan.md",
+        "skills/recall/SKILL.md",
+        "skills/reflect/SKILL.md",
+        "skills/reframe/SKILL.md",
+        "skills/setup-pstack/SKILL.md",
+        "skills/sharpen/SKILL.md",
+        "skills/show-me-your-work/SKILL.md",
+        "skills/statechart/SKILL.md",
+        "skills/swarm/SKILL.md",
+        "skills/tdd/SKILL.md",
+        "skills/teach/SKILL.md",
+        "skills/technical-writing/SKILL.md",
+        "skills/typescript-best-practices/SKILL.md",
+        "skills/unslop/SKILL.md",
+        "skills/why/SKILL.md"
+      ]
+    },
+    {
+      "source": "skills/poteto-help/references/prompting.md",
+      "role": "reference",
+      "sha256": "463f450c44a60afd001a2f69fdf8a5dea174351f339369b12ec3c41515e564d3",
+      "claude_sha256": "463f450c44a60afd001a2f69fdf8a5dea174351f339369b12ec3c41515e564d3",
+      "metadata": {},
+      "headings": [
+        "Word the prompt",
+        "Put in",
+        "Leave out",
+        "Load the context first",
+        "Design before the plan",
+        "Follow up short",
+        "Before stepping away",
+        "Steer in one line"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-help/references/recipes.md",
+      "role": "reference",
+      "sha256": "5323aca73a39a3b607c2bb22cd33551fe893563dfd4b104df838da010e9fc702",
+      "claude_sha256": "5323aca73a39a3b607c2bb22cd33551fe893563dfd4b104df838da010e9fc702",
+      "metadata": {},
+      "headings": [
+        "Prompts worth copying",
+        "Understand",
+        "Build",
+        "Design and plan",
+        "Review and ship",
+        "Away and back"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/SKILL.md",
+      "role": "skill",
+      "sha256": "7aa026dc1fad7db0ea1ff39171e6b768ee99d03a7f46d0b9cd38973511251d81",
+      "claude_sha256": "9bc98a59e5c963fd03e969c0e6efcf1a29039286d131930ff4d2c605df1aa042",
+      "metadata": {
+        "name": "poteto-mode",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Poteto mode",
+        "Non-negotiables",
+        "Principles",
+        "Autonomy",
+        "Subagents",
+        "Writing the reply",
+        "Playbooks"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/authoring-a-skill.md",
+      "role": "playbook",
+      "sha256": "f6a13a445c360b48d6cd72780ac01955f45b82826476efe0e67c7559329407aa",
+      "claude_sha256": "f6a13a445c360b48d6cd72780ac01955f45b82826476efe0e67c7559329407aa",
+      "metadata": {},
+      "headings": [
+        "Authoring or modifying a skill"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/autonomous-run.md",
+      "role": "playbook",
+      "sha256": "613c7b3079779ecfa27e1fb41a082711b5a1207e720b87f75c3aaa9b25aac480",
+      "claude_sha256": "613c7b3079779ecfa27e1fb41a082711b5a1207e720b87f75c3aaa9b25aac480",
+      "metadata": {},
+      "headings": [
+        "Autonomous run"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/autopilot-full.md",
+      "role": "playbook",
+      "sha256": "2a8856b7e11590f6faba87c11520e0a20f46c78dbfdaac5eceab48ea308bf787",
+      "claude_sha256": "2a8856b7e11590f6faba87c11520e0a20f46c78dbfdaac5eceab48ea308bf787",
+      "metadata": {},
+      "headings": [
+        "Autopilot-full"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/autopilot-stack.md",
+      "role": "playbook",
+      "sha256": "3dc6961df12a74a917571c21de482b42939b728cb4879d1852c51fd9fbabd152",
+      "claude_sha256": "3dc6961df12a74a917571c21de482b42939b728cb4879d1852c51fd9fbabd152",
+      "metadata": {},
+      "headings": [
+        "Autopilot-stack"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/babysit.md",
+      "role": "playbook",
+      "sha256": "06fed1fa997c8899d7365fb0f21c0177084fcb8d0561841d2eca753660f63a85",
+      "claude_sha256": "06fed1fa997c8899d7365fb0f21c0177084fcb8d0561841d2eca753660f63a85",
+      "metadata": {},
+      "headings": [
+        "Babysit"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/bug-fix.md",
+      "role": "playbook",
+      "sha256": "eef68686ea0128d36979c39ce88f5cd5c248eb4e58f1ca3229692b9902961170",
+      "claude_sha256": "eef68686ea0128d36979c39ce88f5cd5c248eb4e58f1ca3229692b9902961170",
+      "metadata": {},
+      "headings": [
+        "Bug fix"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/eval.md",
+      "role": "playbook",
+      "sha256": "369bfda8bf305fb57bf4cabada7862c41dc21f1dc0ad7993cfcd29d0a4d99a68",
+      "claude_sha256": "369bfda8bf305fb57bf4cabada7862c41dc21f1dc0ad7993cfcd29d0a4d99a68",
+      "metadata": {},
+      "headings": [
+        "Eval"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/feature.md",
+      "role": "playbook",
+      "sha256": "beb7b527049eab12052deac8a32e6ee7f6cf26e7ebffb3c3f5d6cead1ec7df7e",
+      "claude_sha256": "beb7b527049eab12052deac8a32e6ee7f6cf26e7ebffb3c3f5d6cead1ec7df7e",
+      "metadata": {},
+      "headings": [
+        "Feature"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/hillclimb.md",
+      "role": "playbook",
+      "sha256": "a1d71e026d648991646533539939641f33508d5a02340f5041482ddd58116216",
+      "claude_sha256": "a1d71e026d648991646533539939641f33508d5a02340f5041482ddd58116216",
+      "metadata": {},
+      "headings": [
+        "Hillclimb"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/investigation.md",
+      "role": "playbook",
+      "sha256": "1009fdb6596a9c06cb93e224ec86bfb60226f2c603474c968a4f2c2983e96a69",
+      "claude_sha256": "1009fdb6596a9c06cb93e224ec86bfb60226f2c603474c968a4f2c2983e96a69",
+      "metadata": {},
+      "headings": [
+        "Investigation"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/multi-phase-plan.md",
+      "role": "playbook",
+      "sha256": "98e0ed1acc5410fd23ed52cc399346c7c3f83f9f6f7068f8cc52d95ff84ab653",
+      "claude_sha256": "98e0ed1acc5410fd23ed52cc399346c7c3f83f9f6f7068f8cc52d95ff84ab653",
+      "metadata": {},
+      "headings": [
+        "Multi-phase or multi-PR plan"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/opening-a-pr.md",
+      "role": "playbook",
+      "sha256": "a14cf04833cd6a3eb899fb8814759c937294d0faa3da1ef09d568f45002026b4",
+      "claude_sha256": "a14cf04833cd6a3eb899fb8814759c937294d0faa3da1ef09d568f45002026b4",
+      "metadata": {},
+      "headings": [
+        "Opening a PR"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/pause-safely.md",
+      "role": "playbook",
+      "sha256": "77968cfe5f4a71a8cd33e0ae8ffcdbd88dd693a212c240457773e6c40c96c21d",
+      "claude_sha256": "77968cfe5f4a71a8cd33e0ae8ffcdbd88dd693a212c240457773e6c40c96c21d",
+      "metadata": {},
+      "headings": [
+        "Pause safely"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/perf-issue.md",
+      "role": "playbook",
+      "sha256": "0eb3130e34798cdc0971eb1b3582856cb81023ccab0abeb64301458660be15a1",
+      "claude_sha256": "0eb3130e34798cdc0971eb1b3582856cb81023ccab0abeb64301458660be15a1",
+      "metadata": {},
+      "headings": [
+        "Perf issue"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/prototype.md",
+      "role": "playbook",
+      "sha256": "7aa1f52c691c3d46d5afc527b23f90977fce869ce33573c73c81a4c7f0cde962",
+      "claude_sha256": "7aa1f52c691c3d46d5afc527b23f90977fce869ce33573c73c81a4c7f0cde962",
+      "metadata": {},
+      "headings": [
+        "Prototype"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/refactoring.md",
+      "role": "playbook",
+      "sha256": "f11ff3c3ff0ea09d3ce2db0a3c11be3a3c11c279c04b83324723d0e0f984755b",
+      "claude_sha256": "f11ff3c3ff0ea09d3ce2db0a3c11be3a3c11c279c04b83324723d0e0f984755b",
+      "metadata": {},
+      "headings": [
+        "Refactoring"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/runtime-forensics.md",
+      "role": "playbook",
+      "sha256": "79634d9bbc1a6fef3fa5c852c1c723d525f7fab45568e9637121e4afc058405f",
+      "claude_sha256": "79634d9bbc1a6fef3fa5c852c1c723d525f7fab45568e9637121e4afc058405f",
+      "metadata": {},
+      "headings": [
+        "Runtime forensics"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/session-pickup.md",
+      "role": "playbook",
+      "sha256": "15a6b61eeb89e2dd66ab8254f7c6807694a06eb103342983a7620f10c942ecf9",
+      "claude_sha256": "15a6b61eeb89e2dd66ab8254f7c6807694a06eb103342983a7620f10c942ecf9",
+      "metadata": {},
+      "headings": [
+        "Session pickup"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/shipping.md",
+      "role": "playbook",
+      "sha256": "486a6211859eeacfc9a85c7a9d2632b7dddecad189a6b2551212ef274ef1d85c",
+      "claude_sha256": "486a6211859eeacfc9a85c7a9d2632b7dddecad189a6b2551212ef274ef1d85c",
+      "metadata": {},
+      "headings": [
+        "Shipping"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/trace-forensics.md",
+      "role": "playbook",
+      "sha256": "a2d5e20b544835755407b9bdd945e2b595d2e5f826b44c438cbadf92e7efd797",
+      "claude_sha256": "a2d5e20b544835755407b9bdd945e2b595d2e5f826b44c438cbadf92e7efd797",
+      "metadata": {},
+      "headings": [
+        "Trace forensics"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/visual-parity.md",
+      "role": "playbook",
+      "sha256": "950ca51999a6454c98eee6bcbc3d1bbe501a4e3a5d5439b6f6ddc378991b256c",
+      "claude_sha256": "950ca51999a6454c98eee6bcbc3d1bbe501a4e3a5d5439b6f6ddc378991b256c",
+      "metadata": {},
+      "headings": [
+        "Visual parity"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/playbooks/worktree-cleanup.md",
+      "role": "playbook",
+      "sha256": "2d4d3dcc9e4ddff4770c5f2a254c7915e6bbed968861cfa0c3c45bd04f99b3a5",
+      "claude_sha256": "2d4d3dcc9e4ddff4770c5f2a254c7915e6bbed968861cfa0c3c45bd04f99b3a5",
+      "metadata": {},
+      "headings": [
+        "Worktree and simulator cleanup"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/references/bugbot-triage.md",
+      "role": "reference",
+      "sha256": "b2d146c770d8d3593e1ef3d77b668039b8e1f78093ea1a86f1d45d7f99614309",
+      "claude_sha256": "b2d146c770d8d3593e1ef3d77b668039b8e1f78093ea1a86f1d45d7f99614309",
+      "metadata": {},
+      "headings": [
+        "Bugbot triage",
+        "Decision rubric",
+        "Learned pattern format",
+        "Recurring skip candidates",
+        "Intentional UI or design-system visual changes",
+        "Upstack or stack-local usage Bugbot cannot see",
+        "Temporary duplication during parallel implementation",
+        "Existing framework or component invariant covers the warning",
+        "Owner-declared follow-up or deferred cleanup",
+        "Self-withdrawn or explicit false-positive rule comments",
+        "Ask by default",
+        "Candidate learnings from recent babysits",
+        "Manual reimplementations of native browser behavior",
+        "Contract-test drift claims are cheaply verifiable — run the test first",
+        "Stale security-review finding already fixed later in the same PR",
+        "Widening a deliberately narrow error condition would mask the real error"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/poteto-mode/worker.md",
+      "role": "agent-prompt",
+      "sha256": "d051060527ab1649fb1e69d1e7d416950264f9955c3de3635c0d63569f1b90d8",
+      "claude_sha256": "d051060527ab1649fb1e69d1e7d416950264f9955c3de3635c0d63569f1b90d8",
+      "metadata": {},
+      "headings": [],
+      "references": []
+    },
+    {
+      "source": "skills/principle-attack-the-premise/SKILL.md",
+      "role": "skill",
+      "sha256": "831e916c540f4b6b720b7472aeea6e6ef93996655e36cc2517221f6f2081b480",
+      "claude_sha256": "831e916c540f4b6b720b7472aeea6e6ef93996655e36cc2517221f6f2081b480",
+      "metadata": {
+        "name": "principle-attack-the-premise",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Attack the Premise"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-boundary-discipline/SKILL.md",
+      "role": "skill",
+      "sha256": "c02c26cca3906bfd57829535f8fa7ee9e00df037b4dbb24e5f85ec9e12710b48",
+      "claude_sha256": "c02c26cca3906bfd57829535f8fa7ee9e00df037b4dbb24e5f85ec9e12710b48",
+      "metadata": {
+        "name": "principle-boundary-discipline",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Boundary Discipline"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-build-the-lever/SKILL.md",
+      "role": "skill",
+      "sha256": "753d81cf9ca2a4e9d1f057429f0c63c9c622e6022dd877ec97ec15f442076aac",
+      "claude_sha256": "753d81cf9ca2a4e9d1f057429f0c63c9c622e6022dd877ec97ec15f442076aac",
+      "metadata": {
+        "name": "principle-build-the-lever",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Build the Lever"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-encode-lessons-in-structure/SKILL.md",
+      "role": "skill",
+      "sha256": "228963799189f481827d6f28065f278bc2008ffa37030b1234cbd5814d36b9e9",
+      "claude_sha256": "228963799189f481827d6f28065f278bc2008ffa37030b1234cbd5814d36b9e9",
+      "metadata": {
+        "name": "principle-encode-lessons-in-structure",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Encode Lessons in Structure"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-exhaust-the-design-space/SKILL.md",
+      "role": "skill",
+      "sha256": "2de83d99f93f60ec6313455b0bc9aa9f0bfb93dd59f414f403691322db00d4db",
+      "claude_sha256": "2de83d99f93f60ec6313455b0bc9aa9f0bfb93dd59f414f403691322db00d4db",
+      "metadata": {
+        "name": "principle-exhaust-the-design-space",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Exhaust the Design Space"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-experience-first/SKILL.md",
+      "role": "skill",
+      "sha256": "58903529d733b1c1a7c9ccf127d45ef3c7d0d9f0b81164a4dc6b80efe6f2912b",
+      "claude_sha256": "58903529d733b1c1a7c9ccf127d45ef3c7d0d9f0b81164a4dc6b80efe6f2912b",
+      "metadata": {
+        "name": "principle-experience-first",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Experience First"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-explain-the-number/SKILL.md",
+      "role": "skill",
+      "sha256": "e6a3f00991f4949cf18a0b5c77dd3126ca4402b8553f88c9c7905e577512676e",
+      "claude_sha256": "e6a3f00991f4949cf18a0b5c77dd3126ca4402b8553f88c9c7905e577512676e",
+      "metadata": {
+        "name": "principle-explain-the-number",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Explain the Number"
+      ],
+      "references": [
+        "skills/benchmark-checklist/SKILL.md"
+      ]
+    },
+    {
+      "source": "skills/principle-fix-root-causes/SKILL.md",
+      "role": "skill",
+      "sha256": "79afd7e67d8951203231f6f1ccfc7b4a1f30d8d6cdb68e92755c80012414dbeb",
+      "claude_sha256": "79afd7e67d8951203231f6f1ccfc7b4a1f30d8d6cdb68e92755c80012414dbeb",
+      "metadata": {
+        "name": "principle-fix-root-causes",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Fix Root Causes"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-foundational-thinking/SKILL.md",
+      "role": "skill",
+      "sha256": "5c63eecf4b83ea5a99eda7a95a96cac0929d2dce7393d7089c83917bc12cf820",
+      "claude_sha256": "5c63eecf4b83ea5a99eda7a95a96cac0929d2dce7393d7089c83917bc12cf820",
+      "metadata": {
+        "name": "principle-foundational-thinking",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Foundational Thinking"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-guard-the-context-window/SKILL.md",
+      "role": "skill",
+      "sha256": "af0b9dd70b43628ce4a59a4d332e9d9ad055084e460f430e7a757495c627e81a",
+      "claude_sha256": "af0b9dd70b43628ce4a59a4d332e9d9ad055084e460f430e7a757495c627e81a",
+      "metadata": {
+        "name": "principle-guard-the-context-window",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Guard the Context Window"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-laziness-protocol/SKILL.md",
+      "role": "skill",
+      "sha256": "1be6e7a435f26a75a76eb848b9c3d611b9977d0f5822361753244da25ca3ca45",
+      "claude_sha256": "1be6e7a435f26a75a76eb848b9c3d611b9977d0f5822361753244da25ca3ca45",
+      "metadata": {
+        "name": "principle-laziness-protocol",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Laziness Protocol"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-make-operations-idempotent/SKILL.md",
+      "role": "skill",
+      "sha256": "76ad0a99b6ff2a05a159accfeee48412d62f62774eb8d05bbff26a1f3aa3eab5",
+      "claude_sha256": "76ad0a99b6ff2a05a159accfeee48412d62f62774eb8d05bbff26a1f3aa3eab5",
+      "metadata": {
+        "name": "principle-make-operations-idempotent",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Make Operations Idempotent"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md",
+      "role": "skill",
+      "sha256": "580ad9bb1a0994ecb924321ba49efc38a2f85c64e22c76fb133f57a78272a2e6",
+      "claude_sha256": "580ad9bb1a0994ecb924321ba49efc38a2f85c64e22c76fb133f57a78272a2e6",
+      "metadata": {
+        "name": "principle-migrate-callers-then-delete-legacy-apis",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Migrate Callers Then Delete Legacy APIs"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-minimize-reader-load/SKILL.md",
+      "role": "skill",
+      "sha256": "22d27deffb0a3726858d0d4b02d71acd4a3eb4d44e218bc89b66e49dc9823937",
+      "claude_sha256": "22d27deffb0a3726858d0d4b02d71acd4a3eb4d44e218bc89b66e49dc9823937",
+      "metadata": {
+        "name": "principle-minimize-reader-load",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Minimize Reader Load"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-model-the-domain/SKILL.md",
+      "role": "skill",
+      "sha256": "97c6214dc6a18b93177dda6429185a8640878b36ddee6ec9400c23a0eb9be2d8",
+      "claude_sha256": "97c6214dc6a18b93177dda6429185a8640878b36ddee6ec9400c23a0eb9be2d8",
+      "metadata": {
+        "name": "principle-model-the-domain",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Model the Domain"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-never-block-on-the-human/SKILL.md",
+      "role": "skill",
+      "sha256": "05030a7a083c337676f793881b4e93cd218e8f1dd676529f56e6ac1d3efb8d1f",
+      "claude_sha256": "05030a7a083c337676f793881b4e93cd218e8f1dd676529f56e6ac1d3efb8d1f",
+      "metadata": {
+        "name": "principle-never-block-on-the-human",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Never Block on the Human"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-outcome-oriented-execution/SKILL.md",
+      "role": "skill",
+      "sha256": "10eb91633aa570355ba4bb37088fcade2b22e498df7a58edc749e65bc5a78e2d",
+      "claude_sha256": "10eb91633aa570355ba4bb37088fcade2b22e498df7a58edc749e65bc5a78e2d",
+      "metadata": {
+        "name": "principle-outcome-oriented-execution",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Outcome-Oriented Execution"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-prove-it-works/SKILL.md",
+      "role": "skill",
+      "sha256": "3d6c482e341974cfcb8d19ebf66fb1d4274d8673af35e36d3c231a6aa9e03f25",
+      "claude_sha256": "3d6c482e341974cfcb8d19ebf66fb1d4274d8673af35e36d3c231a6aa9e03f25",
+      "metadata": {
+        "name": "principle-prove-it-works",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Prove It Works"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-redesign-from-first-principles/SKILL.md",
+      "role": "skill",
+      "sha256": "170e0a658783e43fee8ec5a8c2422a4abb8f69cef621dd1819a95910b8207034",
+      "claude_sha256": "170e0a658783e43fee8ec5a8c2422a4abb8f69cef621dd1819a95910b8207034",
+      "metadata": {
+        "name": "principle-redesign-from-first-principles",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Redesign From First Principles"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-separate-before-serializing-shared-state/SKILL.md",
+      "role": "skill",
+      "sha256": "2e5625d686b657e0b607c329fd8043bf50261b808239308fe4c6776e2817e95a",
+      "claude_sha256": "2e5625d686b657e0b607c329fd8043bf50261b808239308fe4c6776e2817e95a",
+      "metadata": {
+        "name": "principle-separate-before-serializing-shared-state",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Separate Before Serializing Shared State"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-sequence-verifiable-units/SKILL.md",
+      "role": "skill",
+      "sha256": "ab0cc331cf317c07bb0ed6dd13ee9f618338b36e4e851521977bc5c4a8d429e1",
+      "claude_sha256": "ab0cc331cf317c07bb0ed6dd13ee9f618338b36e4e851521977bc5c4a8d429e1",
+      "metadata": {
+        "name": "principle-sequence-verifiable-units",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Sequence work into verifiable units"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-subtract-before-you-add/SKILL.md",
+      "role": "skill",
+      "sha256": "8c93bb9d1a7f38e2ef37655d93f0e790fa59903105af3d500cc8a663ebe45f3f",
+      "claude_sha256": "8c93bb9d1a7f38e2ef37655d93f0e790fa59903105af3d500cc8a663ebe45f3f",
+      "metadata": {
+        "name": "principle-subtract-before-you-add",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Subtract Before You Add"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-test-behavior-not-implementation/SKILL.md",
+      "role": "skill",
+      "sha256": "42afc1a2c7176363b6410cfde06a9fd3e96f5022ba86bdb8de4838ad65c2442d",
+      "claude_sha256": "42afc1a2c7176363b6410cfde06a9fd3e96f5022ba86bdb8de4838ad65c2442d",
+      "metadata": {
+        "name": "principle-test-behavior-not-implementation",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Test Behavior, Not Implementation"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/principle-type-system-discipline/SKILL.md",
+      "role": "skill",
+      "sha256": "9cd1ce345bc9d666c73c64c89c89164217b659aa4c4dde5600cbbe6f6e775461",
+      "claude_sha256": "8ccf6a8f4fd5ff948280dae49e24dca1232e5bc952b3262bfb800d54716aa7c5",
+      "metadata": {
+        "name": "principle-type-system-discipline",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Type System Discipline"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/recall/SKILL.md",
+      "role": "skill",
+      "sha256": "1f4eda450650a7bd3948f44489a94f6c692f6a14ab9ce56ab9ed6f60c50e2258",
+      "claude_sha256": "505e9493a26cdc9d31d6aeac95f9f6661586853db21b23759bda2653a8a06e28",
+      "metadata": {
+        "name": "recall",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Recall",
+        "Output contract"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/reflect/SKILL.md",
+      "role": "skill",
+      "sha256": "6f6952f91514dc86257830da93a446c732a1af906f6acd5e5783dc587a29031e",
+      "claude_sha256": "81118b71e40bdf4bf9075d5c4a0b2240b1ed19e1eccf114a295083acfc331831",
+      "metadata": {
+        "name": "reflect",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Reflect"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/reframe/SKILL.md",
+      "role": "skill",
+      "sha256": "1e2e8a11da838c9169dae6fb71257041cf4e91d58862d1629354648b9bd458f3",
+      "claude_sha256": "1e2e8a11da838c9169dae6fb71257041cf4e91d58862d1629354648b9bd458f3",
+      "metadata": {
+        "name": "reframe",
+        "disable-model-invocation": "true"
+      },
+      "headings": [],
+      "references": []
+    },
+    {
+      "source": "skills/setup-pstack/SKILL.md",
+      "role": "skill",
+      "sha256": "9347e6a17d41c92fd9d57e689c63d81defbd63df18dbcd5e9858ab03de5994ea",
+      "claude_sha256": "a63db2974dde5232512756d4a237dc009c4759294ee419a72eb8516fcc8eb5a6",
+      "metadata": {
+        "name": "setup-pstack"
+      },
+      "headings": [
+        "Setup pstack",
+        "Steps",
+        "1. Detect available models",
+        "2. Load current state",
+        "3. Budget, map, and confirm",
+        "4. Validate",
+        "5. Write the rule",
+        "6. Confirm",
+        "7. Offer a verification skill (optional)",
+        "8. Offer a formal verification skill (optional)"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/sharpen/SKILL.md",
+      "role": "skill",
+      "sha256": "aac4f8e6a1ffd70e3763314db37d3c2eb0cfea08bc63e98907aca6dae0343031",
+      "claude_sha256": "aac4f8e6a1ffd70e3763314db37d3c2eb0cfea08bc63e98907aca6dae0343031",
+      "metadata": {
+        "name": "sharpen",
+        "disable-model-invocation": "true"
+      },
+      "headings": [],
+      "references": []
+    },
+    {
+      "source": "skills/show-me-your-work/SKILL.md",
+      "role": "skill",
+      "sha256": "ec29326ac20515f2941198205bec615320a55b21659692e19650530dbf217bde",
+      "claude_sha256": "9934273a814cd87c0188957fdc2fee806e3e26c547204e7489164357820d3af3",
+      "metadata": {
+        "name": "show-me-your-work",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Show me your work",
+        "The format",
+        "Logging a row",
+        "Where it lives",
+        "Rules",
+        "Audit the log against the transcript",
+        "Cross-model review of the trail",
+        "Reviewing the trail",
+        "Composing this skill"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/show-me-your-work/references/decision-log-template.tsv",
+      "role": "reference",
+      "sha256": "6779378006a2f5225e8c06deb84f1d913fb532041ebbb6e50d94600bfe3f4b76",
+      "claude_sha256": "6779378006a2f5225e8c06deb84f1d913fb532041ebbb6e50d94600bfe3f4b76",
+      "metadata": {},
+      "headings": [],
+      "references": []
+    },
+    {
+      "source": "skills/statechart/SKILL.md",
+      "role": "skill",
+      "sha256": "ca7b3e43b1ddc4fb2425a33960f9390357323a869e1d921b6e2aff4f3004d55e",
+      "claude_sha256": "ca7b3e43b1ddc4fb2425a33960f9390357323a869e1d921b6e2aff4f3004d55e",
+      "metadata": {
+        "name": "statechart",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Statechart",
+        "Run",
+        "Write the spec",
+        "Pick the chart",
+        "Read the report",
+        "Show the chart",
+        "Hand off"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/statechart/references/render.md",
+      "role": "reference",
+      "sha256": "8cca446eb0c8f87f2ef7b97c4b149f59aacdc153134b4217c4bcde09b10ac3c4",
+      "claude_sha256": "8cca446eb0c8f87f2ef7b97c4b149f59aacdc153134b4217c4bcde09b10ac3c4",
+      "metadata": {},
+      "headings": [
+        "Render a chart",
+        "Colors"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/swarm/SKILL.md",
+      "role": "skill",
+      "sha256": "8558089df5320e4ddf61126ca3d638404341584c8307dd6d20f8984e5ae3bbd1",
+      "claude_sha256": "dd30f8ab9c4cce8beb1db6b00f35ab3f3ce4eb14da63792cfd6d72e18236b58f",
+      "metadata": {
+        "name": "swarm",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Swarm",
+        "Start",
+        "Phase A: Frame",
+        "Phase B: Fan out",
+        "Phase C: Aggregate",
+        "Phase D: Report"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/tdd/SKILL.md",
+      "role": "skill",
+      "sha256": "eeb868e2dfebee528d730a67d7b17498fac4bb85dec2e38bc5c5176aca4d5d2f",
+      "claude_sha256": "eeb868e2dfebee528d730a67d7b17498fac4bb85dec2e38bc5c5176aca4d5d2f",
+      "metadata": {
+        "name": "tdd",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "TDD Bug Fix",
+        "Workflow",
+        "If a Failing Test Is Impractical",
+        "Guardrails",
+        "Final Response"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/teach/SKILL.md",
+      "role": "skill",
+      "sha256": "2c17f3c0a79536ca2fa3c20983def027ffd8abb4063d9bb3c97778b77557600d",
+      "claude_sha256": "c837c2b78584407d69143282846448fc6e3c49349606959ab1df58e5cbebb553",
+      "metadata": {
+        "name": "teach",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Teach"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/technical-writing/SKILL.md",
+      "role": "skill",
+      "sha256": "0a620885599cdde5a0a31fa39878144c10f61c894b56bf4a9ff779496e718b14",
+      "claude_sha256": "a7febc22d493cac7bf26fb4ca2b153ae47f4175886d25f7cc44fd0740956bfa7",
+      "metadata": {
+        "name": "technical-writing",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Technical writing",
+        "Vary the rhythm",
+        "Pick the mode first (Diátaxis)",
+        "Write sentences to the reader (Google developer style)",
+        "Make statements load one at a time (STE rules)",
+        "Leave no sentence open to two readings (Global English)",
+        "Voice and repo specifics"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/typescript-best-practices/SKILL.md",
+      "role": "skill",
+      "sha256": "ec1dac086d3708e5940d45d250c30a37dd953b4e3cb2ca0692f5851d7a039e27",
+      "claude_sha256": "ec1dac086d3708e5940d45d250c30a37dd953b4e3cb2ca0692f5851d7a039e27",
+      "metadata": {
+        "name": "typescript-best-practices",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "TypeScript best practices"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/typescript-best-practices/references/patterns.md",
+      "role": "reference",
+      "sha256": "12e70c9419a8b3f5d6a1ab80e272c1f00a43ac0b3bbf72d68199033570e5de77",
+      "claude_sha256": "12e70c9419a8b3f5d6a1ab80e272c1f00a43ac0b3bbf72d68199033570e5de77",
+      "metadata": {},
+      "headings": [
+        "TypeScript patterns",
+        "Branded types",
+        "Discriminated unions",
+        "Constructive modeling",
+        "Simplest total type",
+        "`unknown` over `any`",
+        "Schemas before hand-rolled guards",
+        "No `as` casts",
+        "Narrowing hierarchy",
+        "Type guards",
+        "Exhaustiveness",
+        "`satisfies` over `as`",
+        "Boundary validation",
+        "Schema-derived types",
+        "Object args"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/unslop/SKILL.md",
+      "role": "skill",
+      "sha256": "2b823fd069e031c1420180be8e0d4f5e2fd25bf2c428049e5c835c59a489b5e0",
+      "claude_sha256": "2b823fd069e031c1420180be8e0d4f5e2fd25bf2c428049e5c835c59a489b5e0",
+      "metadata": {
+        "name": "unslop",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Unslop"
+      ],
+      "references": []
+    },
+    {
+      "source": "skills/why/SKILL.md",
+      "role": "skill",
+      "sha256": "6b65b3180f1f1bd3b696d7933daf900747410c82931d220a3f57a98addb1c0fd",
+      "claude_sha256": "6b65b3180f1f1bd3b696d7933daf900747410c82931d220a3f57a98addb1c0fd",
+      "metadata": {
+        "name": "why",
+        "disable-model-invocation": "true"
+      },
+      "headings": [
+        "Why"
+      ],
+      "references": []
+    }
+  ]
+}
