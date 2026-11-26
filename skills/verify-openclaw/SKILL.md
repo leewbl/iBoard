@@ -37,7 +37,7 @@ Use the compiled image ID recorded by the [offline Control UI build](../../examp
 
 ### Session rename
 
-Run `control-ui-session-rename` with the same arguments to check a write. The Gateway client seeds one disposable session, then Chromium uses the Sessions row menu to cancel a rename and save a second edit. The helper checks that Cancel sends no mutation, Save sends one `sessions.patch` with the expected session ID, and the Gateway accepts it. It opens a fresh browser context and checks that the new authenticated connection reads the updated label from `sessions.list` before taking the screenshot. This covers a separate client read from the running Gateway. Restart durability is a separate test.
+Run `control-ui-session-rename` with the same arguments to check a write. The Gateway client seeds one disposable session, then Chromium uses the Sessions row menu to cancel a rename and save a second edit. Cancel must send no mutation. Save must send one accepted `sessions.patch` with the expected session ID. The helper closes Chromium, stops the first Gateway gracefully, confirms its port closed, then starts a new Gateway with the same disposable state. A fresh Chromium process authenticates and reads the updated label for the same session ID from `sessions.list` before capturing the page. The report records both Gateway PIDs and the first exit. Allow up to 480 seconds for each execution, within the task's remaining budget.
 
 ## Evidence
 

@@ -36,7 +36,7 @@ const fixtureEnv = {
   OPENCLAW_SKIP_CRON: '1', OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: '1', OPENCLAW_SKIP_CANVAS_HOST: '1',
 };
 
-async function launchGateway() {
+async function prepareFixture() {
   await mkdir(home);
   await mkdir(state);
   await writeFile(config, JSON.stringify({
@@ -47,9 +47,14 @@ async function launchGateway() {
       auth: { mode: 'token', token },
       controlUi: { enabled: true, root: '/app/dist/control-ui' },
     },
-  }), { mode: 0o600 });
+  }), { mode: 0o600, flag: 'wx' });
+}
+
+async function launchGateway() {
   await assert.rejects(health('/healthz'), refused);
-  const stream = await open(log, 'w', 0o600);
+  exit = undefined;
+  launchError = undefined;
+  const stream = await open(log, 'a', 0o600);
   try {
     child = spawn(process.execPath, [
       ...nodeSource, '/app/src/entry.ts',
@@ -74,13 +79,24 @@ async function launchGateway() {
     if (ready) {
       const live = await health('/healthz');
       assert.ok(live.ok && (await live.json()).ok === true, 'Gateway liveness did not pass');
-      emit('doctor', { origin, ready: true, live: true });
-      return;
+      return { origin, ready: true, live: true, gatewayPid: child.pid };
     }
     await sleep(350);
   }
   assert.ifError(launchError);
   throw new Error('Gateway did not become ready');
+}
+
+async function stopGateway() {
+  if (!child || exit) return;
+  child.kill('SIGTERM');
+  const alarm = setTimeout(() => child.kill('SIGKILL'), 20_000);
+  try { await closed; } finally { clearTimeout(alarm); }
+}
+
+async function assertGatewayStopped() {
+  assert.deepEqual(exit, { code: 0, signal: null }, 'Gateway did not shut down gracefully');
+  await assert.rejects(health('/healthz'), refused);
 }
 
 async function observe(read, message) {
@@ -100,11 +116,11 @@ async function seedSession() {
     const [url, key, label] = process.argv.slice(1);
     const fixture = await callGateway({ url, token: process.env.OPENCLAW_GATEWAY_TOKEN,
       method: 'sessions.create', params: { agentId: 'main', key, label },
-      scopes: ['operator.admin', 'operator.read', 'operator.write'], timeoutMs: 45_000 });
+      scopes: ['operator.admin', 'operator.read', 'operator.write'], timeoutMs: 75_000 });
     console.log(JSON.stringify({ key: fixture.key, sessionId: fixture.sessionId }));`;
   const proc = await promisify(execFile)(process.execPath, [
     ...nodeSource, '--input-type=module', '-e', program, socketOrigin, fixtureKey, originalLabel,
-  ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 65_000 });
+  ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 120_000 });
   const fixture = JSON.parse(proc.stdout.trim().split('\n').at(-1));
   assert.equal(fixture.key, fixtureKey);
   assert.ok(typeof fixture.sessionId === 'string' && fixture.sessionId, 'Seeded session has no identity');
@@ -190,14 +206,14 @@ async function openSessions() {
     assert.equal(url.pathname, '/sessions');
     assert.ok(!outside && !exit && !proof.socket.isClosed(), 'The UI left the isolated Gateway');
   };
-  return { context, page, proof, servedCommit, writes, assertConnectedPage };
+  return { page, proof, servedCommit, writes, assertConnectedPage };
 }
 
 async function capture(view, evidence = {}) {
   view.assertConnectedPage();
   await view.page.screenshot({ path: screenshot, fullPage: false, animations: 'disabled', caret: 'hide' });
   view.assertConnectedPage();
-  emit('ui', { route: '/sessions', servedCommit: view.servedCommit, handshake: view.proof.handshake,
+  emit('ui', { route: '/sessions', gatewayPid: child.pid, servedCommit: view.servedCommit, handshake: view.proof.handshake,
     readback: { method: 'sessions.list', count: view.proof.sessions.length }, screenshot: true, ...evidence });
 }
 
@@ -237,8 +253,19 @@ async function verifyRename(fixture, view) {
   await dialog.waitFor({ state: 'hidden' });
   await row.getByText(finalLabel, { exact: true }).waitFor();
   view.assertConnectedPage();
-  await view.context.close();
 
+  // Keep only the disposable on-disk state while replacing both application processes.
+  await browser.close();
+  browser = undefined;
+  const previousPid = child.pid;
+  await stopGateway();
+  await assertGatewayStopped();
+  const previousExit = exit;
+  const restarted = await launchGateway();
+  assert.notEqual(restarted.gatewayPid, previousPid, 'Gateway process was not replaced');
+  emit('restart', { ...restarted, previousPid, previousExit, portClosed: true });
+
+  await launchBrowser();
   const fresh = await openSessions();
   assert.notEqual(fresh.proof.socket, write.socket);
   await sessionRow(fresh, finalLabel).getByText(finalLabel, { exact: true }).waitFor();
@@ -246,13 +273,17 @@ async function verifyRename(fixture, view) {
     originalLabel, finalLabel, canceledWithoutWrite: true, accepted: true, freshContextReadback: true } });
 }
 
-async function drive() {
-  const fixture = rename ? await seedSession() : null;
+async function launchBrowser() {
   const requireFromImage = createRequire('/app/package.json');
   const { chromium } = requireFromImage('/app/node_modules/playwright');
   browser = await chromium.launch({
     headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
   });
+}
+
+async function drive() {
+  const fixture = rename ? await seedSession() : null;
+  await launchBrowser();
   const view = await openSessions();
   if (fixture) {
     await verifyRename(fixture, view);
@@ -264,7 +295,8 @@ async function drive() {
 }
 
 try {
-  await launchGateway();
+  await prepareFixture();
+  emit('doctor', await launchGateway());
   await drive();
   passed = true;
 } finally {
@@ -272,14 +304,9 @@ try {
     await browser?.close();
   } finally {
     try {
-      if (child && !exit) {
-        child.kill('SIGTERM');
-        const alarm = setTimeout(() => child.kill('SIGKILL'), 20_000);
-        try { await closed; } finally { clearTimeout(alarm); }
-      }
+      await stopGateway();
       if (passed) {
-        assert.deepEqual(exit, { code: 0, signal: null }, 'Gateway did not shut down gracefully');
-        await assert.rejects(health('/healthz'), refused);
+        await assertGatewayStopped();
       } else {
         const contents = await readFile(log, 'utf8').catch(() => '');
         process.stderr.write(contents.slice(-3500).replaceAll(token, '[fixture token]'));

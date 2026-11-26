@@ -20,17 +20,22 @@ JOURNEYS = {
     "skills-inspect": ("skills-inspect.mjs", "VERIFY_OPENCLAW_SKILLS_INSPECT_PASS"),
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
+SESSION_RENAME = 'control-ui-session-rename'
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
-    'control-ui-session-rename': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS'),
+    SESSION_RENAME: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
+
+
+def _timeout(journey):
+    return 480 if journey == SESSION_RENAME else 320
 
 
 def _journey(journey):
     helper, marker = (BROWSER_JOURNEYS if journey in BROWSER_JOURNEYS else JOURNEYS)[journey]
     command = ['node', f'/workspace/{helper}']
-    if journey == 'control-ui-session-rename':
+    if journey == SESSION_RENAME:
         command.append('session-rename')
     return helper, marker, command
 
@@ -42,21 +47,33 @@ def _browser_evidence(report, screenshot):
                 or cli.digest(screenshot) != report.get('screenshot_sha256')):
             return False
         marker = _journey(report['journey'])[1]
+        restart_required = report['journey'] == SESSION_RENAME
         lines = report['stdout'].splitlines()
-        if report.get('stdout_truncated') or len(lines) != 4 or lines[-1] != marker:
+        if report.get('stdout_truncated') or len(lines) != (5 if restart_required else 4) or lines[-1] != marker:
             return False
-        doctor, ui, cleanup = list(map(json.loads, lines[:-1]))
+        doctor, *activity, ui, cleanup = map(json.loads, lines[:-1])
+        initial_pid = doctor['gatewayPid']
+        clean_exit = {'code': 0, 'signal': None}
         handshake, readback = ui['handshake'], ui['readback']
         if not (doctor.get('phase') == 'doctor' and doctor.get('ready') is True and doctor.get('live') is True
+                and doctor.get('origin') == 'http://127.0.0.1:18789' and type(initial_pid) is int and initial_pid > 1
                 and ui.get('phase') == 'ui' and ui.get('route') == '/sessions'
                 and ui.get('servedCommit') == report['commit'] and ui.get('screenshot') is True
                 and handshake.get('role') == 'operator' and handshake.get('method') == 'token'
                 and type(handshake.get('protocol')) is int and handshake['protocol'] > 0
                 and readback.get('method') == 'sessions.list' and type(readback.get('count')) is int
-                and cleanup == {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True}):
+                and cleanup == {'phase': 'cleanup', 'exit': clean_exit, 'scratchRemoved': True}):
             return False
-        if report['journey'] == 'control-ui-connected':
-            return readback['count'] == 0 and 'mutation' not in ui
+        if not restart_required:
+            return readback['count'] == 0 and 'mutation' not in ui and ui.get('gatewayPid') == initial_pid
+        restart = activity[0]
+        restarted_pid = restart['gatewayPid']
+        if not (restart.get('phase') == 'restart' and restart.get('origin') == doctor['origin']
+                and restart.get('ready') is True and restart.get('live') is True and restart.get('portClosed') is True
+                and restart.get('previousPid') == initial_pid and restart.get('previousExit') == clean_exit
+                and type(restarted_pid) is int and restarted_pid > 1 and restarted_pid != initial_pid
+                and ui.get('gatewayPid') == restarted_pid):
+            return False
         mutation = ui['mutation']
         return (readback['count'] > 0 and mutation.get('method') == 'sessions.patch'
                 and mutation.get('key') == 'agent:main:iboard-browser-verification'
@@ -172,7 +189,7 @@ def required_journeys(data, head):
         selected.append('config-validate')
     if any(path in ('ui/src/lib/session-rename.ts', 'ui/src/styles/sessions.css')
            or path.startswith(('ui/src/pages/sessions/', 'ui/src/lib/sessions/')) for path in paths):
-        selected.append('control-ui-session-rename')
+        selected.append(SESSION_RENAME)
     return selected
 
 
@@ -195,7 +212,7 @@ def collect(task, data, head, image, actors, *, remaining, memory_mb):
             path = task.parent / f'{journey}-{uuid.uuid4().hex}.json'
             options = {'screenshot': path.with_suffix('.png')} if journey in BROWSER_JOURNEYS else {}
             report = verify(Path(data['repo']), image, journey,
-                            timeout=min(320, remaining()), memory_mb=memory_mb, **options)
+                            timeout=min(_timeout(journey), remaining()), memory_mb=memory_mb, **options)
             report.update(actor=actor, source_mode='image', source_verified_commit=report.get('commit'))
             cli.write(path, report)
             if not report['passed'] or report['commit'] != head:
@@ -280,7 +297,7 @@ def main(argv=None):
     parser.add_argument("--image", required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument('--screenshot', type=Path, help='PNG evidence path for a Control UI browser journey')
-    parser.add_argument("--timeout", type=int, default=320)
+    parser.add_argument("--timeout", type=int, help='seconds (default: 480 for session rename, otherwise 320)')
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
     if (args.journey in BROWSER_JOURNEYS) != (args.screenshot is not None):
@@ -294,7 +311,7 @@ def main(argv=None):
         return os.open(path, flags, 0o600)
 
     with open(args.report.expanduser(), "x", encoding="utf-8", opener=private_create) as output:
-        options = dict(timeout=args.timeout, memory_mb=args.memory_mb)
+        options = dict(timeout=_timeout(args.journey) if args.timeout is None else args.timeout, memory_mb=args.memory_mb)
         if args.journey == 'audit':
             report = audit(args.repo, args.image, **options)
         else:

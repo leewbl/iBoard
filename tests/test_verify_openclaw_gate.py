@@ -22,7 +22,7 @@ class GatewayGateTests(unittest.TestCase):
 
     def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None,
                 skills_inspect_image=None, config_image=None, rename=False, browser_receipt=True,
-                same_container=False):
+                same_container=False, restart=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -44,7 +44,7 @@ class GatewayGateTests(unittest.TestCase):
                 if journey == 'control-ui-session-rename':
                     png = path.with_suffix('.png')
                     png.write_bytes(name.encode())
-                    extra = {'stdout': self.browser_stdout(journey, fresh=browser_receipt),
+                    extra = {'stdout': self.browser_stdout(journey, fresh=browser_receipt, restart=restart),
                              'screenshot_path': str(png.resolve()), 'screenshot_sha256': cli.digest(png),
                              'create_stdout': ('a' if same_container or actor == 'builder' else 'b') * 64}
                 cli.write(path, {
@@ -67,19 +67,26 @@ class GatewayGateTests(unittest.TestCase):
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
         })
 
-    def browser_stdout(self, journey, *, fresh=True):
+    def browser_stdout(self, journey, *, fresh=True, restart=None):
+        rename = journey == 'control-ui-session-rename'
+        healthy = {'ready': True, 'live': True, 'origin': 'http://127.0.0.1:18789'}
+        clean_exit = {'code': 0, 'signal': None}
         events = [
-            {'phase': 'doctor', 'ready': True, 'live': True},
+            {'phase': 'doctor', 'gatewayPid': 19, **healthy},
             {'phase': 'ui', 'route': '/sessions', 'servedCommit': self.head, 'screenshot': True,
+             'gatewayPid': 71 if rename else 19,
              'handshake': {'protocol': 4, 'method': 'token', 'role': 'operator'},
-             'readback': {'method': 'sessions.list', 'count': int(journey == 'control-ui-session-rename')}},
-            {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True},
+             'readback': {'method': 'sessions.list', 'count': int(rename)}},
+            {'phase': 'cleanup', 'exit': clean_exit, 'scratchRemoved': True},
         ]
-        if journey == 'control-ui-session-rename':
+        if rename:
             events[1]['mutation'] = {'method': 'sessions.patch', 'key': 'agent:main:iboard-browser-verification',
                                      'sessionId': 'fixture-session-id', 'originalLabel': 'iBoard verification fixture',
                                      'finalLabel': 'iBoard verification persisted', 'canceledWithoutWrite': True,
                                      'accepted': True, 'freshContextReadback': fresh}
+            if restart is not False:
+                events.insert(1, {'phase': 'restart', **healthy, 'gatewayPid': 71,
+                                  'previousPid': 19, 'previousExit': clean_exit, 'portClosed': True, **(restart or {})})
         return '\n'.join([*(json.dumps(event) for event in events), verify_openclaw._journey(journey)[1], ''])
 
     def test_publish_and_republish_block_before_any_github_call(self):
@@ -181,7 +188,12 @@ class GatewayGateTests(unittest.TestCase):
     def test_sessions_ui_delivery_rechecks_browser_receipts_before_writing(self):
         self.changed_paths.return_value = 'ui/src/pages/sessions/page-dialog.ts\0'
         github = Mock()
-        for options in ({}, {'rename': True, 'browser_receipt': False}, {'rename': True, 'same_container': True}):
+        cases = ({}, {'rename': True, 'browser_receipt': False}, {'rename': True, 'same_container': True},
+                 {'rename': True, 'restart': False}, {'rename': True, 'restart': {'portClosed': False}},
+                 {'rename': True, 'restart': {'gatewayPid': 19}},
+                 {'rename': True, 'restart': {'gatewayPid': 73}},
+                 {'rename': True, 'restart': {'previousExit': {'code': None, 'signal': 'SIGKILL'}}})
+        for options in cases:
             with self.subTest(options=options):
                 self.reports(**options)
                 with patch.object(cli, 'read', return_value=self.data), \
@@ -216,7 +228,8 @@ class GatewayGateTests(unittest.TestCase):
         with patch.object(verify_openclaw, 'verify', side_effect=execute):
             with self.assertRaisesRegex(verify_openclaw.workflow.WorkflowError, 'raw report saved at') as blocked:
                 verify_openclaw.collect(task, self.data, self.head, 'image', ('builder', 'independent-verifier'),
-                                        remaining=lambda: 90, memory_mb=3328)
+                                        remaining=lambda: 360, memory_mb=3328)
+        self.assertEqual([options['timeout'] for _, options in calls], [320, 320, 360, 360])
         paths = [options['screenshot'] for journey, options in calls if journey == 'control-ui-session-rename']
         self.assertEqual(len(paths), 2)
         self.assertNotEqual(*paths)

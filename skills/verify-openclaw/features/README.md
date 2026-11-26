@@ -8,4 +8,4 @@
 The core `audit` runs the four journeys above. A compiled Control UI image with Chromium supports two more journeys.
 
 - [`control-ui-connected`](../SKILL.md#drive) checks the login form, the authenticated Gateway session-list response and the empty Sessions page.
-- [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and a fresh authenticated read of the updated label. The PR gate requires this journey for changes under `ui/src/pages/sessions/`, `ui/src/lib/sessions/`, or to `ui/src/lib/session-rename.ts` or `ui/src/styles/sessions.css`.
+- [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and an authenticated read of the same updated session after the Gateway restarts. The PR gate requires this journey for changes under `ui/src/pages/sessions/`, `ui/src/lib/sessions/`, or to `ui/src/lib/session-rename.ts` or `ui/src/styles/sessions.css`.

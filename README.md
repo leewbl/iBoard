@@ -75,7 +75,7 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 功能对标范围与验收条件见 [iBoard 与 pstack 的功能对标](docs/pstack-parity.md)。
 
-[verify-openclaw](skills/verify-openclaw/SKILL.md) 在断网 Docker 中验证 Gateway 启动和健康检查。技能与配置改动触发对应的 CLI 场景。会话界面相关改动触发浏览器验收，核对取消改名和保存后重新登录的结果。交付前，必跑场景需要同一候选镜像的两份通过报告和一次独立审查。使用 `--source-mode image --build-source-image` 启动交付任务，涉及浏览器验收时需在本地基线镜像预装 Chromium。仅提交 PR 时加 `--publish-only`。
+[verify-openclaw](skills/verify-openclaw/SKILL.md) 在断网 Docker 中验证 Gateway 启动和健康检查。技能与配置改动触发对应的 CLI 场景。会话界面相关改动触发浏览器验收，核对取消改名时无写入，以及保存后重启 Gateway 仍能读回同一会话的新名称。交付前，必跑场景需要同一候选镜像的两份通过报告和一次独立审查。使用 `--source-mode image --build-source-image` 启动交付任务，涉及浏览器验收时需在本地基线镜像预装 Chromium。仅提交 PR 时加 `--publish-only`。
 
 [生成项目验证技能](skills/create-verification-skill/SKILL.md)可把已有的源码锚点和真实场景封装为项目自己的功能地图。[维护验证技能](skills/maintain-verification-skill/SKILL.md)对照选定的 Git 版本逐条重跑，所有场景通过后才导出地图修订。
 
