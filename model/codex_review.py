@@ -2,10 +2,13 @@
 
 import json
 import os
+from pathlib import Path
 import re
 import signal
 import subprocess
 import tempfile
+
+from runner.sandbox import MAX_SCREENSHOT, SandboxError, _validated_png
 
 
 FEATURES = ('shell_tool', 'multi_agent', 'browser_use', 'in_app_browser',
@@ -41,7 +44,7 @@ def _result(stdout, status):
     return json.loads(answer)
 
 
-def review(prompt, model, timeout):
+def review(prompt, model, timeout, *, images=()):
     if (not re.fullmatch(r'gpt-[a-z0-9][a-z0-9.-]{0,64}', model) or not 1 <= timeout <= 300
             or not prompt or len(prompt.encode('utf-8')) > 90_000):
         raise ReviewError('invalid OpenAI model, prompt size, or review timeout')
@@ -52,6 +55,21 @@ def review(prompt, model, timeout):
                '-c', 'model_reasoning_effort="low"', '-c', 'mcp_servers={}', '--model', model]
         for flag in FEATURES:
             cmd.extend(('--disable', flag))
+        if not isinstance(images, (tuple, list)) or len(images) > 4:
+            raise ReviewError('provide at most four validated PNG attachments')
+        for index, value in enumerate(images, 1):
+            path = Path(value)
+            if path.is_symlink() or not path.is_file():
+                raise ReviewError('review attachment must be a local PNG file')
+            try:
+                with path.open('rb') as source:
+                    data = source.read(MAX_SCREENSHOT + 1)
+                _validated_png(data)
+            except (OSError, SandboxError) as error:
+                raise ReviewError('could not validate review screenshot') from error
+            copied = Path(workspace) / f'attachment-{index}.png'
+            copied.write_bytes(data)
+            cmd.extend(('--image', str(copied)))
         env = {key:os.environ[key] for key in ENV if key in os.environ}
         proc = subprocess.Popen([*cmd, '--json', '-'], cwd=workspace, env=env, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)

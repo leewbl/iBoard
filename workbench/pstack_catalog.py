@@ -15,6 +15,7 @@ from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
 from workbench.project_verify import PSTACK_COMMANDS as PROJECT_VERIFICATION_COMMANDS
 from workbench.pr_watch import PSTACK_SOURCE as PR_WATCH_SOURCE
 from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
+from workbench.prototype import PSTACK_SOURCE as PROTOTYPE_SOURCE
 from workbench.stack_verify import PSTACK_SOURCES as STACK_VERIFICATION_SOURCES
 from workbench.stack_ship import PSTACK_SOURCE as STACK_SHIPPING_SOURCE
 from workbench.stack_autopilot import PSTACK_SOURCE as STACK_AUTOPILOT_SOURCE
@@ -70,6 +71,7 @@ def main():
                                 (['python3 -m workbench.hillclimb'] if source == HILLCLIMB_SOURCE else []) +
                                 (['python3 -m workbench.multiphase', 'python3 -m workbench.phase_audit']
                                  if source == MULTIPHASE_SOURCE else []) +
+                                (['python3 -m workbench.prototype'] if source == PROTOTYPE_SOURCE else []) +
                                 ([f'python3 -m workbench.project_verify {PROJECT_VERIFICATION_COMMANDS[source]}']
                                  if source in PROJECT_VERIFICATION_COMMANDS else []) +
                                 (['python3 -m workbench.project_verify discover', 'python3 -m workbench.project_triage']

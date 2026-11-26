@@ -10,6 +10,8 @@ Use a single bounded change for an obvious one- or two-file task. For staged wor
 
 The manifest fixes `repo`, `revision`, `request`, source `files` with optional line ranges, and editable `scope`. Set `obvious` explicitly. List unresolved `open_questions` and input `prototypes`, each with `question`, `conclusion`, `evidence` and `sha256`. An optional `design` identifies a selected Architect report by `path` and `sha256` for the same Git baseline. Supply a structured `plan` or choose an OpenAI model to draft one from this evidence.
 
+Use `kind: "native"` to import an [iBoard prototype](../prototype/SKILL.md) result. The planner verifies the result, exact conclusion, source baseline, raw observations and visual evidence when present. A matching native recommendation can resolve that exact open question. Other questions remain pending.
+
 ```sh
 python3 -m workbench.multiphase --manifest "$PLAN_MANIFEST" \
   --model "$OPENAI_MODEL" --out "$PLAN_EVIDENCE"

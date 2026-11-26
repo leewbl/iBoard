@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 from model import codex_review
-from workbench import architect, arena, benchmark, cli, investigate, project_verify
+from workbench import architect, arena, benchmark, cli, investigate, project_verify, prototype
 from workbench.prompt_profiles import PSTACK_COMMIT
 from workbench.verify_pr import _bounded_json
 
@@ -125,16 +125,21 @@ def _render(report):
     return "\n".join(lines) + "\n"
 
 
-def _prototypes(answers, manifest):
+def _prototypes(answers, manifest, baseline):
     references = []
     for item in _list(answers, "prototype answers", 6):
-        if not isinstance(item, dict) or set(item) != {"question", "conclusion", "evidence", "sha256"}:
+        fields = {"question", "conclusion", "evidence", "sha256"}
+        if (not isinstance(item, dict) or not fields <= item.keys() or item.keys() - fields - {"kind"}
+                or ("kind" in item and item["kind"] != "native")):
             raise ValueError("each resolved prototype needs its question, conclusion and evidence digest")
         for key in ("question", "conclusion"):
             _field(item[key], key)
         path = (manifest.parent / item["evidence"]).resolve(strict=True)
         if not path.is_file() or cli.digest(path) != item["sha256"]:
             raise ValueError("prototype evidence does not match the authorized digest")
+        if item.get("kind") == "native":
+            prototype.validate_receipt(path, _bounded_json(path, 180_000), baseline=baseline,
+                                       question=item["question"], conclusion=item["conclusion"])
         references.append({**item, "evidence": str(path)})
     return references
 
@@ -158,7 +163,10 @@ def plan(manifest, out, *, timeout=220, model=None, reviewer=codex_review.review
         raise ValueError("pin at least one source range")
     head, sources = investigate._collect(repo, spec["revision"], selected, history=False, remaining=remaining)
     arena._bounded("".join(row["text"] for row in sources.values()), 35_000, "source evidence")
-    prototypes = _prototypes(spec["prototypes"], manifest)
+    prototypes = _prototypes(spec["prototypes"], manifest, head)
+    settled = {item["question"] for item in prototypes if item.get("kind") == "native"}
+    resolved = [item for item in questions if item in settled]
+    questions = [item for item in questions if item not in settled]
     design = None
     design_path = None
     if "design" in spec:
@@ -178,6 +186,7 @@ def plan(manifest, out, *, timeout=220, model=None, reviewer=codex_review.review
     report = {"schema": cli.SCHEMA, "status": "blocked", "pstack_commit": PSTACK_COMMIT,
               "baseline": head, "source": PSTACK_SOURCE, "request": spec["request"], "sources": sources,
               "scope": sorted(scope), "prototypes": prototypes, "open_questions": questions,
+              "resolved_by_prototype": resolved,
               "authorization": "plan-only", "runtime_evidence": "pending"}
     if design_path:
         report["design"] = {"path": str(design_path), "sha256": spec["design"]["sha256"]}
@@ -226,6 +235,10 @@ def plan(manifest, out, *, timeout=220, model=None, reviewer=codex_review.review
                 raise ValueError("selected design changed while planning")
             if any(cli.digest(item["evidence"]) != item["sha256"] for item in prototypes):
                 raise ValueError("prototype evidence changed while planning")
+            for item in prototypes:
+                if item.get("kind") == "native":
+                    prototype.validate_receipt(item["evidence"], _bounded_json(item["evidence"], 180_000),
+                                               baseline=head, question=item["question"], conclusion=item["conclusion"])
             report.update(answer, status="planned",
                           review_gated=[phase["id"] for phase in answer["phases"] if phase["interaction"]])
             (root / "plan.md").write_text(_render(report), encoding="utf-8")
