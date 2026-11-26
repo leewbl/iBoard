@@ -6,9 +6,10 @@ from functools import partial
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import uuid
 
-from workbench import autopilot, cli, delivery, phase_contract, phase_runtime, start, workflow
+from workbench import autopilot, cli, delivery, phase_contract, phase_runtime, start, visual_parity, workflow
 from workbench.task_lock import task_lock
 
 
@@ -17,7 +18,7 @@ class DispatchError(ValueError):
 
 
 ERRORS = (OSError, ValueError, KeyError, TypeError, cli.WorkbenchError, start.StartError,
-          autopilot.AutopilotError, workflow.WorkflowError, delivery.DeliveryError)
+          autopilot.AutopilotError, workflow.WorkflowError, delivery.DeliveryError, subprocess.SubprocessError)
 
 
 def _reference(path):
@@ -49,12 +50,15 @@ def _verified(task, data, entry):
     result = phase_contract.verify_completion(data, head)
     proof = delivery._independent_verification(data, head)
     approved = not entry['interaction'] or phase_contract.interaction_approved(data, head)
-    return {**result, 'status': 'verified' if approved else 'awaiting-operator-review',
-            'task': str(task), 'result': data['phase_result'],
-            'independent_review': {'path': proof['path'], 'sha256': proof['sha256']}}
+    row = {**result, 'status': 'verified' if approved else 'awaiting-operator-review',
+           'task': str(task), 'result': data['phase_result'],
+           'independent_review': {'path': proof['path'], 'sha256': proof['sha256']}}
+    if data.get('visual_baseline'):
+        row['visual_baseline'] = data['visual_baseline']
+    return row
 
 
-def _run(root, contract, launch, resume, measure, execute):
+def _run(root, contract, launch, resume, measure, execute, capture):
     journal = root / 'run.json'
     state = (cli.read(journal) if journal.exists() else {'schema': cli.SCHEMA,
              'manifest_sha256': contract['manifest_sha256'], 'started_at': cli.now(), 'phases': {}})
@@ -80,6 +84,51 @@ def _run(root, contract, launch, resume, measure, execute):
     entries = {entry['id']: entry for entry in contract['plan']['phases']}
     ancestors = {}
 
+    def report(status):
+        path = root / 'result.json'
+        value = {'schema': cli.SCHEMA, 'status': status, 'baseline': baseline,
+                 'manifest_sha256': contract['manifest_sha256'], 'phases': phases, 'report': str(path)}
+        cli.write(path, value)
+        return value
+
+    def bound(task, key, parent):
+        saved = state['phases'][key]
+        data = _bound_task(task, contract, entries[key], parent, saved['baseline_perf'])
+        if data.get('visual_baseline') != saved.get('visual_baseline'):
+            raise DispatchError('retained phase does not match the original dispatch visual baseline')
+        return data
+
+    visual_cutoff = state.get('visual_frozen_at')
+    work_started = any('task' in row for row in state['phases'].values()) or any(
+        (root / 'tasks' / _task_id(root, ident) / 'task.json').exists() for ident in entries)
+    has_visual = any('visual_parity' in step for step in contract['steps'].values())
+    for key, step in contract['steps'].items():
+        specification = step.get('visual_parity')
+        if specification is None:
+            continue
+        task_id = _task_id(root, key)
+        stage = root / 'phases' / task_id
+        ref = state['phases'].get(key, {}).get('visual_baseline')
+        try:
+            remaining()
+            if not ref:
+                if work_started or visual_cutoff is not None:
+                    raise DispatchError('a visual baseline is missing after component work began')
+                ref = capture(contract['repo'], baseline, step['image'], Path(specification['path']),
+                              stage / f'visual-baseline-{uuid.uuid4().hex}', remaining(), contract['memory_mb'])
+            if not Path(ref['path']).resolve(strict=True).is_relative_to(stage):
+                raise DispatchError('visual baseline escape from its phase evidence directory')
+            if work_started and visual_cutoff is None:
+                raise DispatchError('the original visual capture cutoff is missing after component work began')
+            phase_contract.verify_visual_baseline(contract, key, ref, before=visual_cutoff or cli.now())
+            record(key, visual_baseline=ref)
+        except ERRORS as error:
+            phases[key] = {'status': 'blocked', 'reason': str(error)[:1800]}
+            return report('blocked')
+    if has_visual and visual_cutoff is None:
+        state['visual_frozen_at'] = cli.now()
+        cli.write(journal, state)
+
     def recheck_dependencies(key):
         for name in entries:
             if name not in ancestors[key]:
@@ -88,8 +137,7 @@ def _run(root, contract, launch, resume, measure, execute):
             task_path = Path(expected['task'])
             parent = expected['parent']
             with task_lock(task_path):
-                data = _bound_task(task_path, contract, entries[name], parent,
-                                   state['phases'][name]['baseline_perf'])
+                data = bound(task_path, name, parent)
                 if {'parent': parent, **_verified(task_path, data, entries[name])} != expected:
                     raise DispatchError(f'phase dependency {name} changed before dispatch')
 
@@ -108,6 +156,7 @@ def _run(root, contract, launch, resume, measure, execute):
         step = contract['steps'][key]
         saved = state['phases'].get(key, {})
         perf = saved.get('baseline_perf')
+        visual = saved.get('visual_baseline')
         try:
             if saved.get('parent', parent) != parent:
                 raise DispatchError('declared phase parent changed after dispatch')
@@ -119,7 +168,7 @@ def _run(root, contract, launch, resume, measure, execute):
                 record(key, parent=parent, baseline_perf=perf)
             phase_contract.verify_baseline(contract, key, perf)
             if task.exists():
-                data = _bound_task(task, contract, entry, parent, perf)
+                data = bound(task, key, parent)
                 retained = task.parent / 'autopilot.json'
                 status = cli.read(retained).get('phase') if retained.exists() else None
                 if status not in ('delivery', 'complete'):
@@ -129,7 +178,7 @@ def _run(root, contract, launch, resume, measure, execute):
                     if task_deadline > deadline + 1:
                         raise DispatchError('phase task budget exceeds the approved overall deadline')
                     with task_lock(task):
-                        _bound_task(task, contract, entry, parent, perf)
+                        bound(task, key, parent)
                         autopilot._pause(task, 'the phase dispatcher is resuming retained work')
                         resume(task, run=execute)
             else:
@@ -152,7 +201,8 @@ def _run(root, contract, launch, resume, measure, execute):
                             local_gate._select(data, parent, **step['local_gate'])
                         except local_gate.LocalGateError as error:
                             raise DispatchError(str(error)) from error
-                    phase_contract.bind(task_path, data, contract, key, parent, request_path, perf)
+                    phase_contract.bind(task_path, data, contract, key, parent, request_path, perf,
+                                        visual_baseline=visual)
                     cli.write(task_path, data)
                     return execute(task_path, request_path, image, **options)
 
@@ -168,22 +218,18 @@ def _run(root, contract, launch, resume, measure, execute):
                        prepare=partial(workflow.prepare, base_commit=parent), run=drive)
             recheck_dependencies(key)
             with task_lock(task):
-                data = _bound_task(task, contract, entry, parent, perf)
+                data = bound(task, key, parent)
                 phases[key] = {'parent': parent, **_verified(task, data, entry)}
         except ERRORS as error:
             phases[key] = {'status': 'blocked', 'task': str(task), 'parent': parent, 'reason': str(error)[:1800]}
         record(key, result=phases[key])
     statuses = {row['status'] for row in phases.values()}
     status = 'blocked' if 'blocked' in statuses else 'verified' if statuses == {'verified'} else 'waiting'
-    path = root / 'result.json'
-    report = {'schema': cli.SCHEMA, 'status': status, 'baseline': baseline,
-              'manifest_sha256': contract['manifest_sha256'], 'phases': phases, 'report': str(path)}
-    cli.write(path, report)
-    return report
+    return report(status)
 
 
 def run(manifest, expected_sha256, out, *, launch=start.start, resume=start.resume_task,
-        measure=phase_runtime.baseline, execute=autopilot.run):
+        measure=phase_runtime.baseline, execute=autopilot.run, capture=visual_parity.capture_baseline):
     contract = phase_contract.load(manifest, expected_sha256)
     root = Path(out).expanduser().resolve()
     if root.is_relative_to(Path(contract['repo'])):
@@ -194,7 +240,7 @@ def run(manifest, expected_sha256, out, *, launch=start.start, resume=start.resu
         raise DispatchError('dispatch lock anchor cannot be a symbolic link')
     lock.touch(mode=0o600, exist_ok=True)
     with task_lock(lock, lock_name='.phase-dispatch.lock'):
-        return _run(root, contract, launch, resume, measure, execute)
+        return _run(root, contract, launch, resume, measure, execute, capture)
 
 
 def main(argv=None):

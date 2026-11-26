@@ -1324,6 +1324,50 @@ class AutopilotTests(unittest.TestCase):
         self.assertIn('frozen visual baseline in open', retained['reason'])
         self.assertNotIn('final-review', self.calls)
 
+    def test_interrupted_visual_phase_resumes_with_its_accepted_image_and_receipt(self):
+        from workbench import phase_contract, visual_parity
+
+        data = cli.read(self.task)
+        image = 'sha256:' + 'b' * 64
+        path = self.task.with_name('visual-result.json')
+        cli.write(path, {'image': image})
+        proof = {'path': str(path), 'sha256': cli.digest(path)}
+        baseline = {'path': str(self.task.with_name('baseline.json')), 'sha256': 'a' * 64}
+        data.update(kind='feature', surface='ui', visual_baseline=baseline, phase_binding={'frozen': True},
+                    phase_result={'frozen': True}, visual_parity_result=proof, criteria=self.plan['criteria'])
+        cli.write(self.task, data)
+        (self.workspace / 'code.txt').write_text('fixed')
+        cli.git(self.workspace, 'commit', '-qam', 'accepted candidate')
+        candidate = cli.sha(self.workspace, 'HEAD')
+        state_path = self.task.with_name('autopilot.json')
+        cli.write(state_path, {'schema': cli.SCHEMA, 'phase': 'verify', 'plan': self.plan,
+                               'candidate_commit': candidate, 'phase_binding': data['phase_binding'],
+                               'visual_baseline': baseline, 'issue_digest': cli.digest(self.issue), 'input_digest': None})
+        phase = {'step': {'image': 'image'}, 'contract': {'plan': {'baseline': data['base_commit']}, 'memory_mb': 1024},
+                 'request_sha256': cli.digest(self.issue)}
+
+        def check(**options):
+            self.assertEqual(options['image'], image)
+            raise autopilot.AutopilotError('fixture reached the recovered image')
+
+        with patch.object(phase_contract, 'read', return_value=phase), \
+                patch.object(phase_contract, 'task_plan', return_value=self.plan), \
+                patch.object(phase_contract, 'check_scope'), \
+                patch.object(phase_contract, 'verify_completion') as verified, \
+                patch.object(visual_parity, 'read_baseline', return_value=(
+                    self.task, {'image': 'sha256:' + 'a' * 64}, {'states': [{'id': 'open'}]})), \
+                patch.object(visual_parity, 'require', return_value=proof) as rechecked, \
+                patch.object(visual_parity, 'compare_candidate') as recapture, \
+                patch.object(workflow, 'build_source_image') as rebuild:
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'fixture reached the recovered image'):
+                autopilot.run(self.task, self.issue, 'image', source_mode='image', build_source_image=True,
+                              memory_mb=1024, model=self.model, check=check)
+            verified.assert_called_once_with(data, candidate, context=phase)
+            rechecked.assert_called_once_with(data, candidate, phase=phase)
+            recapture.assert_not_called()
+            rebuild.assert_not_called()
+        self.assertEqual(cli.read(self.task)['visual_parity_result'], proof)
+
     def test_confirmed_child_oom_pauses_without_spending_a_repair_iteration(self):
         def check(**kwargs):
             if kwargs['kind'] == 'resolution':

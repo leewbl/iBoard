@@ -104,6 +104,8 @@ class PhaseDispatchTests(unittest.TestCase):
         cli.write(binding, {'schema': cli.SCHEMA, 'phase': phase_id, 'parent': parent,
                             'baseline_perf': baseline_perf, 'request_sha256': cli.digest(request)})
         data['phase_binding'] = self.ref(binding)
+        if kwargs.get('visual_baseline'):
+            data['visual_baseline'] = kwargs['visual_baseline']
         self.tasks[phase_id] = task
 
     def read(self, data):
@@ -191,9 +193,46 @@ class PhaseDispatchTests(unittest.TestCase):
         self.resumed.append(ident)
         return run(task, task.with_name('issue.txt'), self.contract['steps'][ident]['image'])
 
-    def dispatch(self):
+    def dispatch(self, **options):
         return phase_dispatch.run(self.manifest, self.digest, self.out, launch=self.launch,
-                                  resume=self.resume, measure=self.measure, execute=self.execute)
+                                  resume=self.resume, measure=self.measure, execute=self.execute, **options)
+
+    def test_freezes_all_visual_baselines_before_launch_and_never_recaptures_after_work_begins(self):
+        for ident in ('A', 'B'):
+            self.contract['steps'][ident]['visual_parity'] = {'path': str(self.root / f'{ident}.json'),
+                                                              'sha256': 'a' * 64, 'driver_sha256': 'b' * 64}
+        calls = []
+
+        def capture(repo, base, image, manifest, out, seconds, memory):
+            self.assertEqual(self.launched, [])
+            self.assertEqual((repo, base, memory), (str(self.repo), self.trunk, 512))
+            calls.append(manifest.stem)
+            if calls == ['A', 'B']:
+                raise ValueError('browser capture failed')
+            out.mkdir(parents=True)
+            report = out / 'baseline.json'
+            cli.write(report, {'phase': manifest.stem, 'base': base})
+            return self.ref(report)
+
+        with patch.object(phase_contract, 'verify_visual_baseline') as audit:
+            blocked = self.dispatch(capture=capture)
+            self.assertEqual(blocked['phases']['B']['reason'], 'browser capture failed')
+            self.assertEqual(self.measured, [])
+            waiting = self.dispatch(capture=capture)
+            self.assertEqual(waiting['status'], 'waiting', waiting)
+            self.assertEqual(calls, ['A', 'B', 'B'])
+            journal_path = self.out / 'run.json'
+            journal = cli.read(journal_path)
+            self.assertEqual(waiting['phases']['A']['visual_baseline'], journal['phases']['A']['visual_baseline'])
+            audit.reset_mock()
+            self.assertEqual(self.dispatch(capture=capture)['status'], 'waiting')
+            self.assertEqual([entry.kwargs['before'] for entry in audit.call_args_list],
+                             [journal['visual_frozen_at']] * 2)
+            del journal['phases']['B']['visual_baseline']
+            cli.write(journal_path, journal)
+            blocked = self.dispatch(capture=capture)
+            self.assertIn('missing after component work began', blocked['phases']['B']['reason'])
+            self.assertEqual(calls, ['A', 'B', 'B'])
 
     def assert_parent(self, result, phase, expected):
         self.assertEqual(cli.sha(self.repo, result['phases'][phase]['commit'] + '^'), expected)

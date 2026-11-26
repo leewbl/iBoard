@@ -221,7 +221,8 @@ def _run(root, contract, workflows, github, replay, publisher, merger):
                     _, proof = _proof(original_task, contract, entry, original_parent, perf)
                 retained_result = row['result']
                 _require(all(proof.get(key) == retained_result.get(key)
-                             for key in ('task', 'commit', 'result', 'independent_review')),
+                             for key in ('task', 'commit', 'result', 'independent_review', 'visual_baseline'))
+                         and proof.get('visual_baseline') == row.get('visual_baseline'),
                          'original phase proof differs from the dispatch journal')
                 return proof
 

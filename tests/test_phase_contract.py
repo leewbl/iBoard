@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, local_gate, multiphase, phase_contract, phase_reverify, workflow
+from workbench import cli, local_gate, multiphase, phase_contract, phase_reverify, visual_parity, workflow
 
 
 class PhaseContractTests(unittest.TestCase):
@@ -207,6 +207,30 @@ class PhaseContractTests(unittest.TestCase):
         cli.write(Path(contract['plan_path']), approved)
         self.options['plan'] = self.reference(Path(contract['plan_path']))
         with self.assertRaisesRegex(phase_contract.PhaseContractError, 'source evidence differs'):
+            self.load()
+
+    def test_visual_manifest_pins_the_driver_and_keeps_the_server_outside_edit_scope(self):
+        visual = self.root / 'states.json'
+        spec = {'schema': 1, 'viewport': {'width': 64, 'height': 64},
+                'states': [{'id': 'closed', 'path': '/', 'steps': []}],
+                'server': {'entry': 'app.mjs', 'args': [], 'port': 8080, 'ready': '/'}}
+        cli.write(visual, spec)
+        self.step['visual_parity'] = {**self.reference(visual), 'driver_sha256': cli.digest(visual_parity.DRIVER)}
+        with self.assertRaisesRegex(phase_contract.PhaseContractError, 'requires the UI screenshot'):
+            self.load()
+        self.step['screenshot'] = {'command': ['node', '/workspace/unit.mjs'], 'marker': 'UIT_PASS', 'exit_code': 0}
+        with self.assertRaisesRegex(phase_contract.PhaseContractError, 'outside the approved edit scope'):
+            self.load()
+        spec['server']['entry'] = 'live.mjs'
+        cli.write(visual, spec)
+        self.step['visual_parity'].update(self.reference(visual))
+        contract = self.load()
+        self.assertEqual(contract['steps'][self.id]['scripts']['visual_server']['path'], 'live.mjs')
+        self.assertEqual(contract['steps'][self.id]['benchmark'], self.reference(self.bench))
+        with self.assertRaisesRegex(cli.WorkbenchError, 'exact path and SHA-256'):
+            phase_contract.verify_visual_baseline(contract, self.id, None)
+        self.step['visual_parity']['driver_sha256'] = '1' * 64
+        with self.assertRaisesRegex(phase_contract.PhaseContractError, 'capture driver changed'):
             self.load()
 
     def test_changed_performance_helper_blocks_proof(self):

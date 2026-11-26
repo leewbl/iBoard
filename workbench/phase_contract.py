@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 
 from workbench import arena, autopilot, benchmark, cli, investigate, multiphase, phase_audit, project_triage, project_verify, workflow
+from workbench import visual_parity
 from workbench.prompt_profiles import PSTACK_COMMIT
 from workbench.task_lock import locked_task
 
@@ -122,7 +123,7 @@ def _benchmark_spec(reference):
 
 def _step(repo, baseline, scope, directory, entry, step):
     fields = {'image', 'unit', 'live', 'feature_doc', 'benchmark', 'helpers'}
-    _require(isinstance(step, dict) and fields <= step.keys() <= fields | {'screenshot', 'local_gate'},
+    _require(isinstance(step, dict) and fields <= step.keys() <= fields | {'screenshot', 'local_gate', 'visual_parity'},
              'each phase requires an image, unit and live commands, feature documentation and benchmark inputs')
     project_triage._image_reference(step['image'])
     scripts = {name: _script(repo, baseline, step[name], entry['verify'][name]['marker'], 0,
@@ -161,6 +162,19 @@ def _step(repo, baseline, scope, directory, entry, step):
         except local_vitest.GuardError as error:
             raise PhaseContractError(f'invalid planned local test files: {error}') from error
         step = {**step, 'local_gate': {'files': files, 'reason': reason}}
+    if 'visual_parity' in step:
+        visual = step['visual_parity']
+        _require('screenshot' in step and isinstance(visual, dict) and set(visual) == {'path', 'sha256', 'driver_sha256'},
+                 'phase visual parity requires the UI screenshot check and a frozen state manifest and driver')
+        visual_ref = _ref(directory, {key: visual[key] for key in ('path', 'sha256')})
+        visual_plan = visual_parity.manifest(_json(Path(visual_ref['path']), visual_ref['sha256'], 80_000))
+        _require(visual['driver_sha256'] == cli.digest(visual_parity.DRIVER), 'approved visual capture driver changed')
+        visual_parity._source_paths(repo, baseline, visual_plan)
+        if server := visual_plan.get('server'):
+            path = server['entry']
+            _require(path not in scope, 'visual server entrypoint must stay outside the approved edit scope')
+            scripts['visual_server'] = {'path': path, 'blob': _entrypoint(repo, baseline, path)}
+        step = {**step, 'visual_parity': {**visual_ref, 'driver_sha256': visual['driver_sha256']}}
     return {**step, 'benchmark': ref, 'helpers': helpers, 'scripts': scripts,
             'surface': 'ui' if 'screenshot' in step else 'non-ui'}
 
@@ -217,6 +231,8 @@ def request(contract, phase_id):
         payload['local_gate'] = step['local_gate']
     if 'screenshot' in step:
         payload['screenshot'] = step['screenshot']
+    if 'visual_parity' in step:
+        payload['visual_parity'] = {key: step['visual_parity'][key] for key in ('sha256', 'driver_sha256')}
     return ('Implement this authorized phase only. Other planned phases are context. '
             'Keep all frozen checks and their entrypoints unchanged. The workbench runs them in offline Docker.\n\n'
             f"Original request: {contract['plan']['request']}\n"
@@ -266,6 +282,26 @@ def verify_baseline(contract, phase_id, baseline_perf, *, before=None):
     if before is not None:
         _require(max(result[2]) < datetime.fromisoformat(before), 'phase trunk performance was not measured before the task began')
     return result[0]
+
+
+def verify_visual_baseline(contract, phase_id, ref, *, baseline_perf=None, before=None):
+    step = contract['steps'][phase_id]
+    spec = step.get('visual_parity')
+    if spec is None:
+        _require(ref is None, 'phase has an unapproved visual baseline')
+        return None
+    base = contract['plan']['baseline']
+    _, proof, _ = visual_parity.read_baseline(ref, base)
+    _require(proof['manifest_sha256'] == spec['sha256'] and proof['driver_sha256'] == spec['driver_sha256']
+             and _image_matches(step['image'], proof['image']),
+             'phase visual baseline does not match the approved states, driver or image')
+    if baseline_perf:
+        _, perf = phase_audit._receipt(baseline_perf, Path(contract['manifest_path']).parent)
+        _require(perf['images']['baseline'] == proof['image'], 'visual baseline and trunk benchmark used different images')
+    if before is not None:
+        _require(visual_parity.bind(ref['path'], ref['sha256'], base, memory_mb=contract['memory_mb'], before=before) == ref,
+                 'phase visual baseline path changed')
+    return ref
 
 
 def _event_ref(data, field, event_type, filename):
@@ -347,6 +383,7 @@ def _replayed_candidate(data, contract, entry, parent, replay, baseline_perf):
     _require(context['task_path'] == origin and context['phase'] == entry['id']
              and context['contract']['manifest_sha256'] == contract['manifest_sha256']
              and context['baseline_perf'] == baseline_perf
+             and original.get('visual_baseline') == data.get('visual_baseline')
              and original.get('phase_result') == replay['source_result'],
              'original phase scope or evidence changed before replay')
     state = cli.read(origin.with_name('autopilot.json'))
@@ -377,7 +414,7 @@ def _replayed_candidate(data, contract, entry, parent, replay, baseline_perf):
     return report['candidate']
 
 
-def bind(task_path, data, contract, phase_id, parent, request_path, baseline_perf, *, replay=None):
+def bind(task_path, data, contract, phase_id, parent, request_path, baseline_perf, *, replay=None, visual_baseline=None):
     """Freeze phase identity, exact request, and pre-edit performance evidence."""
     task_path = Path(task_path).resolve(strict=True)
     parent_dir = task_path.parent
@@ -393,6 +430,9 @@ def bind(task_path, data, contract, phase_id, parent, request_path, baseline_per
              'limits': data['limits'], 'started_at': data['started_at'],
              'manifest': {'path': contract['manifest_path'], 'sha256': contract['manifest_sha256']},
              'baseline_perf': before}
+    verify_visual_baseline(contract, phase_id, visual_baseline, baseline_perf=before, before=data['started_at'])
+    if visual_baseline is not None:
+        value['visual_baseline'] = data['visual_baseline'] = visual_baseline
     if replay is not None:
         value['replay'] = replay
         value['replayed_candidate'] = _replayed_candidate(data, contract, entry, parent, replay, before)
@@ -422,6 +462,8 @@ def read(data):
         _bytes(request_path, 100_000, expected)
         _require(verify_baseline(contract, entry['id'], value['baseline_perf'], before=data['started_at']) == value['baseline_perf'],
                  'phase trunk baseline evidence changed')
+        _require(data.get('visual_baseline') == value.get('visual_baseline'), 'phase visual baseline binding changed')
+        verify_visual_baseline(contract, entry['id'], value.get('visual_baseline'), baseline_perf=value['baseline_perf'])
         if 'replay' in value:
             _require(value.get('replayed_candidate') == _replayed_candidate(data, contract, entry, value['parent'],
                                                                             value['replay'], value['baseline_perf']),
@@ -473,7 +515,16 @@ def _verify_result(data, context, record, candidate):
     _changed(data['repo'], context, candidate)
     directory = context['task_path'].parent
     contract, entry, step = context['contract'], context['entry'], context['step']
-    _benchmark_receipt(contract, entry['id'], record['perf'], candidate, directory)
+    _, _, _, performance = _benchmark_receipt(contract, entry['id'], record['perf'], candidate, directory)
+    parity = record.get('visual_parity')
+    if step.get('visual_parity'):
+        _require(parity is not None and parity == data.get('visual_parity_result'), 'phase visual result binding changed')
+        visual_result = _json(Path(parity['path']), parity['sha256'], 90_000)
+        _require(visual_result.get('candidate') == candidate and visual_result.get('equal') is True
+                 and visual_result.get('image') == performance['images']['candidate'],
+                 'phase performance and visual checks must use the same candidate image')
+    else:
+        _require(parity is None, 'phase proof has an unapproved visual result')
     for name, kind in (('unit', 'test-result'), ('live', 'resolution')):
         path, run = phase_audit._receipt(record[name], directory)
         _require(path.parent == directory and run.get('kind') == kind and run.get('command') == step[name]
@@ -482,12 +533,14 @@ def _verify_result(data, context, record, candidate):
                  and run.get('expected_marker') == entry['verify'][name]['marker'] and run.get('expected_exit') == 0
                  and run.get('source_root') == '/app' and run.get('memory_mb') == contract['memory_mb']
                  and run.get('source_mode') == 'image' and run.get('verified_image_id') == run.get('image')
+                 and (parity is None or run.get('image') == visual_result['image'])
                  and any(item.get('path') == str(path) and item.get('sha256') == record[name]['sha256']
                          and item.get('kind') == kind and item.get('commit') == candidate
                          and item.get('actor') == run['actor'] and not item.get('superseded')
                          and item.get('criteria_digest') == cli.criteria_digest(data) for item in data['evidence']),
                  'phase unit and live evidence must come from exact, independent candidate checks')
-    return phase_audit._phase(data['repo'], entry, record, contract['plan']['baseline'], context['parent'], directory)
+    technical = {key: value for key, value in record.items() if key != 'visual_parity'}
+    return phase_audit._phase(data['repo'], entry, technical, contract['plan']['baseline'], context['parent'], directory)
 
 
 def record_completion(task_path, data, record):
@@ -496,6 +549,8 @@ def record_completion(task_path, data, record):
              'cannot record completion for a different phase task')
     candidate = record['commit']
     _require(cli.sha(data['repo'], 'HEAD') == candidate, 'phase proof candidate is not checked out')
+    if context['step'].get('visual_parity'):
+        record = {**record, 'visual_parity': visual_parity.require(data, candidate, phase=context)}
     result = _verify_result(data, context, record, candidate)
     value = {'schema': cli.SCHEMA, 'phase': context['phase'], 'binding_sha256': data['phase_binding']['sha256'],
              'record': record, 'result': result}

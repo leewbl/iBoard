@@ -86,7 +86,8 @@ def _run(root, original, new_base, *, seconds, prepare_replay, launch, resume, e
             data = cli.read(task)
             current = phase_contract.read(data)
             if (not current or current['parent'] != new_base or current.get('replay') != replay_binding
-                    or current.get('replayed_candidate') != candidate):
+                    or current.get('replayed_candidate') != candidate
+                    or current.get('visual_baseline') != phase.get('visual_baseline')):
                 raise ReverifyError('retained task does not match the approved replay')
             return data
 
@@ -118,7 +119,7 @@ def _run(root, original, new_base, *, seconds, prepare_replay, launch, resume, e
                     except local_gate.LocalGateError as error:
                         raise ReverifyError('could not carry forward the authorized local test policy') from error
                 phase_contract.bind(task_path, data, contract, entry['id'], new_base, request_path,
-                                    phase['baseline_perf'], replay=replay_binding)
+                                    phase['baseline_perf'], replay=replay_binding, visual_baseline=phase.get('visual_baseline'))
                 cli.write(task_path, data)
                 return execute(task_path, request_path, image, **options)
 

@@ -1,6 +1,7 @@
 """Freeze real Chromium states and require pixel-exact candidate proof."""
 
 import argparse
+from datetime import datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -147,7 +148,7 @@ def _same_runtime(before, after, timeout):
         raise ParityError('candidate image must retain the frozen browser image and its runtime configuration')
 
 
-def _raw_capture(path, values, state, role, revision, image):
+def _raw_capture(path, values, state, role, revision, image, *, memory_mb=None, before=None):
     report_path, screenshot_path = path / (role + '.json'), path / (role + '.png')
     log = _read(report_path, 2_500_000)
     image_bytes = _read(screenshot_path, MAX_SCREENSHOT)
@@ -156,6 +157,16 @@ def _raw_capture(path, values, state, role, revision, image):
     report = json.loads(log)
     if not isinstance(report, dict) or not isinstance(report.get('stdout'), str):
         raise ParityError('visual execution report has no browser receipt')
+    if memory_mb is not None and report.get('memory_mb') != memory_mb:
+        raise ParityError('visual capture did not use the approved memory limit')
+    if before is not None:
+        try:
+            elapsed = report['elapsed_seconds']
+            started = datetime.fromisoformat(report['started_at'])
+            if type(elapsed) not in (float, int) or elapsed < 0 or started + timedelta(seconds=elapsed) >= datetime.fromisoformat(before):
+                raise ValueError('capture did not finish before the cutoff')
+        except (KeyError, OverflowError, TypeError, ValueError) as error:
+            raise ParityError('visual baseline must have completed before the phase began') from error
     receipt = json.loads(report.get('stdout', ''))
     if not isinstance(receipt, dict):
         raise ParityError('visual execution report has an invalid browser receipt')
@@ -204,7 +215,7 @@ def _run(root, plan, driver, revision, image, timeout, memory_mb):
     return records
 
 
-def _inspect(root, plan, records, revision, image, *, check_repeat):
+def _inspect(root, plan, records, revision, image, *, check_repeat, memory_mb=None, before=None):
     states = {state['id']: state for state in plan['states']}
     if not isinstance(records, dict) or set(records) != states.keys():
         raise ParityError('visual evidence does not contain the frozen state set')
@@ -215,7 +226,7 @@ def _inspect(root, plan, records, revision, image, *, check_repeat):
         images[state_id] = {}
         for role in ROLES:
             image_bytes, receipt, container = _raw_capture(root / state_id, roles[role], states[state_id], role,
-                                                            revision, image)
+                                                            revision, image, memory_mb=memory_mb, before=before)
             current = {key: receipt[key] for key in ('browser', 'playwright', 'chromium_sha256', 'viewport')}
             if container in containers or receipt['viewport'] != plan['viewport'] or (fingerprint and current != fingerprint):
                 raise ParityError('visual captures must use distinct containers and the same browser and viewport')
@@ -268,14 +279,15 @@ def read_baseline(ref, expected_base):
     return path, proof, plan
 
 
-def bind(path, digest, base):
+def bind(path, digest, base, *, memory_mb=None, before=None):
     path = Path(path).expanduser().absolute()
     if path.is_symlink():
         raise ParityError('visual baseline record must be a regular file')
     path = path.resolve(strict=True)
     ref = {'path': str(path), 'sha256': digest}
     path, proof, plan = read_baseline(ref, base)
-    _inspect(path.parent, plan, proof['states'], base, proof['image'], check_repeat=True)
+    _inspect(path.parent, plan, proof['states'], base, proof['image'], check_repeat=True,
+             memory_mb=memory_mb, before=before)
     return ref
 
 
@@ -320,7 +332,7 @@ def compare_candidate(repo, base, ref, revision, image, out, timeout, memory_mb)
     return _reference(result), equal
 
 
-def require(data, head):
+def require(data, head, *, phase=None):
     binding = data.get('visual_baseline')
     if binding is None:
         return None
@@ -337,10 +349,17 @@ def require(data, head):
             or result.get('candidate') != head or result.get('baseline') != binding or result.get('equal') is not True
             or not IMAGE.fullmatch(str(result.get('image')))):
         raise ParityError('visual parity evidence differs from the required candidate')
-    base_path, proof, plan = read_baseline(binding, data['base_commit'])
-    before, old, containers = _inspect(base_path.parent, plan, proof['states'], data['base_commit'], proof['image'],
-                                       check_repeat=True)
-    current, new, used = _inspect(path.parent, plan, result['captures'], head, result['image'], check_repeat=False)
+    if phase is None and data.get('phase_binding'):
+        from workbench import phase_contract
+
+        phase = phase_contract.read(data)
+    base = phase['contract']['plan']['baseline'] if phase else data['base_commit']
+    memory = phase['contract']['memory_mb'] if phase else None
+    base_path, proof, plan = read_baseline(binding, base)
+    before, old, containers = _inspect(base_path.parent, plan, proof['states'], base, proof['image'],
+                                       check_repeat=True, memory_mb=memory)
+    current, new, used = _inspect(path.parent, plan, result['captures'], head, result['image'],
+                                  check_repeat=False, memory_mb=memory)
     observed = _measure(path.parent, plan, old, new)
     if (before != current or containers & used or result.get('states') != observed
             or any(not check['equal'] for role in observed.values() for check in role.values())):

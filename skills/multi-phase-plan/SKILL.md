@@ -60,6 +60,14 @@ Each eligible phase gets a distinct task and worktree at its declared Git parent
 
 For OpenClaw, a step can declare `local_gate` with `files` listing the approved tracked `src/**/*.test.ts` suites covered by the Gateway Vitest configuration. Use `reason` to record their purpose. The dispatcher freezes this policy before implementation and requires both native local test runs in addition to the planned acceptance evidence.
 
+## Migrate UI components with pixel parity
+
+Put shared primitives in prerequisite phases. Give each component its own phase, editable scope, and [visual state manifest](../visual-parity/SKILL.md). Alongside the phase's `screenshot` check, add `visual_parity` with `path`, `sha256` for the state manifest, and `driver_sha256` for `skills/visual-parity/capture.mjs` in the installed iBoard plugin. Keep the loopback server entrypoint outside all editable scopes. Use an image with Chromium and Playwright that contains the approved trunk source.
+
+Before launching any task, dispatch captures every declared phase's states from the original trunk in two independent offline containers. It stores the results in `run.json` under `phases.<id>.visual_baseline`. Stop and inspect any missing or unstable baseline before migrating. An existing run with component work cannot recreate a missing baseline.
+
+Every candidate must match the original states at zero changed pixels. A dependent phase verifies the complete candidate, including its prerequisite changes. The comparison, unit/live checks, and performance measurement use the same candidate image. A replay uses the original screenshots and takes fresh captures of the replayed candidate. Phase approval covers the exact comparison receipt together with the other evidence. Inspect the `visual-parity-*` directories in each task for screenshot reports and pixel differences.
+
 A change to an interaction needs explicit approval of its exact commit and evidence, using `python3 -m workbench.phase_dispatch approve --task "$PHASE_TASK" --candidate "$CANDIDATE" --result-sha256 "$PHASE_RESULT_SHA256" --approved-by "$OPERATOR" --reason "$REVIEW_REASON"`. Run the dispatcher again to release dependent local tasks.
 
 ## Land the approved phases

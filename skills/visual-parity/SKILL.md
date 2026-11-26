@@ -30,4 +30,6 @@ Each baseline state needs matching screenshots from two clean offline Chromium c
 
 Compare decoded pixels with a zero threshold. Nonzero results retain each state, bounding box and local difference mask. Work through shared primitives before dependent components. Give independent components their own task and worktree, and repeat against the same frozen baseline. Preserve the harness, selectors and state conditions during implementation.
 
+For a staged migration, configure `visual_parity` for each component in the [approved phase dispatch](../multi-phase-plan/SKILL.md). The dispatcher freezes all declared states from trunk before launching any edits. Dependent and replayed candidates use those original screenshots.
+
 The PR gate reopens both pairs of captures, checks their digests and recomputes the comparisons for the exact candidate. The original independent UI and delivery checks still apply. Report the verified states, pixel counts, baseline record and pending component work.

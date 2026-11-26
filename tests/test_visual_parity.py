@@ -51,6 +51,7 @@ class VisualParityTests(unittest.TestCase):
                    'viewport': self.plan['viewport'], 'browser': 'chromium', 'playwright': 'test',
                    'chromium_sha256': '9'*64, 'screenshot_sha256': checksum}
         return {'exit_code': 0, 'cleanup_confirmed': True, 'container_created': True, **kwargs,
+                'started_at': '2026-10-01T00:00:00+00:00', 'elapsed_seconds': 4.5,
                 'command': command, 'create_stdout': f'{self.calls:064x}\n', 'image': image,
                 'screenshot_sha256': checksum, 'screenshot_path': str(screenshot_output), 'stdout': json.dumps(receipt)}
 
@@ -64,6 +65,13 @@ class VisualParityTests(unittest.TestCase):
             shutil.copytree(self.root/'baseline', copied)
             portable = visual_parity.bind(copied/'baseline.json', baseline['sha256'], self.base)
             self.assertEqual(portable['sha256'], baseline['sha256'])
+            self.assertEqual(visual_parity.bind(portable['path'], portable['sha256'], self.base, memory_mb=1024,
+                                               before='2026-10-01T00:00:05+00:00'), portable)
+            with self.assertRaisesRegex(visual_parity.ParityError, 'completed before the phase began'):
+                visual_parity.bind(portable['path'], portable['sha256'], self.base, memory_mb=1024,
+                                   before='2026-10-01T00:00:04+00:00')
+            with self.assertRaisesRegex(visual_parity.ParityError, 'approved memory limit'):
+                visual_parity.bind(portable['path'], portable['sha256'], self.base, memory_mb=512)
             (self.repo/'index.html').write_text('<main>candidate</main>')
             cli.git(self.repo, 'add', 'index.html')
             cli.git(self.repo, 'commit', '-qm', 'candidate')

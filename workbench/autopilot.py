@@ -800,6 +800,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     state = cli.read(state_path) if state_exists else {'schema': cli.SCHEMA, 'phase': 'plan'}
     from workbench import phase_contract
     try:
+        phase = phase_contract.read(data)
         parity = data.get('visual_baseline')
         if state_exists and state.get('visual_baseline') != parity:
             raise AutopilotError('visual baseline changed after the task began')
@@ -807,12 +808,11 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             from workbench import visual_parity
             if data['surface'] != 'ui' or source_mode != 'image' or not build_source_image:
                 raise AutopilotError('visual parity requires a source-built UI image')
-            _, frozen_visual, visual_plan = visual_parity.read_baseline(parity, data['base_commit'])
-            if not state_exists:
-                visual_parity.bind(parity['path'], parity['sha256'], data['base_commit'])
+            visual_base = phase['contract']['plan']['baseline'] if phase else data['base_commit']
+            _, frozen_visual, visual_plan = visual_parity.read_baseline(parity, visual_base)
+            if not state_exists and not phase:
+                visual_parity.bind(parity['path'], parity['sha256'], visual_base)
             state['visual_baseline'] = parity
-            image = frozen_visual['image']
-        phase = phase_contract.read(data)
         replay_candidate = phase.get('replayed_candidate') if phase else None
         phase_binding = data.get('phase_binding')
         if state_exists and state.get('phase_binding') != phase_binding:
@@ -826,6 +826,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if state['phase'] != 'plan' and state.get('plan') != phase_contract.task_plan(phase):
                 raise AutopilotError('retained execution plan differs from the authorized phase')
             state['phase_binding'] = phase_binding
+        if parity is not None:
+            image = frozen_visual['image']
         feature = feature_context.read(data)
         arena = feature.get('arena') if feature else None
         if arena:
@@ -1205,7 +1207,15 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             verify_candidate_scope(candidate)
             architecture = check_design(current, candidate)
             check_image = candidate_image or image
-            if build_source_image:
+            parity_result = None
+            if parity is not None and phase and current.get('phase_result'):
+                try:
+                    phase_contract.verify_completion(current, candidate, context=phase)
+                    parity_result = visual_parity.require(current, candidate, phase=phase)
+                    check_image = phase_contract._json(Path(parity_result['path']), parity_result['sha256'], 90_000)['image']
+                except (OSError, ValueError, KeyError, cli.WorkbenchError) as error:
+                    raise AutopilotError(f'retained phase visual proof could not be recovered: {error}') from error
+            elif build_source_image:
                 try:
                     image_base = phase['contract']['plan']['baseline'] if phase else current['base_commit']
                     base_image = cli.read(Path(phase['baseline_perf']['path']))['images']['baseline'] if phase else image
@@ -1218,11 +1228,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 results.append(_check(task, check_image, state['plan'][spec], kind, actor, check, source_mode=source_mode, memory_mb=memory_mb))
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests')]:
                 results.append(_check(task, check_image, state['plan'][spec], kind, verifier, check, source_mode=source_mode, memory_mb=memory_mb))
-            parity_result = None
-            if parity is not None:
+            if parity is not None and parity_result is None:
                 try:
                     parity_result, identical = visual_parity.compare_candidate(
-                        workspace, current['base_commit'], parity, candidate, check_image,
+                        workspace, visual_base, parity, candidate, check_image,
                         task.parent / f'visual-parity-{uuid.uuid4().hex}', _remaining(cli.read(task)), memory_mb)
                 except (OSError, ValueError, KeyError, cli.WorkbenchError, subprocess.SubprocessError) as error:
                     raise AutopilotError(f'visual parity could not capture equivalent states: {error}') from error
