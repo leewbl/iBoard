@@ -19,7 +19,8 @@ else:
     from task_lock import task_lock
 
 SCHEMA = 1
-KINDS = ('reproduction', 'resolution', 'feature-doc', 'test-result', 'screenshot', 'runtime-log', 'independent-review')
+KINDS = ('reproduction', 'resolution', 'feature-doc', 'test-result', 'screenshot', 'runtime-log',
+         'independent-review', 'tdd-red', 'tdd-green')
 CI_SKIP_POLICIES = ('openclaw-selected-v1',)
 
 class WorkbenchError(Exception):
@@ -190,7 +191,8 @@ def evidence_add(a, data):
         raise WorkbenchError('evidence file is empty')
     actor = nonempty(a.actor, 'actor')
     commit = sha(data['repo'], a.commit)
-    if a.kind == 'reproduction' and (commit != data['base_commit'] or sha(data['repo'], 'HEAD') != data['base_commit']):
+    if a.kind in ('reproduction', 'tdd-red') and (
+            commit != data['base_commit'] or sha(data['repo'], 'HEAD') != data['base_commit']):
         raise WorkbenchError('reproduction must be recorded while the base commit is checked out')
     if a.kind == 'independent-review' and actor == data['implementer']:
         raise WorkbenchError('independent review actor must differ from implementer')
@@ -245,7 +247,7 @@ def evidence_gate(data, expected):
         except WorkbenchError:
             issues.append(f"evidence {e['id']} missing or unreadable")
             continue
-        if e['kind'] == 'reproduction':
+        if e['kind'] in ('reproduction', 'tdd-red'):
             if e['commit'] == data['base_commit']:
                 valid.append(e)
         elif e['commit'] == target:
@@ -254,6 +256,8 @@ def evidence_gate(data, expected):
     required = {'reproduction', 'resolution', 'test-result', 'independent-review'} if data['kind'] == 'bug' else {'feature-doc', 'test-result', 'independent-review'}
     if 'verification_target' in data:
         required.update(('reproduction', 'resolution'))
+    if data.get('regression_test') is not None:
+        required.update(('tdd-red', 'tdd-green'))
     required.add('screenshot' if data['surface'] == 'ui' else 'runtime-log')
     for missing in sorted(required - kinds):
         issues.append(f'missing valid {missing} evidence')

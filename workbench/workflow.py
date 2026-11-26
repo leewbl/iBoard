@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 
-from workbench import cli
+from workbench import cli, tdd
 from workbench.task_lock import locked_task
 from runner.sandbox import SandboxError, run_sandbox
 
@@ -359,14 +359,23 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         raise WorkflowError('task is stopped or its budget is exhausted')
     if not data['criteria']:
         raise WorkflowError('record acceptance criteria before running checks')
-    if kind not in ('reproduction', 'resolution', 'test-result', 'runtime-log', 'feature-doc', 'screenshot'):
+    if kind not in ('reproduction', 'resolution', 'test-result', 'runtime-log', 'feature-doc', 'screenshot', *tdd.KINDS):
         raise WorkflowError('unsupported check evidence kind')
     if not command or timeout <= 0 or not description.strip() or not actor.strip():
         raise WorkflowError('command, actor, description and positive timeout are required')
     head = cli.sha(data['repo'], 'HEAD')
     if cli.git(data['repo'], 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError('source worktree must be clean before the check')
-    if source_mode == 'workspace' or kind == 'screenshot':
+    regression = None
+    if kind in tdd.KINDS:
+        regression = tdd.contract(data.get('regression_test'))
+        if (data['kind'] != 'bug' or command != tdd.COMMAND
+                or (expect_exit, marker) != tdd.expected(regression, kind)
+                or (head == data['base_commit']) != (kind == 'tdd-red')):
+            raise WorkflowError('focused regression command, outcome, or revision changed')
+        if kind == 'tdd-green':
+            tdd.verify_test(data['repo'], regression, head)
+    elif source_mode == 'workspace' or kind == 'screenshot':
         _verify_workspace_entry(data['repo'], command)
     if source_mode == 'workspace':
         selected_image = image
@@ -389,6 +398,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     report_path = task.parent / f'{kind}-{uuid.uuid4().hex}.json'
     screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' else None
     runner_options = {'source_root': '/app'} if source_mode == 'image' else {}
+    if regression is not None:
+        runner_options.update(workspace_read_only=True, regression_source=regression['source'].encode())
     if data.get('phase_binding'):
         runner_options['workspace_read_only'] = True
     if screenshot_path is not None:
@@ -410,6 +421,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     output = str(report.get('stdout', '')) + '\n' + str(report.get('stderr', ''))
     if (report.get('error') or report.get('timed_out') or not report.get('cleanup_confirmed')
             or report.get('exit_code') != expect_exit or (marker and marker not in output)
+            or (regression is not None and (report.get('container_created') is not True
+                                          or not tdd.matches(report, regression, kind)))
             or (screenshot_path is not None and (not screenshot_path.is_file()
                 or report.get('screenshot_sha256') != cli.digest(screenshot_path)))):
         raise WorkflowError(f'check failed; raw report saved at {report_path}')

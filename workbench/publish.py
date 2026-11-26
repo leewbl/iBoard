@@ -82,7 +82,8 @@ def _report_summary(data, item, commit):
         if len(raw) > 2_000_000 or hashlib.sha256(raw).hexdigest() != item['sha256']:
             raise PublishError('sandbox evidence changed or exceeds the publication limit')
         report = json.loads(raw)
-        if not delivery._valid_run(item, item['actor'], item['kind'], commit, data['repo']):
+        regression = data.get('regression_test') if item['kind'] in ('tdd-red', 'tdd-green') else None
+        if not delivery._valid_run(item, item['actor'], item['kind'], commit, data['repo'], regression=regression):
             raise PublishError('sandbox evidence does not match the verified commit')
         if (type(report.get('exit_code')) is not int or type(report.get('expected_exit')) is not int or
                 not -255 <= report['exit_code'] <= 255):
@@ -397,8 +398,15 @@ def _pr_body(data, head):
     sections = [('reproduction', data['base_commit']), ('resolution', head), ('test-result', head)]
     if data.get('kind') == 'feature':
         sections = [('resolution', head), ('test-result', head)] if data.get('phase_binding') else [('test-result', head)]
+    if data.get('regression_test') is not None:
+        from workbench import tdd
+        sections = [('tdd-red', data['base_commit']), ('tdd-green', head), *sections]
     body = ('This change was prepared by the engineering workbench.\n\n'
             f'Verified candidate: `{head}`\n')
+    if data.get('regression_test') is not None:
+        digest = tdd.digest(data['regression_test'])
+        path = data['regression_test']['path']
+        body += f'\nFocused regression `{path}` retained in the candidate. Source SHA-256 `{digest}`.\n'
     if data.get('surface') == 'ui':
         body += (f"\n## Screenshot\n\n[View verified screenshot](https://github.com/{destination}/blob/"
                  f"{artifact['commit']}/screenshot.png) (SHA-256 `{artifact['sha256']}`). "

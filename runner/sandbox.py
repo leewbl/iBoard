@@ -89,7 +89,7 @@ def _copy_screenshot(directory, output):
 
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
-                workspace_read_only=False):
+                workspace_read_only=False, regression_source=None):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -107,6 +107,11 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("invalid Docker image reference")
     if not command or not command[0] or command[0].startswith("-"):
         raise SandboxError("a command with a valid executable is required")
+    if regression_source is not None and (
+            not isinstance(regression_source, bytes) or not 0 < len(regression_source) <= 16_384
+            or command != ['node', '/workbench-regression/check.mjs']
+            or not workspace_read_only or screenshot_output is not None):
+        raise SandboxError("invalid read-only focused regression input")
     if not 0 < timeout <= 86400:
         raise SandboxError("timeout must be in (0, 86400] seconds")
     if type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
@@ -134,16 +139,24 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
             raise SandboxError("only local Unix-socket Docker contexts are supported")
 
     # An image's VOLUME directive could add unrequested mounts. Reject such images.
+    image_format = "{{json .Config.Volumes}}"
+    if regression_source is not None:
+        image_format = '{{.Id}}{{println}}{{json (index .Config "Volumes")}}'
     try:
-        inspected = invoke([docker, "image", "inspect", image, "--format", "{{json .Config.Volumes}}"],
+        inspected = invoke([docker, "image", "inspect", image, "--format", image_format],
                            capture_output=True, text=True, timeout=15, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SandboxError(f"cannot inspect local Docker image: {exc}") from exc
     if inspected.returncode:
         raise SandboxError("Docker daemon unavailable or image not present locally; no image was pulled")
     try:
-        volumes = json.loads(inspected.stdout.strip())
-    except (json.JSONDecodeError, AttributeError) as exc:
+        details = inspected.stdout.strip()
+        if regression_source is not None:
+            image, details = details.split("\n", 1)
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+                raise ValueError("invalid resolved image ID")
+        volumes = json.loads(details)
+    except (ValueError, AttributeError) as exc:
         raise SandboxError("cannot establish image volume configuration") from exc
     if volumes:
         raise SandboxError("image declares extra volumes; use an image without VOLUME directives")
@@ -174,6 +187,11 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 create[create.index('--workdir'):create.index('--workdir')] = [
                     '--mount', f'type=bind,src={artifact_dir},dst=/artifacts',
                     '--env', 'WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png']
+            if regression_source is not None:
+                (Path(artifact_dir) / 'check.mjs').write_bytes(regression_source)
+                create[create.index('--workdir'):create.index('--workdir')] = [
+                    '--mount', f'type=bind,src={artifact_dir},dst=/workbench-regression,readonly']
+                report['regression_sha256'] = hashlib.sha256(regression_source).hexdigest()
             # Docker create emits its container ID and daemon diagnostics, not application output.
             result = invoke(create, stdout=create_stdout, stderr=create_stderr, timeout=timeout, check=False)
             report["create_exit_code"] = result.returncode

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from test_runner import tiny_png
 
-from workbench import autopilot, cli, delivery, pickup, publish, stack_verify, workflow
+from workbench import autopilot, cli, delivery, pickup, publish, stack_verify, tdd, workflow
 
 
 class CompletedCI:
@@ -407,6 +407,93 @@ class AutopilotTests(unittest.TestCase):
         self.assertNotIn('implement', self.calls)
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
         self.assertEqual(cli.read(self.task)['status'], 'paused')
+
+    def _focused_plan(self):
+        source = ("import assert from 'node:assert/strict';\n"
+                  "import { readFileSync } from 'node:fs';\n"
+                  "assert.equal(readFileSync('code.txt', 'utf8'), 'fixed', 'EXPECTED_FIXED_STATE');\n"
+                  "console.log('VERIFIED_FIXED_STATE');\n")
+        self.plan['tdd'] = {'path': 'scripts/code.regression.test.mjs', 'source': source,
+                            'red': 'EXPECTED_FIXED_STATE', 'green': 'VERIFIED_FIXED_STATE'}
+        return self.plan['tdd']
+
+    def _focused_sandbox(self, *, unrelated_failure=False, **kwargs):
+        kind = kwargs['kind']
+        if kind not in tdd.KINDS:
+            return self.check(**kwargs)
+
+        def container(workspace, image, command, timeout, **options):
+            self.calls.append(f"{kind}:{kwargs['actor']}")
+            self.assertEqual(command, tdd.COMMAND)
+            self.assertTrue(options['workspace_read_only'])
+            source = options['regression_source']
+            self.assertEqual(source, self.plan['tdd']['source'].encode())
+            self.assertEqual((Path(workspace) / 'code.txt').read_text(), 'broken' if kind == 'tdd-red' else 'fixed')
+            stdout, stderr = '', ''
+            if kind == 'tdd-red':
+                stderr = ('EXPECTED_FIXED_STATE\nAssertionError: unrelated assertion'
+                          if unrelated_failure else 'AssertionError: EXPECTED_FIXED_STATE')
+            else:
+                stdout = 'VERIFIED_FIXED_STATE'
+            return {'exit_code': 1 if kind == 'tdd-red' else 0, 'workspace': workspace, 'command': command,
+                    'image': 'sha256:' + 'a' * 64, 'container_created': True, 'cleanup_confirmed': True, 'stdout': stdout,
+                    'stderr': stderr, 'workspace_read_only': True, 'regression_sha256': hashlib.sha256(source).hexdigest()}
+
+        return workflow.run_check(**kwargs, runner=container)
+
+    def test_regression_freezes_test_before_implementation_and_binds_review_to_both_outcomes(self):
+        spec = self._focused_plan()
+
+        def model(workspace, prompt, timeout, *, read_only):
+            if 'Implement this explicitly' in prompt:
+                self.assertIn('tdd-red:independent-verifier', self.calls)
+                self.assertEqual((workspace / spec['path']).read_text(), spec['source'])
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'Cite TDD_RED and TDD_GREEN together' in prompt:
+                review = json.loads(result['stdout'])
+                review['assessments'][0]['evidence'] += ['TDD_RED', 'TDD_GREEN']
+                result['stdout'] = json.dumps(review)
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):
+            autopilot.run(self.task, self.issue, 'image', model=model, check=self._focused_sandbox)
+        data = cli.read(self.task)
+        head = cli.sha(self.workspace, 'HEAD')
+        self.assertFalse(cli.evidence_gate(data, head)[1])
+        self.assertEqual(cli.git(self.workspace, 'show', f"{head}:{spec['path']}"), spec['source'].strip())
+        item = delivery._independent_verification(data, head)
+        self.assertIn('Tdd Red', publish._pr_body(data, head))
+        report = cli.read(self.task.parent / 'autopilot.json')
+        self.assertEqual(report['phase'], 'delivery')
+        self.assertEqual(len([kind for kind in self.calls if kind.startswith('tdd-')]), 4)
+
+        path = Path(json.loads(Path(item['path']).read_text())['reports']['TDD_RED']['path'])
+        path.write_text(path.read_text().replace('EXPECTED_FIXED_STATE', 'UNRELATED_FAILURE'))
+        with self.assertRaisesRegex(delivery.DeliveryError, 'independent sandbox reruns'):
+            delivery._independent_verification(data, head)
+
+    def test_unrelated_failure_does_not_allow_focused_regression_to_reach_implementation(self):
+        self._focused_plan()
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'check failed'):
+            autopilot.run(self.task, self.issue, 'image', model=self.model,
+                          check=lambda **kwargs: self._focused_sandbox(unrelated_failure=True, **kwargs))
+        self.assertNotIn('implement', self.calls)
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+
+    def test_implementation_cannot_weaken_the_frozen_regression(self):
+        spec = self._focused_plan()
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'Implement this explicitly' in prompt:
+                (workspace / spec['path']).write_text("console.log('VERIFIED_FIXED_STATE');\n")
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'changed the frozen focused regression'):
+            autopilot.run(self.task, self.issue, 'image', model=model, check=self._focused_sandbox)
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), cli.read(self.task)['base_commit'])
+        self.assertFalse(any(kind.startswith('tdd-green') for kind in self.calls))
 
     def _pin_existing_pr(self):
         base = cli.sha(self.workspace, 'HEAD')

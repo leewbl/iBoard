@@ -66,6 +66,33 @@ class SandboxTests(unittest.TestCase):
         self.assertTrue(report["cleanup_confirmed"])
         self.assertEqual(self.calls[-1][0][1:3], ["rm", "--force"])
 
+    def test_focused_regression_mount_is_read_only_pinned_and_discarded(self):
+        test_source = b"console.log('hello');\n"
+        pinned_id = 'sha256:' + 'a' * 64
+        artifact_paths = []
+
+        def invoke(args, **kwargs):
+            if args[1:3] == ['image', 'inspect']:
+                return subprocess.CompletedProcess(args, 0, stdout=pinned_id + '\nnull\n', stderr='')
+            if args[1] == 'create':
+                mount = next(arg for arg in args if arg.endswith(',dst=/workbench-regression,readonly'))
+                test_path = Path(mount.split(',')[1].removeprefix('src=')) / 'check.mjs'
+                self.assertEqual(test_path.read_bytes(), test_source)
+                artifact_paths.append(test_path)
+                self.assertIn(pinned_id, args)
+                self.assertIn('--network=none', args)
+                self.assertIn(f'type=bind,src={self.workspace.resolve()},dst=/workspace,readonly', args)
+            return self.fake(args, **kwargs)
+
+        report = run_sandbox(
+            self.workspace, 'example:latest', ['node', '/workbench-regression/check.mjs'], 10,
+            invoke=invoke, find_executable=lambda _: '/usr/bin/docker',
+            workspace_read_only=True, regression_source=test_source)
+        self.assertEqual(report['image'], pinned_id)
+        self.assertTrue(report['cleanup_confirmed'])
+        self.assertEqual(len(artifact_paths), 1)
+        self.assertFalse(artifact_paths[0].exists())
+
     def test_image_source_root_uses_app_without_changing_workspace_mount(self):
         (self.workspace / 'packages').mkdir()
         report = self.run_it(source_root='/app', workdir='packages')

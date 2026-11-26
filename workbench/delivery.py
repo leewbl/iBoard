@@ -261,7 +261,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
     return {'closed': True, 'issue': issue, 'already_closed': False}
 
 
-def _valid_run(evidence, actor, kind, commit, repo):
+def _valid_run(evidence, actor, kind, commit, repo, *, regression=None):
     if evidence['actor'] != actor or evidence['kind'] != kind or evidence['commit'] != commit:
         return False
     try:
@@ -273,8 +273,12 @@ def _valid_run(evidence, actor, kind, commit, repo):
     source_mode = report.get('source_mode')
     if report.get('source_verified_commit') != commit or report.get('workspace') != str(Path(repo).resolve()):
         return False
+    if regression is not None:
+        from workbench import tdd
+        if not tdd.matches(report, regression, kind):
+            return False
     if source_mode == 'workspace':
-        if not workflow._workspace_command(report.get('command')):
+        if regression is None and not workflow._workspace_command(report.get('command')):
             return False
     elif source_mode == 'image':
         image_id = report.get('verified_image_id')
@@ -288,6 +292,40 @@ def _valid_run(evidence, actor, kind, commit, repo):
             and not report.get('error') and report.get('exit_code') == report.get('expected_exit')
             and (not marker or marker in output)
             and (kind != 'reproduction' or bool(marker)))
+
+
+def validate_regression(data, head, reports, assessments, verifier):
+    """Check the unchanged test and both roles' execution records before delivery."""
+    from workbench import tdd
+    spec = data.get('regression_test')
+    try:
+        tdd.verify_test(data['repo'], spec, head)
+        tdd.validate_citations(assessments)
+        seen = set()
+        modes = set()
+        images = {}
+        for label, kind in tdd.REPORTS.items():
+            commit = data['base_commit'] if kind == 'tdd-red' else head
+            for key, actor in ((label, verifier), (label + '_OWNER', data['implementer'])):
+                ref = reports.get(key)
+                if not isinstance(ref, dict) or not isinstance(ref.get('path'), str):
+                    raise tdd.RegressionError('focused regression report is missing')
+                path = ref['path']
+                if (path in seen or cli.digest(path) != ref.get('sha256')
+                        or not any(item.get('path') == path and item.get('sha256') == ref['sha256']
+                                   and not item.get('superseded') and _valid_run(
+                                       item, actor, kind, commit, data['repo'], regression=spec)
+                                   for item in data['evidence'])):
+                    raise tdd.RegressionError('focused regression run is invalid or no longer matches its evidence')
+                seen.add(path)
+                run = cli.read(Path(path))
+                modes.add(run['source_mode'])
+                images.setdefault(kind, set()).add(run['image'])
+        if (len(modes) != 1 or any(len(ids) != 1 for ids in images.values())
+                or (modes == {'workspace'} and images['tdd-red'] != images['tdd-green'])):
+            raise tdd.RegressionError('focused regression roles used different execution environments')
+    except (OSError, TypeError, ValueError, cli.WorkbenchError) as error:
+        raise DeliveryError(str(error)) from error
 
 
 def _valid_screenshot(evidence, actor, commit, repo):
@@ -405,7 +443,7 @@ def validate_phase_citations(assessments, reports, required):
 
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
-    from workbench import feature_context, phase_contract
+    from workbench import feature_context, phase_contract, tdd
     try:
         feature = feature_context.read(data)
         phase_contract.require_delivery(data, target, destination=destination)
@@ -475,10 +513,17 @@ def _independent_verification(data, target, *, destination=None):
         actor = item['actor']
         try:
             validate_impact_review(data, target, report.get('impact'), reports, actor)
+            if data.get('regression_test') is not None:
+                if (report.get('regression_sha256') != tdd.digest(data['regression_test'])
+                        or cli.digest(item['path']) != item['sha256']):
+                    continue
+                validate_regression(data, target, reports, assessments, actor)
+            elif 'regression_sha256' in report:
+                continue
             if data.get('phase_result'):
                 result = cli.read(Path(data['phase_result']['path']))['record']
                 validate_phase_citations(assessments, reports, {name: result[name] for name in ('unit', 'live')})
-        except DeliveryError:
+        except (DeliveryError, cli.WorkbenchError):
             continue
         required = [('test-result', target)]
         if data['kind'] == 'bug' or 'verification_target' in data:
