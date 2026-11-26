@@ -101,6 +101,29 @@ def begin(task):
     return run
 
 
+def transcript_dir(task, run):
+    if not RUN.fullmatch(run):
+        raise DecisionError('invalid decision run identifier')
+    root = task.parent / 'decision-runs'
+    path = root / run
+    if root.is_symlink() or path.is_symlink():
+        raise DecisionError('decision transcript directory cannot be a symbolic link')
+    return path
+
+
+def retain_stage(task, run, phase, started_at, response):
+    path = transcript_dir(task, run)
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    path.mkdir(mode=0o700, exist_ok=True)
+    receipt = {key:response[key] for key in ('provider', 'model', 'elapsed_seconds', 'exit_code',
+               'timed_out', 'trace', 'trace_completed', 'trace_truncated', 'review_scope') if key in response}
+    stdout = response.get('stdout', '')
+    cli.write(path / f'{uuid.uuid4().hex}.json', {
+        'schema':cli.SCHEMA, 'run':run, 'phase':phase, 'started_at':started_at, 'finished_at':cli.now(),
+        **receipt, 'output':stdout[:6000], 'output_truncated':len(stdout) > 6000,
+    })
+
+
 def artifact(task, path):
     path = Path(path)
     if not path.is_absolute():

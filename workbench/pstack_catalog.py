@@ -44,7 +44,8 @@ def main():
             ],
             'native_commands': ([f'python3 -m workbench.investigate {mode}'
                                  for mode, path in INVESTIGATION_SOURCES.items() if path == source] +
-                                (['python3 -m workbench.decisions audit', 'python3 -m workbench.decisions record']
+                                (['python3 -m workbench.decisions audit', 'python3 -m workbench.decisions record',
+                                  'python3 -m workbench.decision_review']
                                  if source == DECISION_SOURCE else []) +
                                 ([PICKUP_SOURCES[source]] if source in PICKUP_SOURCES else [])),
         }

@@ -14,7 +14,49 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(), file_tools_only=False):
+def _trace(stdout):
+    events, final, model, truncated = [], None, None, False
+    for line in stdout.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        if item.get('type') == 'system' and item.get('subtype') == 'init':
+            model = item.get('model')
+        if item.get('type') == 'result':
+            final = item
+        message = item.get('message')
+        if item.get('type') not in {'assistant', 'user'} or not isinstance(message, dict):
+            continue
+        content = message.get('content')
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            kind = block.get('type')
+            if kind == 'text' and item['type'] == 'assistant' and isinstance(block.get('text'), str):
+                event = {'type':'assistant', 'text':block['text'][:4000]}
+                truncated |= len(block['text']) > 4000
+            elif kind == 'tool_use':
+                event = {'type':'tool_use', 'tool':block.get('name'), 'id':block.get('id')}
+            elif kind == 'tool_result':
+                event = {'type':'tool_result', 'id':block.get('tool_use_id'), 'error':block.get('is_error') is True}
+            else:
+                continue
+            if len(events) < 80:
+                events.append(event)
+            else:
+                truncated = True
+    return {'provider':'zhipu', 'model':model, 'trace':events, 'trace_truncated':truncated,
+            'stdout':final['result'] if isinstance(final, dict) and isinstance(final.get('result'), str) else '',
+            'trace_completed':bool(final and final.get('subtype') == 'success' and not final.get('is_error'))}
+
+
+def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(),
+            file_tools_only=False, capture_trace=False):
     workspace = workspace.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not prompt.strip() or not 1 <= timeout <= 86400:
         raise ValueError("a workspace, nonempty prompt and valid timeout are required")
@@ -80,8 +122,19 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
                "--no-session-persistence", "--print"]
         if file_tools_only:
             cmd.extend(["--effort", "low"])
+        if capture_trace:
+            cmd.extend(["--output-format", "stream-json", "--verbose"])
+        if evidence_dirs:
+            cmd.extend(["--add-dir", *evidence_dirs])
         process = subprocess.Popen(cmd, cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+        def result(exit_code, timed_out, stdout, stderr):
+            stdout, stderr = stdout.replace(key, "[REDACTED]"), stderr.replace(key, "[REDACTED]")
+            values = _trace(stdout) if capture_trace else {'stdout':stdout}
+            if capture_trace and exit_code == 0 and not values['trace_completed']:
+                exit_code = 1
+            return {'exit_code':exit_code, 'timed_out':timed_out, 'stderr':stderr, **values}
+
         try:
             stdout, stderr = process.communicate(input=prompt, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -90,8 +143,7 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
             except ProcessLookupError:
                 pass
             stdout, stderr = process.communicate()
-            return {"exit_code": None, "timed_out": True, "stdout": stdout.replace(key, "[REDACTED]"),
-                    "stderr": stderr.replace(key, "[REDACTED]")}
+            return result(None, True, stdout, stderr)
         except BaseException:
             # Claude runs in a separate session, so interrupting this process
             # alone would otherwise leave the model and its children alive.
@@ -101,8 +153,7 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
                 pass
             process.communicate()
             raise
-        return {"exit_code": process.returncode, "timed_out": False, "stdout": stdout.replace(key, "[REDACTED]"),
-                "stderr": stderr.replace(key, "[REDACTED]")}
+        return result(process.returncode, False, stdout, stderr)
 
 
 def main():

@@ -32,7 +32,20 @@ Use `--commit` with the full SHA, or `--pr` with an exact GitHub pull request
 URL when appropriate. A different run receives a start marker that names the
 time range of inherited rows. Append a correction when a row is wrong.
 
-If the user supplies the specific run transcript, compare the decisions with
-that transcript. Call out gaps and weak evidence. Record which reviewer and
-which source you actually used. Only label the audit cross-vendor after a
-reviewer from another model provider has performed it.
+Before handing back a run, use a configured Codex model from OpenAI to review
+the GLM stage receipts and the corresponding evidence:
+
+```sh
+python3 -m workbench.decision_review --task /path/to/task.json --run RUN_ID --model OPENAI_MODEL
+```
+
+This command sends the selected run's decisions, bounded transcript excerpts,
+and evidence observations to the OpenAI reviewer. Use a run that the user
+has authorized for that review. For an earlier run, explicitly select its
+transcript inside the task directory with `--transcript FILE --work-provider VENDOR`.
+The report distinguishes an observed GLM provider from a declared provider.
+
+Report the reviewer's model and its specific flags under **Attention**.
+An exit status of 1 indicates that the saved report contains flags. If no
+review could be performed, report the missing review. Append corrections with
+links to the review evidence and keep the prior rows.
