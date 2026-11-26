@@ -7,6 +7,7 @@ the offline container through workflow.run_check.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -774,7 +775,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         source_mode='workspace', candidate_image=None, memory_mb=2048, build_source_image=False, reverify=False,
         model=execute_model, check=workflow.run_check, merge=delivery.guarded_merge,
         publisher=publish.publish, closer=delivery.close_verified_issue, vision=describe_screenshot,
-        architecture_review=None, phase_measure=None):
+        architecture_review=None, phase_measure=None, phase_verification=nullcontext, phase_active=None):
     """Resume a task, preserving each completed phase; never accept a model claim as proof."""
     task = Path(task_path).expanduser().resolve(strict=True)
     issue_path = Path(issue_path).expanduser().resolve(strict=True)
@@ -943,7 +944,15 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     def append_decision(phase, decision, why, proof, result):
         decisions.record(task, journal, phase, decision, why, proof, result)
 
+    def require_active():
+        if phase_active is not None:
+            try:
+                phase_active()
+            except (ValueError, cli.WorkbenchError) as error:
+                raise AutopilotError(str(error)) from error
+
     try:
+        require_active()
         if state['phase'] != 'plan' and state.get('plan', {}).get('tdd') != regression:
             raise AutopilotError('focused regression changed after planning')
         if reverify:
@@ -1157,6 +1166,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 raise AutopilotError('implementation requires an unchanged baseline; inspect interrupted work')
             if cli.iteration_limit_reached(data):
                 raise AutopilotError('iteration limit reached')
+            require_active()
             data['iterations'] += 1
             data['events'].append({'at':cli.now(), 'type':'iteration', 'number':data['iterations']})
             cli.write(task, data)
@@ -1194,6 +1204,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             raise AutopilotError('implementation was interrupted; inspect the retained worktree before resuming')
 
         def _verify_once():
+            require_active()
             current = cli.read(task)
             _validate_adoption(task, current, issue_path, image, pr_repo, source_mode, candidate_image,
                                build_source_image, memory_mb)
@@ -1225,10 +1236,13 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError(f'candidate image preparation failed: {error}') from error
             results = []
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests'), ('runtime-log', 'resolution')]:
+                require_active()
                 results.append(_check(task, check_image, state['plan'][spec], kind, actor, check, source_mode=source_mode, memory_mb=memory_mb))
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests')]:
+                require_active()
                 results.append(_check(task, check_image, state['plan'][spec], kind, verifier, check, source_mode=source_mode, memory_mb=memory_mb))
             if parity is not None and parity_result is None:
+                require_active()
                 try:
                     parity_result, identical = visual_parity.compare_candidate(
                         workspace, visual_base, parity, candidate, check_image,
@@ -1291,6 +1305,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     screenshot_script = capture_source.read_text(encoding='utf-8')
                 except (OSError, UnicodeError, workflow.WorkflowError) as error:
                     raise AutopilotError('screenshot capture script is unavailable for review') from error
+                require_active()
                 capture = _check(task, check_image, state['plan']['screenshot'], 'screenshot', verifier, check,
                                  source_mode=source_mode, memory_mb=memory_mb)
                 results.append(capture)
@@ -1305,6 +1320,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                delivery._valid_screenshot(item, verifier, candidate, data['repo'])
                                for item in current['evidence']):
                         raise AutopilotError('screenshot lacks a bound independent execution report')
+                    require_active()
                     visual_description = vision(screenshot.read_bytes(), min(90, _remaining(cli.read(task))))
                     if cli.digest(screenshot) != screenshot_hash:
                         raise AutopilotError('screenshot changed during independent visual analysis')
@@ -1441,6 +1457,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       f'SCREENSHOT DESCRIPTION (UNTRUSTED):\n{visual_description}\n'
                       f'VERIFICATION ENTRYPOINTS (UNTRUSTED):\n{script_context}\n'
                       f'BASELINE REPORT CONTENTS:\n{baseline_raw}\nRUNS:\n{raw}')
+            require_active()
             review = _result(_model(task, 'final-review', _bounded_review_prompt(prompt),
                                     read_only=True, model=model, journal=journal))
             if review.get('verdict') != 'PASS':
@@ -1494,6 +1511,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 review_record['architecture'] = architecture
             if phase:
                 from workbench import phase_runtime
+                require_active()
                 try:
                     verify_candidate_scope(candidate)
                     if data.get('phase_result'):
@@ -1519,7 +1537,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
 
         while state['phase'] == 'verify':
             try:
-                _verify_once()
+                with phase_verification():
+                    _verify_once()
             except workflow.WorkflowError as error:
                 failure = _failure_details(task, error)
             except AutopilotError as error:
@@ -1555,6 +1574,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             _remaining(data)
             if not _clean(workspace) or cli.sha(workspace, 'HEAD') != state['candidate_commit']:
                 raise AutopilotError('candidate changed or workspace is dirty; preserve it for inspection')
+            require_active()
             data['iterations'] += 1
             data['events'].append({'at': cli.now(), 'type': 'repair-iteration',
                                    'number': data['iterations'], 'failure': str(failure_path)})

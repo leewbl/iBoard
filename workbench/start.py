@@ -304,7 +304,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                    ci_skip_policy=ci_skip_policy, ci_skip_reason=ci_skip_reason, **baseline)
     task = Path(info['task'])
     request = task.parent / 'issue.txt'
-    print(json.dumps({'event': 'task-created', **info}, ensure_ascii=False), flush=True)
+    sys.stdout.write(json.dumps({'event': 'task-created', **info}, ensure_ascii=False) + '\n')
+    sys.stdout.flush()
     try:
         with task_lock(task):
             try:

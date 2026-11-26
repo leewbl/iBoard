@@ -104,7 +104,7 @@ def find_criterion(data, cid):
             return c
     raise WorkbenchError(f'unknown criterion: {cid}')
 
-def init(a):
+def init(a, *, quiet=False):
     path = Path(a.task).expanduser().resolve()
     if path.exists():
         raise WorkbenchError('task record already exists')
@@ -129,7 +129,8 @@ def init(a):
                 limits={'iterations':a.iterations, 'seconds':a.seconds, 'cost':'provider-limit'}, iterations=0,
                 criteria=[], criterion_changes=[], evidence=[], events=[{'at':now(), 'type':'created'}])
     write(path, data)
-    print(f'Created {path}; base {head}')
+    if not quiet:
+        print(f'Created {path}; base {head}')
 
 def criterion_add(a, data):
     cid = nonempty(a.id, 'criterion id')

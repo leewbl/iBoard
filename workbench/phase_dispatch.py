@@ -1,16 +1,19 @@
 """Execute an approved multi-phase plan with separate verification for each phase."""
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from functools import partial
 import hashlib
 import json
 from pathlib import Path
 import subprocess
+from threading import Event, Lock, TIMEOUT_MAX
 import uuid
 
 from workbench import autopilot, cli, delivery, phase_contract, phase_runtime, start, visual_parity, workflow
-from workbench.task_lock import task_lock
+from workbench.task_lock import observe_task_lock, task_lock
 
 
 class DispatchError(ValueError):
@@ -66,8 +69,12 @@ def _run(root, contract, launch, resume, measure, execute, capture):
         raise DispatchError('the approved dispatch changed after the run began')
     deadline = datetime.fromisoformat(state['started_at']).timestamp() + contract['seconds']
     cli.write(journal, state)
+    parallelism = contract.get('parallelism', 1)
+    journal_lock, sandbox_lock, stopping = Lock(), Lock(), Event()
 
     def remaining():
+        if stopping.is_set():
+            raise DispatchError('multi-phase dispatch was interrupted')
         seconds = int(deadline - datetime.now(timezone.utc).timestamp())
         if seconds < 1:
             raise DispatchError('the overall multi-phase time limit expired')
@@ -76,8 +83,35 @@ def _run(root, contract, launch, resume, measure, execute, capture):
         return seconds
 
     def record(key, **fields):
-        state['phases'].setdefault(key, {}).update(fields)
-        cli.write(journal, state)
+        with journal_lock:
+            state['phases'].setdefault(key, {}).update(fields)
+            cli.write(journal, state)
+
+    def saved_phase(key):
+        with journal_lock:
+            return state['phases'].get(key, {}).copy()
+
+    @contextmanager
+    def sandbox_lane(task=None):
+        seconds = remaining()
+        if task is not None:
+            seconds = min(seconds, autopilot._remaining(cli.read(task)))
+        if not sandbox_lock.acquire(timeout=min(seconds, TIMEOUT_MAX)):
+            raise DispatchError('time limit expired while waiting for the phase verification lane')
+        try:
+            remaining()
+            if task is not None:
+                autopilot._remaining(cli.read(task))
+            yield
+        finally:
+            sandbox_lock.release()
+
+    def execute_phase(task, request, image, **options):
+        remaining()
+        if parallelism > 1:
+            options['phase_verification'] = partial(sandbox_lane, task)
+            options['phase_active'] = remaining
+        return execute(task, request, image, **options)
 
     phases = {}
     baseline = contract['plan']['baseline']
@@ -87,12 +121,13 @@ def _run(root, contract, launch, resume, measure, execute, capture):
     def report(status):
         path = root / 'result.json'
         value = {'schema': cli.SCHEMA, 'status': status, 'baseline': baseline,
-                 'manifest_sha256': contract['manifest_sha256'], 'phases': phases, 'report': str(path)}
+                 'manifest_sha256': contract['manifest_sha256'], 'parallelism': parallelism,
+                 'phases': {key: phases[key] for key in entries if key in phases}, 'report': str(path)}
         cli.write(path, value)
         return value
 
     def bound(task, key, parent):
-        saved = state['phases'][key]
+        saved = saved_phase(key)
         data = _bound_task(task, contract, entries[key], parent, saved['baseline_perf'])
         if data.get('visual_baseline') != saved.get('visual_baseline'):
             raise DispatchError('retained phase does not match the original dispatch visual baseline')
@@ -129,14 +164,13 @@ def _run(root, contract, launch, resume, measure, execute, capture):
         state['visual_frozen_at'] = cli.now()
         cli.write(journal, state)
 
-    def recheck_dependencies(key):
-        for name in entries:
-            if name not in ancestors[key]:
-                continue
-            expected = phases[name]
+    def recheck_dependencies(prerequisites):
+        for name, expected in prerequisites.items():
             task_path = Path(expected['task'])
             parent = expected['parent']
-            with task_lock(task_path):
+            with observe_task_lock(task_path) as lock_state:
+                if lock_state != 'idle':
+                    raise DispatchError(f'phase dependency {name} is busy or missing its task lock')
                 data = bound(task_path, name, parent)
                 if {'parent': parent, **_verified(task_path, data, entries[name])} != expected:
                     raise DispatchError(f'phase dependency {name} changed before dispatch')
@@ -145,16 +179,15 @@ def _run(root, contract, launch, resume, measure, execute, capture):
         ancestors[key] = set(entry['depends_on'])
         for name in entry['depends_on']:
             ancestors[key].update(ancestors[name])
-        waits = [name for name in entry['depends_on'] if phases[name]['status'] != 'verified']
-        if waits:
-            phases[key] = {'status': 'waiting-dependencies', 'waits': waits}
-            continue
-        parent = baseline if entry['base'] == 'trunk' else phases[entry['base']]['commit']
+
+    def run_phase(key, prerequisites):
+        entry = entries[key]
+        parent = baseline if entry['base'] == 'trunk' else prerequisites[entry['base']]['commit']
         task_id = _task_id(root, key)
         task = root / 'tasks' / task_id / 'task.json'
         stage = root / 'phases' / task_id
         step = contract['steps'][key]
-        saved = state['phases'].get(key, {})
+        saved = saved_phase(key)
         perf = saved.get('baseline_perf')
         visual = saved.get('visual_baseline')
         try:
@@ -164,7 +197,8 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                 if task.exists():
                     raise DispatchError('task exists without a retained pre-implementation benchmark')
                 stage.mkdir(mode=0o700, parents=True, exist_ok=True)
-                perf = measure(contract, key, stage / f'trunk-{uuid.uuid4().hex}', timeout=remaining())
+                with sandbox_lane() if parallelism > 1 else nullcontext():
+                    perf = measure(contract, key, stage / f'trunk-{uuid.uuid4().hex}', timeout=remaining())
                 record(key, parent=parent, baseline_perf=perf)
             phase_contract.verify_baseline(contract, key, perf)
             if task.exists():
@@ -172,7 +206,7 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                 retained = task.parent / 'autopilot.json'
                 status = cli.read(retained).get('phase') if retained.exists() else None
                 if status not in ('delivery', 'complete'):
-                    recheck_dependencies(key)
+                    recheck_dependencies(prerequisites)
                     remaining()
                     task_deadline = datetime.fromisoformat(data['started_at']).timestamp() + data['limits']['seconds']
                     if task_deadline > deadline + 1:
@@ -180,7 +214,7 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                     with task_lock(task):
                         bound(task, key, parent)
                         autopilot._pause(task, 'the phase dispatcher is resuming retained work')
-                        resume(task, run=execute)
+                        resume(task, run=execute_phase)
             else:
                 stage.mkdir(mode=0o700, parents=True, exist_ok=True)
                 issue = stage / 'issue.txt'
@@ -204,10 +238,10 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                     phase_contract.bind(task_path, data, contract, key, parent, request_path, perf,
                                         visual_baseline=visual)
                     cli.write(task_path, data)
-                    return execute(task_path, request_path, image, **options)
+                    return execute_phase(task_path, request_path, image, **options)
 
                 record(key, parent=parent, task=str(task), request=_reference(issue))
-                recheck_dependencies(key)
+                recheck_dependencies(prerequisites)
                 launch(task_id=task_id, repo=contract['repo'], issue_file=issue,
                        source=f"iBoard multi-phase plan {contract['plan_sha256'][:12]} phase {key}",
                        kind='feature', surface='ui' if step.get('screenshot') else 'non-ui',
@@ -216,13 +250,44 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                        source_mode='image', build_source_image=True, memory_mb=contract['memory_mb'],
                        criteria=phase_contract.criteria(entry),
                        prepare=partial(workflow.prepare, base_commit=parent), run=drive)
-            recheck_dependencies(key)
+            recheck_dependencies(prerequisites)
             with task_lock(task):
                 data = bound(task, key, parent)
-                phases[key] = {'parent': parent, **_verified(task, data, entry)}
+                outcome = {'parent': parent, **_verified(task, data, entry)}
         except ERRORS as error:
-            phases[key] = {'status': 'blocked', 'task': str(task), 'parent': parent, 'reason': str(error)[:1800]}
-        record(key, result=phases[key])
+            outcome = {'status': 'blocked', 'task': str(task), 'parent': parent, 'reason': str(error)[:1800]}
+        record(key, result=outcome)
+        return outcome
+
+    pending = entries.copy()
+    running = {}
+    with ThreadPoolExecutor(max_workers=parallelism) if parallelism > 1 else nullcontext() as pool:
+        try:
+            while pending or running:
+                for key, entry in list(pending.items()):
+                    if any(name not in phases for name in entry['depends_on']):
+                        continue
+                    waits = [name for name in entry['depends_on'] if phases[name]['status'] != 'verified']
+                    if waits:
+                        phases[key] = {'status': 'waiting-dependencies', 'waits': waits}
+                        record(key, result=phases[key])
+                    elif len(running) < parallelism:
+                        prerequisites = {name: phases[name] for name in entries if name in ancestors[key]}
+                        if pool is None:
+                            phases[key] = run_phase(key, prerequisites)
+                        else:
+                            running[pool.submit(run_phase, key, prerequisites)] = key
+                    else:
+                        continue
+                    del pending[key]
+                if running:
+                    finished, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for future in finished:
+                        phases[running.pop(future)] = future.result()
+                elif pending:
+                    raise DispatchError('no eligible phase in the approved dependency graph')
+        finally:
+            stopping.set()
     statuses = {row['status'] for row in phases.values()}
     status = 'blocked' if 'blocked' in statuses else 'verified' if statuses == {'verified'} else 'waiting'
     return report(status)

@@ -185,13 +185,15 @@ def load(path, expected_sha256):
         path = Path(path).expanduser().absolute()
         manifest = _json(path, expected_sha256, 120_000)
         fields = {'repo', 'plan', 'steps', 'seconds', 'iterations'}
-        _require(fields <= manifest.keys() <= fields | {'memory_mb', 'destination'}, 'invalid phase dispatch manifest')
+        _require(fields <= manifest.keys() <= fields | {'memory_mb', 'destination', 'parallelism'}, 'invalid phase dispatch manifest')
         repo = (path.parent / Path(manifest['repo']).expanduser()).resolve(strict=True)
         limits = {name: manifest[name] for name in ('seconds', 'iterations')}
         _require(all(type(value) is int and 1 <= value <= 2_147_483_647 for value in limits.values()),
                  'phase dispatch needs positive time and iteration limits')
         memory = manifest.get('memory_mb', 1024)
         _require(type(memory) is int and 128 <= memory <= 8192, 'phase dispatch memory must be 128–8192 MiB')
+        parallelism = manifest.get('parallelism', 1)
+        _require(type(parallelism) is int and 1 <= parallelism <= 4, 'phase parallelism must be an integer from 1 to 4')
         destination = manifest.get('destination')
         if destination is not None:
             _require(isinstance(destination, str) and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', destination)
@@ -206,7 +208,7 @@ def load(path, expected_sha256):
         steps = {key: _step(repo, plan['baseline'], editable, path.parent, entries[key], step)
                  for key, step in steps.items()}
         return {'repo': str(repo), 'plan': plan, 'plan_path': plan_ref['path'], 'plan_sha256': plan_ref['sha256'],
-                'steps': steps, **limits, 'memory_mb': memory, 'destination': destination,
+                'steps': steps, **limits, 'memory_mb': memory, 'parallelism': parallelism, 'destination': destination,
                 'manifest_path': str(path.resolve(strict=True)), 'manifest_sha256': expected_sha256}
     except PhaseContractError:
         raise

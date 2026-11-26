@@ -1368,6 +1368,27 @@ class AutopilotTests(unittest.TestCase):
             rebuild.assert_not_called()
         self.assertEqual(cli.read(self.task)['visual_parity_result'], proof)
 
+    def test_dispatch_interruption_after_checks_stops_before_review_or_repair(self):
+        cancelled = False
+
+        def active():
+            if cancelled:
+                raise ValueError('multi-phase dispatch was interrupted')
+
+        def check(**options):
+            nonlocal cancelled
+            result = self.check(**options)
+            if options['kind'] == 'test-result' and options['actor'] == 'independent-verifier':
+                cancelled = True
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'multi-phase dispatch was interrupted'):
+            autopilot.run(self.task, self.issue, 'image', model=self.model, check=check, phase_active=active)
+        data = cli.read(self.task)
+        self.assertEqual((data['status'], data['iterations']), ('paused', 1))
+        self.assertEqual(cli.read(self.task.with_name('autopilot.json'))['phase'], 'verify')
+        self.assertNotIn('final-review', self.calls)
+
     def test_confirmed_child_oom_pauses_without_spending_a_repair_iteration(self):
         def check(**kwargs):
             if kwargs['kind'] == 'resolution':

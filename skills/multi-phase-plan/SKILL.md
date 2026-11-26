@@ -38,6 +38,7 @@ After the operator authorizes execution, prepare a separate manifest that refers
   "seconds": 1800,
   "iterations": 2,
   "memory_mb": 1024,
+  "parallelism": 2,
   "steps": {
     "stageOne": {
       "image": "local-project-baseline:node24",
@@ -57,6 +58,8 @@ python3 -m workbench.phase_dispatch run --manifest "$DISPATCH" \
 ```
 
 Each eligible phase gets a distinct task and worktree at its declared Git parent. All listed prerequisites must have accepted local evidence. The dispatcher measures the original trunk before the model edits. After the change, it validates the candidate unit and live runs and measures performance on the same pinned candidate image. The independent review must cite both executions. The final source diff must stay inside the phase scope. Independent phases can proceed as their own prerequisites clear. Call the same command with the same evidence directory to continue within the original deadline. Completed phases are audited again before dependent work starts.
+
+Set `parallelism` in the approved dispatch manifest to allow one to four active phases. The default is one. Eligible phases can implement concurrently in separate worktrees. The dispatcher runs one phase's baseline benchmark or candidate verification at a time to prevent its own Docker workloads competing with its performance measurements. A failed phase blocks its dependents. Other eligible phases can continue. The deadline includes time spent waiting for verification. On interruption, current commands can continue to their own time limits and new work stops at the next dispatch boundary.
 
 For OpenClaw, a step can declare `local_gate` with `files` listing the approved tracked `src/**/*.test.ts` suites covered by the Gateway Vitest configuration. Use `reason` to record their purpose. The dispatcher freezes this policy before implementation and requires both native local test runs in addition to the planned acceptance evidence.
 

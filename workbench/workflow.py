@@ -7,7 +7,6 @@ the delivery guard must still evaluate the actual issue and raw test output.
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import io
 import hashlib
@@ -332,8 +331,7 @@ def prepare(*, task_id, repo, tasks_root, workspaces_root, source, kind, surface
                                   implementer=implementer, surface=surface,
                                   iterations=iterations, seconds=seconds, started_at=began.isoformat())
         remaining()
-        with redirect_stdout(io.StringIO()):
-            cli.init(args)
+        cli.init(args, quiet=True)
         if required_ci_workflows is not None:
             data = cli.read(task_dir / 'task.json')
             data['required_ci_workflows'] = required_ci_workflows

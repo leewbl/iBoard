@@ -36,7 +36,7 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 通过 [Feature 交接](../skills/feature-handoff/SKILL.md) 启动的新任务可固定已选设计、允许改动的文件、四项拆分检查、原型结论和验收条件。给出已经批准的两种架构时，可由 `workbench.start` 运行 Arena，对照相同的验收命令盲评补丁，复验并采用胜出提交。原报告有分歧时，发布还要求 [Interrogate](../skills/interrogate/SKILL.md) 的探针回执。两份独立运行和两家模型评审必须指向同一候选，评审时仍需逐项核对最终运行条件。
 
-通过 [多阶段派发](../skills/multi-phase-plan/SKILL.md) 显式授权计划后，iBoard 先测原始主线，再按依赖创建各自的任务和工作树。阶段单元测试、真实入口和候选性能使用同一份可验证镜像。交互改动需要对具体提交和证据审批，才能释放依赖阶段。`workbench.phase_ship` 核对声明的个人 fork、具体 PR 和前一阶段落地提交后，继续交付下一阶段。需要更新基线时，`workbench.phase_reverify` 保留补丁和原验收条件，在独立工作树重新取证。交互审批随候选提交重新确认。
+通过 [多阶段派发](../skills/multi-phase-plan/SKILL.md) 显式授权计划后，iBoard 先测原始主线，再按依赖创建各自的任务和工作树。计划可授权最多四个阶段并发实现。每个阶段保留独立的记录，基线测量和候选验证逐项运行。同一阶段的单元测试、真实入口和候选性能绑定到同一个镜像。交互改动需要对具体提交和证据审批，才能释放依赖阶段。`workbench.phase_ship` 核对声明的个人 fork、具体 PR 和前一阶段落地提交后，继续交付下一阶段。需要更新基线时，`workbench.phase_reverify` 保留补丁和原验收条件，在独立工作树重新取证。交互审批随候选提交重新确认。
 
 [`workbench.project_verify create`](../skills/create-verification-skill/SKILL.md) 从源码锚点、用户路径和现有驱动生成项目验证技能与功能地图。固定 Git 版本和本地镜像，启动 doctor 和一条真实场景后才导出可交接的技能。[维护入口](../skills/maintain-verification-skill/SKILL.md) 核对地图与源码，逐项推动真实场景，发现失败后重新运行 doctor。修订版要经过全图复验才导出差异。OpenClaw 地图涵盖 Gateway、技能资格和配置校验，配置相关代码变更还要求将配置验证的双份断网证据纳入终审。
 

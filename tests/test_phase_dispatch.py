@@ -1,5 +1,6 @@
 from pathlib import Path
 import tempfile
+from threading import Barrier, Lock
 import unittest
 from unittest.mock import patch
 
@@ -236,6 +237,51 @@ class PhaseDispatchTests(unittest.TestCase):
 
     def assert_parent(self, result, phase, expected):
         self.assertEqual(cli.sha(self.repo, result['phases'][phase]['commit'] + '^'), expected)
+
+    def test_parallel_editors_use_separate_worktrees_and_one_verification_lane(self):
+        self.contract['parallelism'] = 2
+        self.entries.append(self.entry('E', 'trunk', ()))
+        self.contract['steps']['E'] = {**self.contract['steps']['C'], 'feature_doc': 'E.txt'}
+        together = Barrier(2, timeout=5)
+        sandbox = Lock()
+        entered, worktrees = [], {}
+        execute, measure = self.execute, self.measure
+
+        def measure_exclusively(*args, **kwargs):
+            self.assertTrue(sandbox.acquire(blocking=False))
+            try:
+                return measure(*args, **kwargs)
+            finally:
+                sandbox.release()
+
+        def execute_in_parallel(task, issue, image, *, phase_verification, **options):
+            data = cli.read(task)
+            ident = self.read(data)['entry']['id']
+            worktrees[ident] = data['repo']
+            entered.append(ident)
+            if ident in ('A', 'C'):
+                together.wait()
+            else:
+                self.assertEqual(set(entered), {'A', 'C', 'E'})
+            with phase_verification():
+                self.assertTrue(sandbox.acquire(blocking=False))
+                try:
+                    return execute(task, issue, image, **options)
+                finally:
+                    sandbox.release()
+
+        self.execute, self.measure = execute_in_parallel, measure_exclusively
+        result = self.dispatch()
+        self.assertEqual(list(result['phases']), ['A', 'B', 'C', 'D', 'E'])
+        self.assertEqual(result['phases']['B']['status'], 'waiting-dependencies')
+        self.assertEqual(result['phases']['E']['status'], 'verified')
+        self.assertEqual(set(worktrees), {'A', 'C', 'E'})
+        self.assertEqual(len(set(worktrees.values())), 3)
+        journal = cli.read(self.out / 'run.json')
+        self.assertEqual(journal['phases']['B']['result'], result['phases']['B'])
+        self.assertCountEqual(self.measured, ['A', 'C', 'E'])
+        self.assertEqual(self.dispatch(), result)
+        self.assertCountEqual(entered, ['A', 'C', 'E'])
 
     def test_waits_for_approved_interaction_and_uses_exact_declared_git_base(self):
         first = self.dispatch()

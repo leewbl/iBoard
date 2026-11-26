@@ -209,6 +209,16 @@ class PhaseContractTests(unittest.TestCase):
         with self.assertRaisesRegex(phase_contract.PhaseContractError, 'source evidence differs'):
             self.load()
 
+    def test_manifest_bounds_parallelism_and_keeps_legacy_runs_serial(self):
+        self.assertEqual(self.load()['parallelism'], 1)
+        for value in (0, True, 5, '2'):
+            with self.subTest(value=value):
+                self.options['parallelism'] = value
+                with self.assertRaisesRegex(phase_contract.PhaseContractError, 'parallelism'):
+                    self.load()
+        self.options['parallelism'] = 2
+        self.assertEqual(self.load()['parallelism'], 2)
+
     def test_visual_manifest_pins_the_driver_and_keeps_the_server_outside_edit_scope(self):
         visual = self.root / 'states.json'
         spec = {'schema': 1, 'viewport': {'width': 64, 'height': 64},
