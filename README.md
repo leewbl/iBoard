@@ -89,6 +89,8 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 [OpenClaw Control UI 实例](examples/openclaw-control-ui-parity/README.md)从指定提交离线构建真实界面，验证未连接 Gateway 时错误详情的折叠和展开状态。样式整理后两种状态均为零像素差异。故意改色后，两次展开截图各出现 2,519 个差异像素，验收拒绝候选。
 
+[Control UI 连接验证](skills/verify-openclaw/SKILL.md)在同一个断网容器里启动临时 Gateway 和 Chromium，通过原生表单认证，并用实际的会话列表响应和截图核对页面。
+
 ### 工作台插件原型
 
 从终端加载本地插件（插件加载不代表任务已执行）：

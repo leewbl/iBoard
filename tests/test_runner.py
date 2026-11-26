@@ -388,6 +388,19 @@ class SandboxTests(unittest.TestCase):
                                 find_executable=lambda _: '/usr/bin/docker', **{**options, **changed})
         self.assertEqual(self.calls, [])
 
+    def test_gateway_and_browser_can_share_a_bounded_process_budget(self):
+        report = self.run_it(pids_limit=384)
+        args = next(command for command, _ in self.calls if command[1] == 'create')
+        self.assertIn('--pids-limit=384', args)
+        self.assertIn('--network=none', args)
+        self.assertEqual(report['pids_limit'], 384)
+
+    def test_invalid_process_limit_is_rejected_before_docker_operations(self):
+        for limit in (0, 63, 513, True, '384'):
+            with self.subTest(limit=limit), self.assertRaisesRegex(SandboxError, 'PID limit'):
+                self.run_it(pids_limit=limit)
+        self.assertEqual(self.calls, [])
+
     def test_scoped_profile_rejects_symlink_and_existing_destination(self):
         pinned = 'sha256:' + 'a' * 64
         destination = self.workspace / 'saved.cpuprofile'

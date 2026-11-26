@@ -122,3 +122,32 @@ class GatewayGateTests(unittest.TestCase):
         self.reports(config_image='sha256:' + 'f' * 64)
         receipts = verify_openclaw.require(self.data, self.head, self.destination)
         self.assertEqual(set(receipts), {'gateway-health', 'config-validate'})
+
+    def test_connected_ui_requires_a_bound_screenshot_in_its_own_output(self):
+        journey = 'control-ui-connected'
+        helper, marker = verify_openclaw.BROWSER_JOURNEYS[journey]
+        image = 'sha256:' + 'f' * 64
+        screenshot = self.root / 'connected.png'
+        screenshot.write_bytes(b'verified capture')
+        options = {'timeout': 90, 'memory_mb': 3328}
+        with self.assertRaisesRegex(ValueError, 'requires a screenshot path'):
+            verify_openclaw.verify(self.root, image, journey, **options)
+        sandbox = {'exit_code': 0, 'cleanup_confirmed': True, 'stdout': marker + '\n'}
+        replies = iter((sandbox, {**sandbox, 'screenshot_sha256': cli.digest(screenshot),
+                                  'screenshot_path': str(screenshot.resolve())}))
+
+        def execute(scratch, *args, **kwargs):
+            self.assertEqual((Path(scratch) / 'expected-commit.txt').read_text(), self.head + '\n')
+            return next(replies)
+
+        with patch.object(cli, 'sha', return_value=self.head), \
+                patch.object(verify_openclaw.workflow, '_verified_image', return_value=image), \
+                patch.object(verify_openclaw, 'run_sandbox', side_effect=execute) as run:
+            self.assertFalse(verify_openclaw.verify(self.root, image, journey, screenshot=screenshot, **options)['passed'])
+            result = verify_openclaw.verify(self.root, image, journey, screenshot=screenshot, **options)
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['helper_sha256'], cli.digest(verify_openclaw.SKILL / helper))
+        self.assertEqual(run.call_args.args[1:3], (image, ['node', f'/workspace/{helper}']))
+        self.assertEqual(run.call_args.kwargs['screenshot_output'], screenshot)
+        self.assertEqual(run.call_args.kwargs['pids_limit'], 384)
+        self.assertNotIn(journey, verify_openclaw.required_journeys(self.data, self.head))

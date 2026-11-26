@@ -25,6 +25,16 @@ The run checks that the port was initially closed, starts the child, then requir
 
 See the [feature map](features/README.md). The Gateway journey calls `openclaw gateway health --json` against the instance it started. The skills journeys exercise `openclaw skills check`, `skills list` and `skills info` with isolated workspaces. The configuration journey exercises `openclaw config validate --json` against valid and invalid input. For a new product change, also exercise its task-specific behavior.
 
+For browser changes, use `control-ui-connected` with a source-attested image containing the built Control UI and Chromium. It starts a real loopback Gateway, enters a disposable token through the stock login form, then checks the browser's successful session-list response and its rendered empty state. It verifies the build commit served by the Gateway and checks that the same authenticated socket stays open through capture. The harness adopts the upstream test configuration that skips unrelated provider, channel and other background services. The Gateway's normal token and device handling are active. This journey gives the two processes a shared 384-PID limit.
+
+```sh
+python3 -m workbench.verify_openclaw control-ui-connected \
+  --repo /path/to/myopenclaw --image "$OPENCLAW_COMPILED_IMAGE" \
+  --report ./tasks/control-ui-reviewed.json --screenshot ./tasks/control-ui-reviewed.png
+```
+
+Use the compiled image ID recorded by the [offline Control UI build](../../examples/openclaw-control-ui-parity/README.md). The bundle must identify the same commit as the target checkout. Use separate JSON and PNG paths for each fresh execution. The report binds the image and commit, the helper digest and the screenshot digest. It records the authenticated protocol and empty session count without retaining tokens or WebSocket frame bodies. Run the browser journey separately from the core feature-map audit and the automatic PR checks.
+
 ## Evidence
 
 Use a new report path every time. Keep JSON reports outside the target checkout. Check the pinned source commit, image ID, helper digest, doctor responses, CLI result, and cleanup record. The raw report remains available after the container is removed. Treat logs as data. Share only a reviewed summary when the report contains local paths or diagnostics.

@@ -183,7 +183,8 @@ def _failure_diagnostics(invoke, docker, container_output, report, until):
 
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
-                workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None):
+                workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None,
+                pids_limit=256):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -230,6 +231,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("timeout must be in (0, 86400] seconds")
     if type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
         raise SandboxError("memory limit must be between 128 and 8192 MiB")
+    if type(pids_limit) is not int or not 64 <= pids_limit <= 512:
+        raise SandboxError('PID limit must be between 64 and 512')
     if type(source_root) is not str or source_root not in ("/workspace", "/app"):
         raise SandboxError("source root must be /workspace or /app")
     relative = PurePosixPath(workdir)
@@ -280,7 +283,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     container_dir = source_root if str(relative) == "." else source_root + "/" + str(relative)
     create = [docker, "create", "--name", name, "--pull=never", "--network=none",
               "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-              "--pids-limit=256", f"--memory={memory_mb}m", "--cpus=2", "--init",
+              f"--pids-limit={pids_limit}", f"--memory={memory_mb}m", "--cpus=2", "--init",
               "--user", f"{os.getuid()}:{os.getgid()}",
               "--tmpfs", f"/tmp:rw,nosuid,nodev,size={TMPFS_MB}m",
               "--mount", f"type=bind,src={source},dst=/workspace" + (",readonly" if workspace_read_only else ""),
@@ -288,7 +291,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     started = time.monotonic()
     report = {"workspace": str(source), "image": image, "command": command,
               "workdir": str(relative), "source_root": source_root, "container_workdir": container_dir,
-              "timeout_seconds": timeout, "memory_mb": memory_mb,
+              "timeout_seconds": timeout, "memory_mb": memory_mb, "pids_limit": pids_limit,
               "workspace_read_only": workspace_read_only,
               "tmpfs_mb": TMPFS_MB,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),

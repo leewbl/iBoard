@@ -20,11 +20,17 @@ JOURNEYS = {
     "skills-inspect": ("skills-inspect.mjs", "VERIFY_OPENCLAW_SKILLS_INSPECT_PASS"),
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
+BROWSER_JOURNEYS = {
+    'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
+}
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
-def verify(repo, image, journey, *, timeout, memory_mb):
-    helper, marker = JOURNEYS[journey]
+def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None):
+    browser = journey in BROWSER_JOURNEYS
+    if browser != (screenshot is not None):
+        raise ValueError('the connected Control UI journey requires a screenshot path')
+    helper, marker = (BROWSER_JOURNEYS if browser else JOURNEYS)[journey]
     deadline = time.monotonic() + timeout
     report = {"journey": journey, "requested_image": image}
     try:
@@ -38,17 +44,29 @@ def verify(repo, image, journey, *, timeout, memory_mb):
         with tempfile.TemporaryDirectory(prefix="iboard-openclaw-") as scratch:
             copy = Path(scratch) / helper
             shutil.copyfile(SKILL / helper, copy)
+            if browser:
+                (Path(scratch) / 'expected-commit.txt').write_text(head + '\n', encoding='utf-8')
             report["helper_sha256"] = hashlib.sha256(copy.read_bytes()).hexdigest()
             report.update(run_sandbox(
                 scratch, pinned, ["node", f"/workspace/{helper}"], deadline - time.monotonic(),
                 memory_mb=memory_mb, source_root="/app", workspace_read_only=True,
+                **({'screenshot_output': screenshot, 'pids_limit': 384} if browser else {}),
             ))
     except (OSError, ValueError, SandboxError, workflow.WorkflowError, cli.WorkbenchError) as error:
         report["error"] = str(error)
+    screenshot_bound = True
+    if browser:
+        output = Path(screenshot)
+        try:
+            screenshot_bound = (not output.is_symlink() and str(output.resolve(strict=True)) == report.get('screenshot_path')
+                                and cli.digest(output) == report.get('screenshot_sha256'))
+        except (OSError, cli.WorkbenchError):
+            screenshot_bound = False
     report["passed"] = (
         not report.get("error") and not report.get("timed_out") and report.get("exit_code") == 0
         and report.get("cleanup_confirmed") is True
         and marker in report.get("stdout", "").splitlines()
+        and screenshot_bound
     )
     return report
 
@@ -202,13 +220,20 @@ def require(data, head, destination, *, review_item=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("journey", choices=(*JOURNEYS, "audit"))
+    parser.add_argument("journey", choices=(*JOURNEYS, *BROWSER_JOURNEYS, "audit"))
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument('--screenshot', type=Path, help='PNG evidence path for the connected Control UI journey')
     parser.add_argument("--timeout", type=int, default=320)
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
+    if (args.journey in BROWSER_JOURNEYS) != (args.screenshot is not None):
+        parser.error('--screenshot is required only for the connected Control UI journey')
+    if args.screenshot is not None:
+        args.screenshot = args.screenshot.expanduser().absolute()
+        if args.screenshot.exists() or args.screenshot.is_symlink() or args.screenshot.resolve() == args.report.expanduser().resolve():
+            parser.error('choose a new screenshot path separate from the JSON report')
     # Reserve the evidence path before running; retries must use a new file.
     def private_create(path, flags):
         return os.open(path, flags, 0o600)
@@ -218,6 +243,8 @@ def main(argv=None):
         if args.journey == 'audit':
             report = audit(args.repo, args.image, **options)
         else:
+            if args.screenshot is not None:
+                options['screenshot'] = args.screenshot
             report = verify(args.repo, args.image, args.journey, **options)
         json.dump(report, output, indent=2)
         output.write("\n")
