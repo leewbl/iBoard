@@ -1,0 +1,16 @@
+{
+  "claim": "Compare elapsed time for one fresh skills list JSON request on a 32-skill workspace.",
+  "scope": "end-to-end",
+  "configuration": "Offline source-entry image, isolated home and state per run, synthetic skills, bundled skills off, one CLI process per sample.",
+  "production_tuning": null,
+  "minimum_delta_pct": 5,
+  "rounds": 5,
+  "workload": {
+    "helper": "skills-list-benchmark.mjs",
+    "input": "Thirty-two fixed local fixtures, one main-agent list command, all rows verified in sorted order.",
+    "completed": 1,
+    "digest": "c6606b82e628bbbf2f247dd387ade9f30fb0ae3c275cb80fbc98b571d9c532b1",
+    "max_ops_per_second": 1000,
+    "plausibility": "The timed region starts a Node CLI process and awaits it. A full startup and fixture read in under one millisecond indicates broken timing at this scale."
+  }
+}
