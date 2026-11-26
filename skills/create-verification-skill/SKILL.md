@@ -10,6 +10,8 @@ Read the target repository first. Locate the user entry point, its documented la
 
 Write a verification contract following [OpenClaw's example](../verify-openclaw/project-verification.json). Include a read-only doctor and one record per journey, starting with the primary user actions. Anchor each record to relevant text in tracked source. Describe the actual drive, expected state, cleanup and any prerequisites. Supply each helper as a standalone Node, Python or shell script that exits unsuccessfully when an assertion fails. A separate line ending in `_PASS` signals that the helper finished all assertions and cleanup. If the journey requires a screenshot, set `screenshot` to `true` and have the helper write its PNG to the path in `WORKBENCH_SCREENSHOT_PATH`.
 
+For a CLI with literal Commander registrations, set `entrypoint_inventory` to the command namespaces and their tracked JavaScript or TypeScript bindings. Associate discovered commands with journeys using each feature's `entrypoints`. Record out-of-scope direct commands in `excluded` with the missing prerequisite. An unresolved entry in the declared scope blocks export even when the selected smoke journey passes.
+
 ```sh
 python3 -m workbench.project_verify create --repo "$TARGET_REPO" --revision "$REVISION" \
   --manifest "$CONTRACT" --helpers "$HELPER_DIRECTORY" --image "$LOCAL_IMAGE" \

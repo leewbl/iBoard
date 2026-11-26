@@ -23,7 +23,7 @@ The run checks that the port was initially closed, starts the child, then requir
 
 ## Drive
 
-See the [feature map](features/README.md). The Gateway journey calls the real `openclaw gateway health --json` against the instance it started. The skills journey runs `openclaw skills check --json` with an isolated workspace. The configuration journey runs `openclaw config validate --json` against valid and invalid input. For a new product change, also exercise its task-specific behavior.
+See the [feature map](features/README.md). The Gateway journey calls `openclaw gateway health --json` against the instance it started. The skills journeys exercise `openclaw skills check`, `skills list` and `skills info` with isolated workspaces. The configuration journey exercises `openclaw config validate --json` against valid and invalid input. For a new product change, also exercise its task-specific behavior.
 
 ## Evidence
 

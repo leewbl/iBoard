@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 import time
 
 from runner.sandbox import SandboxError, run_sandbox
-from workbench import cli, workflow
+from workbench import cli, project_surface, workflow
 from workbench.verify_pr import VerifyError, _bounded_json
 
 
@@ -47,7 +47,8 @@ def _source_path(value):
 
 def _load_contract(path):
     raw = _bounded_json(Path(path), 90_000)
-    if not isinstance(raw, dict) or set(raw) != {"project", "surface", "launch", "cleanup", "doctor", "features"}:
+    required = {"project", "surface", "launch", "cleanup", "doctor", "features"}
+    if not isinstance(raw, dict) or set(raw) - required - {"entrypoint_inventory"} or not required <= set(raw):
         raise ValueError("verification contract needs project, surface, launch, cleanup, doctor and features")
     _slug(raw["project"])
     for key in ("surface", "launch", "cleanup"):
@@ -58,7 +59,7 @@ def _load_contract(path):
     ids, markers = set(), set()
     for check in [raw["doctor"], *features]:
         fields = {"id", "helper", "marker", "reach", "drive", "observe", "gotchas", "source"}
-        if not isinstance(check, dict) or set(check) - fields - {"screenshot"} or not fields <= set(check):
+        if not isinstance(check, dict) or set(check) - fields - {"screenshot", "entrypoints"} or not fields <= set(check):
             raise ValueError("each check needs id, helper, marker, reach, drive, observe, gotchas and source")
         check_id = _slug(check["id"])
         marker = _text(check["marker"], "marker", 100)
@@ -80,6 +81,9 @@ def _load_contract(path):
                 raise ValueError("a source anchor needs path and contains")
             _source_path(source["path"])
             _text(source["contains"], "source anchor", 250)
+    if "entrypoints" in raw["doctor"]:
+        raise ValueError("user entrypoints must be named on feature journeys")
+    project_surface.validate(raw, _source_path, _text)
     return raw
 
 
@@ -99,9 +103,11 @@ def _artifacts(contract, helpers):
     maps = {}
     for feature in contract["features"]:
         key = feature["id"]
+        commands = "\n".join(f"- `{command}`" for command in feature.get("entrypoints", []))
+        entrypoints = f"\n{commands}\n" if commands else ""
         maps[f"features/{key}.md"] = (
             f"# {key}\n\n## Sub-features\n\n{feature['observe']}\n\n"
-            f"## How to get to it (user POV)\n\n{feature['reach']}\n\n"
+            f"## How to get to it (user POV)\n\n{feature['reach']}\n{entrypoints}\n"
             f"## Driving it with iBoard\n\n{feature['drive']}\n\n"
             f"Run the generated skill with journey `{key}`. Evidence: `{key}.json`.\n\n"
             f"## Gotchas\n\n{feature['gotchas']}\n"
@@ -165,24 +171,27 @@ def _inventory(path):
     return files, issues
 
 
-def _source(repo, revision, check, cache):
+def _read_blob(repo, revision, path, cache):
+    if path not in cache:
+        try:
+            oid = cli.git(repo, "rev-parse", "--verify", f"{revision}:{path}", timeout=10)
+            size = int(cli.git(repo, "cat-file", "-s", oid, timeout=10))
+            if size > 1_000_000:
+                raise ValueError("source object exceeds 1 MB")
+            # cli.git strips outer whitespace, so read the exact blob for source line numbers.
+            raw = subprocess.run(['git', '-C', str(repo), 'cat-file', 'blob', oid],
+                                 capture_output=True, check=True, timeout=10).stdout
+            cache[path] = (oid, raw.decode('utf-8'), None)
+        except (ValueError, cli.WorkbenchError, subprocess.SubprocessError) as error:
+            cache[path] = (None, "", str(error))
+    return cache[path]
+
+
+def _source(read_blob, check):
     result = []
     for anchor in check["source"]:
-        path = anchor["path"]
-        if path not in cache:
-            try:
-                oid = cli.git(repo, "rev-parse", "--verify", f"{revision}:{path}", timeout=10)
-                size = int(cli.git(repo, "cat-file", "-s", oid, timeout=10))
-                if size > 1_000_000:
-                    raise ValueError("source object exceeds 1 MB")
-                # cli.git strips outer whitespace, so read the exact blob for source line numbers.
-                raw = subprocess.run(['git', '-C', str(repo), 'cat-file', 'blob', oid],
-                                     capture_output=True, check=True, timeout=10).stdout
-                cache[path] = (oid, raw.decode('utf-8').splitlines(), None)
-            except (ValueError, cli.WorkbenchError, subprocess.SubprocessError) as error:
-                cache[path] = (None, [], str(error))
-        oid, lines, error = cache[path]
-        line = next((i for i, text in enumerate(lines, 1) if anchor["contains"] in text), None)
+        oid, text, error = read_blob(anchor["path"])
+        line = next((i for i, line in enumerate(text.splitlines(), 1) if anchor["contains"] in line), None)
         result.append({**anchor, "blob": oid, "line": line, "error": error})
     return result
 
@@ -247,9 +256,14 @@ class Verification:
         doctor = contract["doctor"]
         cache = {}
         checks = [doctor, *contract["features"]]
-        self.report["source"] = {c["id"]: _source(self.repo, self.revision, c, cache) for c in checks}
+        def read_blob(path):
+            return _read_blob(self.repo, self.revision, path, cache)
+        self.report["source"] = {c["id"]: _source(read_blob, c) for c in checks}
         drift = [key for key, anchors in self.report["source"].items() if any(not a["line"] for a in anchors)]
         self.report["source_drift"] = drift
+        inventory = project_surface.scan(contract, read_blob)
+        if inventory["scope_count"]:
+            self.report["entrypoints"] = inventory
         image_id = self.attester(self.repo, self.image, min(180, self.remaining()), commit=self.revision)
         self.report["verified_image_id"] = image_id
         healthy = self.drive(bundle, doctor, "")
@@ -263,8 +277,44 @@ class Verification:
             self.report["features"][key] = "passed" if passed else "behavior-unverified"
             if not passed:
                 healthy = self.drive(bundle, doctor, f".after-{key}")
-        return (not drift and healthy and all(status == "passed" for status in self.report["features"].values())
+        return (not drift and not _entrypoint_gaps(inventory) and healthy
+                and all(status == "passed" for status in self.report["features"].values())
                 and all(row["cleanup_confirmed"] for row in self.report["runs"]))
+
+
+def _entrypoint_gaps(inventory):
+    return any(inventory.get(key) for key in ("unmapped", "stale", "errors"))
+
+
+def discover(*, repo, revision, out, manifest, since=None):
+    repo = Path(repo).expanduser().resolve(strict=True)
+    commit = cli.sha(repo, revision, timeout=10)
+    contract = _load_contract(manifest)
+    if not contract.get("entrypoint_inventory"):
+        raise ValueError("discover requires an entrypoint_inventory scope")
+
+    def scan(ref):
+        cache = {}
+        return project_surface.scan(contract, lambda path: _read_blob(repo, ref, path, cache))
+
+    current = scan(commit)
+    report = {"schema": cli.SCHEMA, "commit": commit, "entrypoints": current, "mode": "discover",
+              "outcome": "review-required" if _entrypoint_gaps(current) else "mapped"}
+    if since:
+        previous = cli.sha(repo, since, timeout=10)
+        old = scan(previous)
+        before = {entry["command"] for entry in old["entries"]}
+        after = {entry["command"] for entry in current["entries"]}
+        report["comparison"] = {"commit": previous, "errors": old["errors"],
+                                "added": sorted(after - before), "removed": sorted(before - after)}
+        if old["errors"]:
+            report["outcome"] = "review-required"
+    output = Path(out).expanduser().resolve()
+    if output.is_relative_to(repo):
+        raise ValueError("keep discovery evidence outside the target checkout")
+    output.mkdir(mode=0o700, parents=True)
+    cli.write(output / "result.json", report)
+    return report
 
 
 def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manifest=None, helpers=None,
@@ -336,6 +386,8 @@ def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manife
             report["reason"] = "skill files diverge from the contract; pass a proven replacement to correct them"
         elif report.get("source_drift"):
             report["reason"] = "source anchors moved or disappeared"
+        elif _entrypoint_gaps(report.get("entrypoints", {})):
+            report["reason"] = "the source entrypoint inventory needs map corrections"
         else:
             report["reason"] = "one or more journeys lack passing execution or cleanup evidence"
     except ERRORS as error:
@@ -348,6 +400,12 @@ def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manife
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
+    discovery = sub.add_parser("discover", help="Find unregistered and stale user commands from tracked source")
+    discovery.add_argument("--repo", required=True)
+    discovery.add_argument("--revision", default="HEAD")
+    discovery.add_argument("--since")
+    discovery.add_argument("--manifest", required=True)
+    discovery.add_argument("--out", required=True)
     for mode in ("create", "drive", "maintain"):
         action = sub.add_parser(mode)
         action.add_argument("--repo", required=True)
@@ -367,12 +425,13 @@ def main(argv=None):
     if args["mode"] == "maintain" and bool(args["manifest"]) != bool(args["helpers"]):
         parser.error("maintain replacements require both --manifest and --helpers")
     try:
-        report = run(**args)
+        report = discover(**{key: value for key, value in args.items() if key != "mode"}) \
+            if args["mode"] == "discover" else run(**args)
     except ERRORS as error:
         parser.error(str(error))
     print(json.dumps({"outcome": report["outcome"], "report": str(Path(args["out"]).resolve() / "result.json")},
                      ensure_ascii=False))
-    return int(report["outcome"] == "blocked")
+    return int(report["outcome"] in ("blocked", "review-required"))
 
 
 if __name__ == "__main__":

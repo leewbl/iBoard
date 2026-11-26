@@ -3,6 +3,33 @@
   "surface": "OpenClaw CLI and its local Gateway runtime.",
   "launch": "The launch scripts use the CLI entry at /app/src/entry.ts with the image's tsx loader. The Gateway starts on loopback with an empty temporary state directory and requires both readiness and liveness before use.",
   "cleanup": "Helpers remove their temporary state. Gateway shuts down only the child it launched and checks that its loopback endpoint is closed.",
+  "entrypoint_inventory": [
+    {
+      "namespace": "openclaw skills",
+      "sources": [
+        {
+          "path": "src/cli/skills-cli.ts",
+          "receiver": "skills"
+        },
+        {
+          "path": "src/cli/skills-library-cli.ts",
+          "receiver": "skills"
+        },
+        {
+          "path": "src/cli/skills-search-cli.ts",
+          "receiver": "skills"
+        }
+      ],
+      "excluded": {
+        "install": "Needs a separate writable fixture and install provenance assertions.",
+        "update": "A version-changing ClawHub fixture must be set up before testing updates.",
+        "verify": "Requires a controlled ClawHub response and package provenance fixture.",
+        "workshop": "Archive and restore need a disposable learned-skill state history.",
+        "library": "Needs an authenticated test account and an isolated library or service fixture.",
+        "search": "Needs a controlled search backend and test catalogue."
+      }
+    }
+  ],
   "doctor": {
     "id": "doctor",
     "helper": "doctor.mjs",
@@ -26,6 +53,7 @@
     },
     {
       "id": "skills-check",
+      "entrypoints": ["openclaw skills check"],
       "helper": "skills-check.mjs",
       "marker": "VERIFY_OPENCLAW_SKILLS_CHECK_PASS",
       "reach": "Ask the CLI which skills are available to the main agent.",
@@ -33,6 +61,33 @@
       "observe": "The ready skill is discovered. The conditional skill moves from missing its prerequisite to eligible. The fixture inputs are unchanged.",
       "gotchas": "Bundled skills are disabled so the assertion exercises local discovery in the temporary workspace.",
       "source": [{"path": "docs/cli/skills.md", "contains": "openclaw skills check --json"}, {"path": "src/cli/skills-cli.ts", "contains": ".command(\"check\")"}]
+    },
+    {
+      "id": "skills-inspect",
+      "helper": "skills-inspect.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_INSPECT_PASS",
+      "reach": "List available skills and inspect one named skill from a local OpenClaw terminal.",
+      "drive": "Run openclaw skills list and openclaw skills info with JSON and the main agent in a disposable workspace.",
+      "observe": "The list includes the eligible workspace skill. Info shows the exact metadata and SKILL.md path. An absent name exits one with a structured not-found error. Inputs are unchanged.",
+      "gotchas": "Bundled skills are disabled and all reads use the temporary config and workspace.",
+      "source": [
+        {
+          "path": "src/cli/skills-cli.ts",
+          "contains": ".description(\"List all available skills\")"
+        },
+        {
+          "path": "src/cli/skills-cli.ts",
+          "contains": ".command(\"info\")"
+        },
+        {
+          "path": "src/cli/skills-cli.format.ts",
+          "contains": "export function formatSkillInfo"
+        }
+      ],
+      "entrypoints": [
+        "openclaw skills list",
+        "openclaw skills info"
+      ]
     },
     {
       "id": "config-validate",

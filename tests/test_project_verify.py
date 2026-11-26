@@ -133,3 +133,47 @@ class ProjectVerificationTests(unittest.TestCase):
         failed = cli.read(self.root / 'missing-helper' / 'first.json')
         self.assertEqual(failed['diagnostic'], 'harness-input')
         self.assertTrue(result['features']['second'] == 'passed')
+
+    def test_discovery_uses_committed_source_and_detects_missing_and_stale_commands(self):
+        path = self.repo / 'register.ts'
+        path.write_text('skills.command("first");\nskills.command("old");\n')
+        cli.git(self.repo, 'add', 'register.ts')
+        cli.git(self.repo, 'commit', '-qm', 'initial CLI')
+        old = cli.sha(self.repo, 'HEAD')
+        path.write_text(
+            '// skills.command("commented");\n'
+            'const example = \'skills.command("inside-string")\';\n'
+            'const helper = skills\n  /* a real registration */\n  .command("first");\n'
+            'attach(skills.command(\'new-subcommand\'));\n'
+            'other.command("unrelated");\n'
+            'skills.command("outside");\n'
+        )
+        cli.git(self.repo, 'add', 'register.ts')
+        cli.git(self.repo, 'commit', '-qm', 'new CLI')
+        self.revision = cli.sha(self.repo, 'HEAD')
+        path.write_text('skills.command("only-in-worktree");\n')
+        self.contract['entrypoint_inventory'] = [
+            {'namespace': 'fixture skills', 'sources': [{'path': 'register.ts', 'receiver': 'skills'}],
+             'excluded': {'outside': 'Needs the authenticated test service.'}}
+        ]
+        self.contract['features'][0]['entrypoints'] = ['fixture skills first']
+        self.contract['features'][1]['entrypoints'] = ['fixture skills old']
+        self.manifest.write_text(json.dumps(self.contract))
+
+        report = project_verify.discover(repo=self.repo, revision=self.revision, since=old,
+                                         out=self.root / 'discovery', manifest=self.manifest)
+        self.assertEqual(report['outcome'], 'review-required')
+        coverage = report['entrypoints']
+        self.assertEqual(coverage['unmapped'], ['fixture skills new-subcommand'])
+        self.assertEqual(coverage['stale'], ['fixture skills old'])
+        entries = {entry['command']: entry for entry in coverage['entries']}
+        self.assertEqual(entries['fixture skills first']['locations'][0]['line'], 5)
+        self.assertEqual(entries['fixture skills outside']['status'], 'excluded')
+        self.assertEqual(report['comparison']['removed'], ['fixture skills old'])
+        self.assertEqual(report['comparison']['added'], ['fixture skills new-subcommand', 'fixture skills outside'])
+
+        proof = self.run_mode('create', 'incomplete', manifest=self.manifest, helpers=self.helpers)
+        self.assertEqual(proof['outcome'], 'blocked')
+        self.assertEqual(proof['features'], {'first': 'passed'})
+        self.assertFalse((self.root / 'incomplete' / 'verify-fixture').exists())
+        self.assertIn('inventory needs map corrections', proof['reason'])

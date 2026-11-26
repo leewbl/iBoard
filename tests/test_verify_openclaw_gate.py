@@ -19,13 +19,16 @@ class GatewayGateTests(unittest.TestCase):
         self.changed_paths = changed_paths.start()
         self.addCleanup(changed_paths.stop)
 
-    def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None, config_image=None):
+    def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None,
+                skills_inspect_image=None, config_image=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
         journeys = {'gateway-health': gateway_image}
         if skills_image is not None:
             journeys['skills-check'] = skills_image
+        if skills_inspect_image is not None:
+            journeys['skills-inspect'] = skills_inspect_image
         if config_image is not None:
             journeys['config-validate'] = config_image
         for journey, image in journeys.items():
@@ -74,21 +77,25 @@ class GatewayGateTests(unittest.TestCase):
         with self.assertRaises(verify_openclaw.GatewayGateError):
             verify_openclaw.require(self.data, self.head, self.destination)
 
-    def test_skills_change_requires_both_journeys_reviewed_on_one_image(self):
+    def test_skills_change_requires_all_journeys_reviewed_on_one_image(self):
         self.changed_paths.return_value = 'src/skills/discovery/status.ts\0'
         for skills_image in (None, 'sha256:' + 'e' * 64):
             with self.subTest(skills_image=skills_image):
                 self.reports(skills_image=skills_image)
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'skills-check'):
                     verify_openclaw.require(self.data, self.head, self.destination)
-        self.reports(skills_image='sha256:' + 'f' * 64)
+        image = 'sha256:' + 'f' * 64
+        self.reports(skills_image=image)
+        with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'skills-inspect'):
+            verify_openclaw.require(self.data, self.head, self.destination)
+        self.reports(skills_image=image, skills_inspect_image=image)
         self.data.update(kind='feature', delivery_repo=self.destination)
         self.data['evidence'].append({'kind': 'test-result', 'commit': self.head,
                                      'actor': 'independent-verifier', 'sha256': '0' * 64})
         with patch.object(publish, '_feature_doc_link', return_value='https://example.com/doc'), \
                 patch.object(publish, '_report_summary', return_value=('test passed', '')):
             body = publish._pr_body(self.data, self.head)
-        for journey in ('gateway-health', 'skills-check'):
+        for journey in ('gateway-health', 'skills-check', 'skills-inspect'):
             for actor in ('builder', 'independent-verifier'):
                 digest = cli.digest(self.root / f'{journey}-{actor}.json')
                 self.assertIn(digest, body)
