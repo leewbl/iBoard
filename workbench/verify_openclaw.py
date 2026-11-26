@@ -22,15 +22,57 @@ JOURNEYS = {
 }
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
+    'control-ui-session-rename': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
+
+
+def _journey(journey):
+    helper, marker = (BROWSER_JOURNEYS if journey in BROWSER_JOURNEYS else JOURNEYS)[journey]
+    command = ['node', f'/workspace/{helper}']
+    if journey == 'control-ui-session-rename':
+        command.append('session-rename')
+    return helper, marker, command
+
+
+def _browser_evidence(report, screenshot):
+    """Check the artifact attachment and the observed session behavior."""
+    try:
+        if (screenshot.is_symlink() or str(screenshot.resolve(strict=True)) != report.get('screenshot_path')
+                or cli.digest(screenshot) != report.get('screenshot_sha256')):
+            return False
+        marker = _journey(report['journey'])[1]
+        lines = report['stdout'].splitlines()
+        if report.get('stdout_truncated') or len(lines) != 4 or lines[-1] != marker:
+            return False
+        doctor, ui, cleanup = list(map(json.loads, lines[:-1]))
+        handshake, readback = ui['handshake'], ui['readback']
+        if not (doctor.get('phase') == 'doctor' and doctor.get('ready') is True and doctor.get('live') is True
+                and ui.get('phase') == 'ui' and ui.get('route') == '/sessions'
+                and ui.get('servedCommit') == report['commit'] and ui.get('screenshot') is True
+                and handshake.get('role') == 'operator' and handshake.get('method') == 'token'
+                and type(handshake.get('protocol')) is int and handshake['protocol'] > 0
+                and readback.get('method') == 'sessions.list' and type(readback.get('count')) is int
+                and cleanup == {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True}):
+            return False
+        if report['journey'] == 'control-ui-connected':
+            return readback['count'] == 0 and 'mutation' not in ui
+        mutation = ui['mutation']
+        return (readback['count'] > 0 and mutation.get('method') == 'sessions.patch'
+                and mutation.get('key') == 'agent:main:iboard-browser-verification'
+                and isinstance(mutation.get('sessionId'), str) and bool(mutation['sessionId'])
+                and mutation.get('originalLabel') == 'iBoard verification fixture'
+                and mutation.get('finalLabel') == 'iBoard verification persisted'
+                and all(mutation.get(key) is True for key in ('canceledWithoutWrite', 'accepted', 'freshContextReadback')))
+    except (OSError, KeyError, ValueError, TypeError, AttributeError, cli.WorkbenchError):
+        return False
 
 
 def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None):
     browser = journey in BROWSER_JOURNEYS
     if browser != (screenshot is not None):
-        raise ValueError('the connected Control UI journey requires a screenshot path')
-    helper, marker = (BROWSER_JOURNEYS if browser else JOURNEYS)[journey]
+        raise ValueError('a Control UI browser journey requires a screenshot path')
+    helper, marker, command = _journey(journey)
     deadline = time.monotonic() + timeout
     report = {"journey": journey, "requested_image": image}
     try:
@@ -48,25 +90,17 @@ def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None):
                 (Path(scratch) / 'expected-commit.txt').write_text(head + '\n', encoding='utf-8')
             report["helper_sha256"] = hashlib.sha256(copy.read_bytes()).hexdigest()
             report.update(run_sandbox(
-                scratch, pinned, ["node", f"/workspace/{helper}"], deadline - time.monotonic(),
+                scratch, pinned, command, deadline - time.monotonic(),
                 memory_mb=memory_mb, source_root="/app", workspace_read_only=True,
                 **({'screenshot_output': screenshot, 'pids_limit': 384} if browser else {}),
             ))
     except (OSError, ValueError, SandboxError, workflow.WorkflowError, cli.WorkbenchError) as error:
         report["error"] = str(error)
-    screenshot_bound = True
-    if browser:
-        output = Path(screenshot)
-        try:
-            screenshot_bound = (not output.is_symlink() and str(output.resolve(strict=True)) == report.get('screenshot_path')
-                                and cli.digest(output) == report.get('screenshot_sha256'))
-        except (OSError, cli.WorkbenchError):
-            screenshot_bound = False
     report["passed"] = (
         not report.get("error") and not report.get("timed_out") and report.get("exit_code") == 0
         and report.get("cleanup_confirmed") is True
         and marker in report.get("stdout", "").splitlines()
-        and screenshot_bound
+        and (not browser or _browser_evidence(report, Path(screenshot)))
     )
     return report
 
@@ -136,7 +170,22 @@ def required_journeys(data, head):
         selected.extend(('skills-check', 'skills-inspect'))
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
         selected.append('config-validate')
+    if any(path in ('ui/src/lib/session-rename.ts', 'ui/src/styles/sessions.css')
+           or path.startswith(('ui/src/pages/sessions/', 'ui/src/lib/sessions/')) for path in paths):
+        selected.append('control-ui-session-rename')
     return selected
+
+
+def needs_browser(data, head):
+    return any(journey in BROWSER_JOURNEYS for journey in required_journeys(data, head))
+
+
+def build_browser_image(repo, base, image, head, timeout):
+    from workbench import visual_parity
+    # Reuse the existing offline OpenClaw UI build with frozen dependencies.
+    plan = {'rebuild': {'profile': visual_parity.OPENCLAW_PROFILE,
+                        'sha256': cli.digest(visual_parity.OPENCLAW_RECIPE)}}
+    return visual_parity.rebuild_image(repo, base, image, head, plan, timeout)['image']
 
 
 def collect(task, data, head, image, actors, *, remaining, memory_mb):
@@ -144,14 +193,15 @@ def collect(task, data, head, image, actors, *, remaining, memory_mb):
     for journey in required_journeys(data, head):
         for actor in actors:
             path = task.parent / f'{journey}-{uuid.uuid4().hex}.json'
+            options = {'screenshot': path.with_suffix('.png')} if journey in BROWSER_JOURNEYS else {}
             report = verify(Path(data['repo']), image, journey,
-                            timeout=min(320, remaining()), memory_mb=memory_mb)
+                            timeout=min(320, remaining()), memory_mb=memory_mb, **options)
             report.update(actor=actor, source_mode='image', source_verified_commit=report.get('commit'))
             cli.write(path, report)
             if not report['passed'] or report['commit'] != head:
                 if workflow.docker_oom(report):
-                    raise GatewayGateError(f'OpenClaw {journey} exceeded available Docker memory; evidence: {path}')
-                raise GatewayGateError(f'OpenClaw {journey} verification failed: {path}')
+                    raise workflow.WorkflowError(f'OpenClaw {journey} exceeded available Docker memory; raw report saved at {path}')
+                raise workflow.WorkflowError(f'OpenClaw {journey} verification failed; raw report saved at {path}')
             results.append({'report': str(path), 'actor': actor, 'journey': journey})
     return results
 
@@ -161,7 +211,7 @@ def require(data, head, destination, *, review_item=None):
     if not applies(data, destination):
         return
     required = required_journeys(data, head)
-    helpers = {journey: cli.digest(SKILL / JOURNEYS[journey][0]) for journey in required}
+    helpers = {journey: cli.digest(SKILL / _journey(journey)[0]) for journey in required}
     for item in data['evidence'] if review_item is None else (review_item,):
         if (item.get('superseded') or item.get('kind') != 'independent-review'
                 or item.get('commit') != head or item.get('actor') != 'independent-verifier'
@@ -189,12 +239,16 @@ def require(data, head, destination, *, review_item=None):
                 journey = run.get('journey')
                 if journey not in reports:
                     continue
-                helper, marker = JOURNEYS[journey]
+                _, marker, command = _journey(journey)
+                if journey in BROWSER_JOURNEYS and (
+                        not re.fullmatch(r'[0-9a-f]{64}', str(run.get('create_stdout', '')).strip())
+                        or not _browser_evidence(run, Path(entry['path']).with_suffix('.png'))):
+                    continue
                 if (run.get('commit') == head
                         and run.get('helper_sha256') == helpers[journey] and run.get('passed') is True
                         and run.get('exit_code') == 0 and run.get('cleanup_confirmed') is True
                         and run.get('container_created') is True and run.get('source_root') == '/app'
-                        and run.get('command') == ['node', f'/workspace/{helper}']
+                        and run.get('command') == command
                         and run.get('workspace_read_only') is True and run.get('timed_out') is False
                         and not run.get('error') and marker in run.get('stdout', '').splitlines()
                         and run.get('verified_image_id') == run.get('image') and
@@ -204,7 +258,8 @@ def require(data, head, destination, *, review_item=None):
             pairs_by_image = {
                 journey: {a['image']: (a, b) for a in runs for b in runs
                  if a.get('actor') == data['implementer'] and b.get('actor') == item['actor']
-                 and a['image'] == b['image'] and a['workspace'] != b['workspace']}
+                 and a['image'] == b['image'] and a['workspace'] != b['workspace']
+                 and (journey not in BROWSER_JOURNEYS or a['create_stdout'].strip() != b['create_stdout'].strip())}
                 for journey, runs in reports.items()
             }
             common = set.intersection(*(set(pairs) for pairs in pairs_by_image.values()))
@@ -224,12 +279,12 @@ def main(argv=None):
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument('--screenshot', type=Path, help='PNG evidence path for the connected Control UI journey')
+    parser.add_argument('--screenshot', type=Path, help='PNG evidence path for a Control UI browser journey')
     parser.add_argument("--timeout", type=int, default=320)
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
     if (args.journey in BROWSER_JOURNEYS) != (args.screenshot is not None):
-        parser.error('--screenshot is required only for the connected Control UI journey')
+        parser.error('--screenshot is required only for a Control UI browser journey')
     if args.screenshot is not None:
         args.screenshot = args.screenshot.expanduser().absolute()
         if args.screenshot.exists() or args.screenshot.is_symlink() or args.screenshot.resolve() == args.report.expanduser().resolve():

@@ -448,6 +448,8 @@ def _pr_body(data, head):
         for journey, (author, verifier) in journeys.items():
             body += (f"- `{journey}` implementer report SHA-256: `{author['sha256']}`\n"
                      f"- `{journey}` independent rerun report SHA-256: `{verifier['sha256']}`\n")
+            if verifier.get('screenshot_sha256'):
+                body += f"- `{journey}` independent screenshot SHA-256: `{verifier['screenshot_sha256']}`\n"
     body += '\nLog excerpts are bounded and common credentials, URLs, email addresses, and paths are redacted.\n'
     if len(body.encode('utf-8')) > 60000:
         raise PublishError('PR evidence summary exceeds the publication size limit')

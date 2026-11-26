@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from test_runner import tiny_png
 
-from workbench import autopilot, cli, delivery, pickup, publish, stack_verify, tdd, workflow
+from workbench import autopilot, cli, delivery, pickup, publish, stack_verify, tdd, visual_parity, workflow
 
 
 class CompletedCI:
@@ -853,6 +853,28 @@ class AutopilotTests(unittest.TestCase):
         self.assertTrue(all(image == 'sha256:candidate' for _, image in checks[2:]))
         self.assertEqual(builder.call_count, 1)
         self.assertEqual(builder.call_args.args[1], cli.read(self.task)['base_commit'])
+
+    def test_openclaw_session_checks_use_the_offline_rebuilt_ui_image(self):
+        checks = []
+
+        def check(**kwargs):
+            checks.append(kwargs['image'])
+            kwargs.pop('source_mode')
+            return self.check(**kwargs)
+
+        with patch.object(autopilot.verify_openclaw, 'needs_browser', return_value=True), \
+                patch.object(workflow, 'build_source_image', return_value='sha256:rebuilt') as builder, \
+                patch.object(autopilot.verify_openclaw, 'collect',
+                             side_effect=autopilot.AutopilotError('stop after checking candidate image')) as collect:
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'stop after checking candidate image'):
+                autopilot.run(self.task, self.issue, 'baseline', source_mode='image', build_source_image=True,
+                              pr_repo='owner/myopenclaw', model=self.model, check=check,
+                              publisher=lambda *_: self.fail('published before browser verification'))
+        self.assertEqual(builder.call_args.kwargs['rebuild_ui'], visual_parity.OPENCLAW_RECIPE.read_bytes())
+        self.assertEqual(builder.call_args.kwargs['revision'], cli.sha(self.workspace, 'HEAD'))
+        self.assertEqual(collect.call_args.args[3], 'sha256:rebuilt')
+        self.assertEqual(checks[:2], ['baseline'] * 2)
+        self.assertEqual(set(checks[2:]), {'sha256:rebuilt'})
 
     def test_full_local_path_requires_pr_and_preserves_evidence(self):
         with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):

@@ -4,3 +4,8 @@
 | [skills-check](skills-check.md) | Discover workspace skills and see which prerequisites are missing | CLI JSON with and without an environment prerequisite, unchanged fixture files, Docker cleanup |
 | [skills-inspect](skills-inspect.md) | List local skills and view the details of a named skill | CLI JSON for list, detail and an absent name, unchanged fixture files, Docker cleanup |
 | [config-validate](config-validate.md) | Check the validity of a local configuration | Exit codes and JSON for valid and invalid port types, unchanged fixture inputs, Docker cleanup |
+
+The core `audit` runs the four journeys above. A compiled Control UI image with Chromium supports two more journeys.
+
+- [`control-ui-connected`](../SKILL.md#drive) checks the login form, the authenticated Gateway session-list response and the empty Sessions page.
+- [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and a fresh authenticated read of the updated label. The PR gate requires this journey for changes under `ui/src/pages/sessions/`, `ui/src/lib/sessions/`, or to `ui/src/lib/session-rename.ts` or `ui/src/styles/sessions.css`.

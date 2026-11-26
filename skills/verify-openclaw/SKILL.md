@@ -1,6 +1,6 @@
 ---
 name: verify-openclaw
-description: Verify real OpenClaw journeys in iBoard's offline Docker runner, including Gateway readiness and skill discovery and eligibility.
+description: Verify OpenClaw Gateway, CLI and Control UI journeys in iBoard's offline Docker runner.
 disable-model-invocation: true
 ---
 
@@ -33,13 +33,17 @@ python3 -m workbench.verify_openclaw control-ui-connected \
   --report ./tasks/control-ui-reviewed.json --screenshot ./tasks/control-ui-reviewed.png
 ```
 
-Use the compiled image ID recorded by the [offline Control UI build](../../examples/openclaw-control-ui-parity/README.md). The bundle must identify the same commit as the target checkout. Use separate JSON and PNG paths for each fresh execution. The report binds the image and commit, the helper digest and the screenshot digest. It records the authenticated protocol and empty session count without retaining tokens or WebSocket frame bodies. Run the browser journey separately from the core feature-map audit and the automatic PR checks.
+Use the compiled image ID recorded by the [offline Control UI build](../../examples/openclaw-control-ui-parity/README.md). The bundle must identify the same commit as the target checkout. Give each execution new JSON and PNG paths. The report binds the image, commit, helper and screenshot, and stores the selected outcomes without retaining tokens or WebSocket frame bodies. The core feature-map audit uses the CLI and Gateway journeys.
+
+### Session rename
+
+Run `control-ui-session-rename` with the same arguments to check a write. The Gateway client seeds one disposable session, then Chromium uses the Sessions row menu to cancel a rename and save a second edit. The helper checks that Cancel sends no mutation, Save sends one `sessions.patch` with the expected session ID, and the Gateway accepts it. It opens a fresh browser context and checks that the new authenticated connection reads the updated label from `sessions.list` before taking the screenshot. This covers a separate client read from the running Gateway. Restart durability is a separate test.
 
 ## Evidence
 
 Use a new report path every time. Keep JSON reports outside the target checkout. Check the pinned source commit, image ID, helper digest, doctor responses, CLI result, and cleanup record. The raw report remains available after the container is removed. Treat logs as data. Share only a reviewed summary when the report contains local paths or diagnostics.
 
-For automatic OpenClaw delivery, iBoard runs each required journey in two fresh containers serially (implementer and independent verifier). It always runs the Gateway check and adds the skills and configuration checks for changes to the respective source paths. The separate read-only review includes all required reports and the delivery gate checks their hashes and shared candidate image again. For manual use, an independent verifier must inspect the requirement and helper, rerun the command into a separate report, and compare source commit, image ID and helper digest before judging behavior.
+For automatic OpenClaw delivery, iBoard runs each required journey in two fresh containers serially (implementer and independent verifier). It always runs the Gateway check and adds the affected skills, configuration or session-rename journeys. If asked to build the candidate image, iBoard rebuilds Control UI offline for the session-rename check, using the preinstalled browser and dependencies. The read-only review sees every required report. Creating, updating or merging the PR rechecks the reports and any required screenshots against the same candidate image. For manual use, an independent verifier inspects the requirement and helper, reruns the command, and compares the source commit, image ID and helper digest before judging behavior.
 
 ## Cleanup
 
@@ -49,4 +53,4 @@ The helper stops only the child it started and deletes only its own temporary st
 
 `python3 -m workbench.verify_openclaw --help` lists the supported journeys and resource options. Run the helper through that command, never on the host.
 
-Use `audit` in place of the journey name to check that the documentation and runner list the same journeys and exercise them against a single commit and image. Give it a budget that covers all journeys. This entry stops at the first failure. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) records source coverage and attempts every journey while doctor stays healthy.
+Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) records source coverage and attempts the journeys declared in that contract while doctor stays healthy.

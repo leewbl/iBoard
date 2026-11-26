@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,7 +21,8 @@ class GatewayGateTests(unittest.TestCase):
         self.addCleanup(changed_paths.stop)
 
     def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None,
-                skills_inspect_image=None, config_image=None):
+                skills_inspect_image=None, config_image=None, rename=False, browser_receipt=True,
+                same_container=False):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -31,19 +33,28 @@ class GatewayGateTests(unittest.TestCase):
             journeys['skills-inspect'] = skills_inspect_image
         if config_image is not None:
             journeys['config-validate'] = config_image
+        if rename:
+            journeys['control-ui-session-rename'] = gateway_image
         for journey, image in journeys.items():
-            helper, marker = verify_openclaw.JOURNEYS[journey]
+            helper, marker, command = verify_openclaw._journey(journey)
             for actor in ('builder', 'independent-verifier'):
                 name = f'{journey}-{actor}'
                 path = self.root / f'{name}.json'
+                extra = {'stdout': marker + '\n'}
+                if journey == 'control-ui-session-rename':
+                    png = path.with_suffix('.png')
+                    png.write_bytes(name.encode())
+                    extra = {'stdout': self.browser_stdout(journey, fresh=browser_receipt),
+                             'screenshot_path': str(png.resolve()), 'screenshot_sha256': cli.digest(png),
+                             'create_stdout': ('a' if same_container or actor == 'builder' else 'b') * 64}
                 cli.write(path, {
                     'journey': journey, 'actor': actor, 'commit': report_head or self.head,
                     'image': image, 'verified_image_id': image,
                     'helper_sha256': cli.digest(verify_openclaw.SKILL / helper),
                     'passed': not fail, 'exit_code': int(fail), 'cleanup_confirmed': True, 'timed_out': False,
-                    'container_created': True, 'source_root': '/app', 'command': ['node', f'/workspace/{helper}'],
+                    'container_created': True, 'source_root': '/app', 'command': command,
                     'workspace_read_only': True, 'workspace': 'shared' if same_workspace else name,
-                    'stdout': marker + '\n',
+                    **extra,
                 })
                 refs[name] = {'path': str(path), 'sha256': cli.digest(path)}
                 self.data['evidence'].append({'kind': 'runtime-log', 'commit': self.head,
@@ -55,6 +66,21 @@ class GatewayGateTests(unittest.TestCase):
             'kind': 'independent-review', 'actor': 'independent-verifier', 'commit': self.head,
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
         })
+
+    def browser_stdout(self, journey, *, fresh=True):
+        events = [
+            {'phase': 'doctor', 'ready': True, 'live': True},
+            {'phase': 'ui', 'route': '/sessions', 'servedCommit': self.head, 'screenshot': True,
+             'handshake': {'protocol': 4, 'method': 'token', 'role': 'operator'},
+             'readback': {'method': 'sessions.list', 'count': int(journey == 'control-ui-session-rename')}},
+            {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True},
+        ]
+        if journey == 'control-ui-session-rename':
+            events[1]['mutation'] = {'method': 'sessions.patch', 'key': 'agent:main:iboard-browser-verification',
+                                     'sessionId': 'fixture-session-id', 'originalLabel': 'iBoard verification fixture',
+                                     'finalLabel': 'iBoard verification persisted', 'canceledWithoutWrite': True,
+                                     'accepted': True, 'freshContextReadback': fresh}
+        return '\n'.join([*(json.dumps(event) for event in events), verify_openclaw._journey(journey)[1], ''])
 
     def test_publish_and_republish_block_before_any_github_call(self):
         github = Mock()
@@ -125,14 +151,14 @@ class GatewayGateTests(unittest.TestCase):
 
     def test_connected_ui_requires_a_bound_screenshot_in_its_own_output(self):
         journey = 'control-ui-connected'
-        helper, marker = verify_openclaw.BROWSER_JOURNEYS[journey]
+        helper, _ = verify_openclaw.BROWSER_JOURNEYS[journey]
         image = 'sha256:' + 'f' * 64
         screenshot = self.root / 'connected.png'
         screenshot.write_bytes(b'verified capture')
         options = {'timeout': 90, 'memory_mb': 3328}
         with self.assertRaisesRegex(ValueError, 'requires a screenshot path'):
             verify_openclaw.verify(self.root, image, journey, **options)
-        sandbox = {'exit_code': 0, 'cleanup_confirmed': True, 'stdout': marker + '\n'}
+        sandbox = {'exit_code': 0, 'cleanup_confirmed': True, 'stdout': self.browser_stdout(journey)}
         replies = iter((sandbox, {**sandbox, 'screenshot_sha256': cli.digest(screenshot),
                                   'screenshot_path': str(screenshot.resolve())}))
 
@@ -151,3 +177,48 @@ class GatewayGateTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['screenshot_output'], screenshot)
         self.assertEqual(run.call_args.kwargs['pids_limit'], 384)
         self.assertNotIn(journey, verify_openclaw.required_journeys(self.data, self.head))
+
+    def test_sessions_ui_delivery_rechecks_browser_receipts_before_writing(self):
+        self.changed_paths.return_value = 'ui/src/pages/sessions/page-dialog.ts\0'
+        github = Mock()
+        for options in ({}, {'rename': True, 'browser_receipt': False}, {'rename': True, 'same_container': True}):
+            with self.subTest(options=options):
+                self.reports(**options)
+                with patch.object(cli, 'read', return_value=self.data), \
+                        patch.object(cli, 'gate', return_value=(self.head, [])), \
+                        patch.object(publish.delivery, '_independent_verification'):
+                    with self.assertRaisesRegex(publish.PublishError, 'control-ui-session-rename'):
+                        publish.publish.__wrapped__(self.root / 'task.json', self.destination, github=github)
+        self.assertEqual(github.mock_calls, [])
+        self.reports(rename=True)
+        receipts = verify_openclaw.require(self.data, self.head, self.destination)
+        _, verifier = receipts['control-ui-session-rename']
+        self.data.update(kind='feature', delivery_repo=self.destination)
+        self.data['evidence'].append({'kind': 'test-result', 'commit': self.head,
+                                     'actor': 'independent-verifier', 'sha256': '0' * 64})
+        with patch.object(publish, '_feature_doc_link', return_value='https://example.com/doc'), \
+                patch.object(publish, '_report_summary', return_value=('test passed', '')):
+            self.assertIn(verifier['screenshot_sha256'], publish._pr_body(self.data, self.head))
+        (self.root / 'control-ui-session-rename-independent-verifier.png').write_bytes(b'exchanged image')
+        with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'control-ui-session-rename'):
+            verify_openclaw.require(self.data, self.head, self.destination)
+
+    def test_collect_keeps_failed_browser_run_for_task_recovery(self):
+        self.changed_paths.return_value = 'ui/src/lib/session-rename.ts\0'
+        calls = []
+
+        def execute(repo, image, journey, **options):
+            calls.append((journey, options))
+            return {'commit': self.head, 'passed': len(calls) < 4, 'timed_out': len(calls) == 4,
+                    'cleanup_confirmed': True, 'stdout': ''}
+
+        task = self.root / 'task.json'
+        with patch.object(verify_openclaw, 'verify', side_effect=execute):
+            with self.assertRaisesRegex(verify_openclaw.workflow.WorkflowError, 'raw report saved at') as blocked:
+                verify_openclaw.collect(task, self.data, self.head, 'image', ('builder', 'independent-verifier'),
+                                        remaining=lambda: 90, memory_mb=3328)
+        paths = [options['screenshot'] for journey, options in calls if journey == 'control-ui-session-rename']
+        self.assertEqual(len(paths), 2)
+        self.assertNotEqual(*paths)
+        self.assertTrue(all(path.with_suffix('.json').is_file() for path in paths))
+        self.assertIn(str(paths[1].with_suffix('.json')), str(blocked.exception))

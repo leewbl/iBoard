@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
-from workbench import cli, decisions, feature_context, workflow, delivery, publish, prompt_profiles, tdd
+from workbench import cli, decisions, feature_context, workflow, delivery, publish, prompt_profiles, tdd, verify_openclaw
 from workbench.task_lock import task_lock
 
 
@@ -1004,7 +1004,6 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if data['kind'] == 'bug' and not (phase or target or data.get('adoption')):
                 prompt += '\n' + tdd.PLAN_INSTRUCTION
                 if source_mode == 'image':
-                    from workbench import verify_openclaw
                     if verify_openclaw.applies(data):
                         prompt += tdd.VITEST_INSTRUCTION
             if phase:
@@ -1217,6 +1216,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 raise AutopilotError('candidate changed or workspace is dirty')
             verify_candidate_scope(candidate)
             architecture = check_design(current, candidate)
+            journey_repo = pr_repo or (phase['contract'].get('destination') if phase else None)
+            openclaw_delivery = bool(journey_repo and verify_openclaw.applies(current, journey_repo))
             check_image = candidate_image or image
             parity_result = None
             visual_build = None
@@ -1235,6 +1236,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                         visual_build = visual_parity.rebuild_image(workspace, image_base, base_image, candidate,
                                                                    visual_plan, _remaining(cli.read(task)))
                         check_image = visual_build['image']
+                    elif openclaw_delivery and verify_openclaw.needs_browser(current, candidate):
+                        check_image = verify_openclaw.build_browser_image(workspace, image_base, base_image, candidate,
+                                                                          _remaining(cli.read(task)))
                     else:
                         check_image = workflow.build_source_image(workspace, image_base, base_image,
                                                                   _remaining(cli.read(task)))
@@ -1291,10 +1295,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError(str(error)) from error
                 results.extend(local_results)
             data = cli.read(task)
-            from workbench import verify_openclaw
             journey_results = []
-            journey_repo = pr_repo or (phase['contract']['destination'] if phase else None)
-            if journey_repo and verify_openclaw.applies(data, journey_repo):
+            if openclaw_delivery:
                 if source_mode != 'image':
                     raise AutopilotError('OpenClaw delivery requires a source-verified candidate image')
                 journey_results = verify_openclaw.collect(
