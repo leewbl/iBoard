@@ -396,11 +396,19 @@ def require_feature_arena_delivery(data, feature, target, destination):
         raise DeliveryError('contested feature design requires Interrogate evidence before publication')
 
 
+def validate_phase_citations(assessments, reports, required):
+    for name, expected in required.items():
+        assessment = next((item for item in assessments if item['id'] == name), None)
+        if not assessment or not any(reports.get(label) == expected for label in assessment['evidence']):
+            raise DeliveryError(f'phase criterion {name} lacks its approved independent run citation')
+
+
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
-    from workbench import feature_context
+    from workbench import feature_context, phase_contract
     try:
         feature = feature_context.read(data)
+        phase_contract.require_delivery(data, target, destination=destination)
     except (OSError, ValueError, cli.WorkbenchError) as error:
         raise DeliveryError(str(error)) from error
     require_feature_arena_delivery(data, feature, target, destination)
@@ -467,6 +475,9 @@ def _independent_verification(data, target, *, destination=None):
         actor = item['actor']
         try:
             validate_impact_review(data, target, report.get('impact'), reports, actor)
+            if data.get('phase_result'):
+                result = cli.read(Path(data['phase_result']['path']))['record']
+                validate_phase_citations(assessments, reports, {name: result[name] for name in ('unit', 'live')})
         except DeliveryError:
             continue
         required = [('test-result', target)]
@@ -928,12 +939,21 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
     if issues:
         raise DeliveryError('evidence changed before merge: ' + '; '.join(issues))
     verify_remote()
+
+    def recheck_phase():
+        if data.get('phase_binding'):
+            latest = cli.read(Path(task_path))
+            if latest.get('phase_binding') != data['phase_binding']:
+                raise DeliveryError('approved phase changed before merge')
+            _independent_verification(latest, head, destination=repo)
+
     if protected:
         _, issues = cli.gate(cli.read(Path(task_path)), head)
         if issues:
             raise DeliveryError('evidence or budget changed before merge: ' + '; '.join(issues))
         if revalidate:
             revalidate()
+        recheck_phase()
         github.merge(repo, number, head)
     else:
         # Do not use an indirect merge if protection appeared while validating.
@@ -949,6 +969,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
             require_local_write(task_path, data, head, github, repo)
         if revalidate:
             revalidate()
+        recheck_phase()
         github.fast_forward(data['repo'], repo, data['base_commit'], head)
     try:
         final = github.pull(repo, number)

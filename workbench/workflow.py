@@ -389,6 +389,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     report_path = task.parent / f'{kind}-{uuid.uuid4().hex}.json'
     screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' else None
     runner_options = {'source_root': '/app'} if source_mode == 'image' else {}
+    if data.get('phase_binding'):
+        runner_options['workspace_read_only'] = True
     if screenshot_path is not None:
         runner_options.update(memory_mb=memory_mb, screenshot_output=screenshot_path)
     elif memory_mb != 2048:
@@ -398,7 +400,7 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     except (SandboxError, OSError, ValueError) as exc:
         report = {'error': str(exc), 'exit_code': None, 'cleanup_confirmed': False}
     # Always save actual result, including failures, before enforcing any gate.
-    report.update({'kind': kind, 'commit': head, 'actor': actor, 'description': description,
+    report.update({'schema': cli.SCHEMA, 'kind': kind, 'commit': head, 'actor': actor, 'description': description,
                    'expected_exit': expect_exit, 'expected_marker': marker, 'source_mode': source_mode,
                    'verified_image_id': selected_image if source_mode == 'image' else None,
                    'source_verified_commit': head,

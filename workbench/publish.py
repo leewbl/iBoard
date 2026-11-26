@@ -538,7 +538,12 @@ def _require_gateway(data, head, repo):
 
 
 def _local_remote_guard(task_path, data, head, github, repo):
-    _require_gateway(cli.read(task_path), head, repo)
+    latest = cli.read(task_path)
+    _require_gateway(latest, head, repo)
+    if data.get('phase_binding'):
+        if latest.get('phase_binding') != data['phase_binding']:
+            raise PublishError('approved phase changed before GitHub write')
+        delivery._independent_verification(latest, head, destination=repo)
     if data.get('local_gate'):
         try:
             delivery.require_local_write(task_path, data, head, github, repo)

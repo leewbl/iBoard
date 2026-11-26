@@ -1,6 +1,6 @@
 ---
 name: multi-phase-plan
-description: Write and audit a dependency-ordered multi-PR plan with separate unit, live and performance proof per stage.
+description: Write a dependency-ordered multi-PR plan, then run and audit its explicitly approved phases with unit, live and performance proof.
 disable-model-invocation: true
 ---
 
@@ -26,6 +26,39 @@ The plan contains a summary and one entry per proposed PR in landing order. Each
 | `perf` | The benchmark `probe` claim, `metric` set to `median_ms`, and numeric `max_ms`. Measure trunk first. |
 
 Hand over `plan.md` and `result.json` for authorization. Unresolved questions leave the request in `needs-prototype`. A planned status establishes scope and order. Acceptance stays pending until the phase has evidence.
+
+## Dispatch an approved plan
+
+After the operator authorizes execution, prepare a separate manifest that refers to the native `result.json` by path and SHA-256. Declare one step for every phase. The unit and live commands must start distinct tracked `/app/` scripts from the approved trunk. Keep these entrypoints outside every phase's edit scope. Each script must print the exact planned marker on its own line. For a browser journey add a `screenshot` check using a tracked `/workspace/` script and the ordinary iBoard screenshot contract.
+
+```json
+{
+  "repo": "/path/to/project",
+  "plan": {"path": "plan/result.json", "sha256": "<approved plan SHA-256>"},
+  "seconds": 1800,
+  "iterations": 2,
+  "memory_mb": 1024,
+  "steps": {
+    "stageOne": {
+      "image": "local-project-baseline:node24",
+      "unit": ["node", "/app/unit-stage-one.mjs"],
+      "live": ["node", "/app/live-stage-one.mjs"],
+      "feature_doc": "FEATURE.md",
+      "benchmark": {"path": "benchmark.json", "sha256": "<approved contract SHA-256>"},
+      "helpers": {"probe.mjs": {"path": "probe.mjs", "sha256": "<approved helper SHA-256>"}}
+    }
+  }
+}
+```
+
+```sh
+python3 -m workbench.phase_dispatch run --manifest "$DISPATCH" \
+  --sha256 "$APPROVED_DISPATCH_SHA256" --out "$DISPATCH_EVIDENCE"
+```
+
+Each eligible phase gets a distinct task and worktree at its declared Git parent. All listed prerequisites must have accepted local evidence. The dispatcher measures the original trunk before the model edits. After the change, it validates the candidate unit and live runs and measures performance on the same pinned candidate image. The independent review must cite both executions. The final source diff must stay inside the phase scope. Independent phases can proceed as their own prerequisites clear. Call the same command with the same evidence directory to continue within the original deadline. Completed phases are audited again before dependent work starts.
+
+A change to an interaction needs explicit approval of its exact commit and evidence, using `python3 -m workbench.phase_dispatch approve --task "$PHASE_TASK" --candidate "$CANDIDATE" --result-sha256 "$PHASE_RESULT_SHA256" --approved-by "$OPERATOR" --reason "$REVIEW_REASON"`. Run the dispatcher again to release dependent local tasks. This command prepares accepted commits locally. A frozen optional `destination` permits the corresponding task to pass the separate GitHub gate after its required review. Orchestrating remote landings, rebase and reverification of a changed remote base remains separate.
 
 ## Audit a planned phase
 

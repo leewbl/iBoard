@@ -71,7 +71,8 @@ def main():
                                  if source == ARCHITECT_SOURCE else []) +
                                 (['python3 -m workbench.benchmark'] if source == BENCHMARK_SOURCE else []) +
                                 (['python3 -m workbench.hillclimb'] if source == HILLCLIMB_SOURCE else []) +
-                                (['python3 -m workbench.multiphase', 'python3 -m workbench.phase_audit']
+                                (['python3 -m workbench.multiphase', 'python3 -m workbench.phase_audit',
+                                  'python3 -m workbench.phase_dispatch run']
                                  if source == MULTIPHASE_SOURCE else []) +
                                 (['python3 -m workbench.prototype'] if source == PROTOTYPE_SOURCE else []) +
                                 (['python3 -m workbench.start --kind feature', 'python3 -m workbench.feature_arena']

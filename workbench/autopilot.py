@@ -769,7 +769,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         source_mode='workspace', candidate_image=None, memory_mb=2048, build_source_image=False, reverify=False,
         model=execute_model, check=workflow.run_check, merge=delivery.guarded_merge,
         publisher=publish.publish, closer=delivery.close_verified_issue, vision=describe_screenshot,
-        architecture_review=None):
+        architecture_review=None, phase_measure=None):
     """Resume a task, preserving each completed phase; never accept a model claim as proof."""
     task = Path(task_path).expanduser().resolve(strict=True)
     issue_path = Path(issue_path).expanduser().resolve(strict=True)
@@ -793,7 +793,21 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         raise
     state_exists = state_path.exists()
     state = cli.read(state_path) if state_exists else {'schema': cli.SCHEMA, 'phase': 'plan'}
+    from workbench import phase_contract
     try:
+        phase = phase_contract.read(data)
+        phase_binding = data.get('phase_binding')
+        if state_exists and state.get('phase_binding') != phase_binding:
+            raise AutopilotError('multi-phase task binding changed after workflow start')
+        if phase:
+            if (feature_context.read(data) is not None or data.get('adoption') or data.get('verification_target')
+                    or cli.digest(issue_path) != phase['request_sha256'] or image != phase['step']['image']
+                    or source_mode != 'image' or not build_source_image or candidate_image is not None
+                    or memory_mb != phase['contract']['memory_mb']):
+                raise AutopilotError('multi-phase task request or isolation settings changed')
+            if state['phase'] != 'plan' and state.get('plan') != phase_contract.task_plan(phase):
+                raise AutopilotError('retained execution plan differs from the authorized phase')
+            state['phase_binding'] = phase_binding
         feature = feature_context.read(data)
         arena = feature.get('arena') if feature else None
         if arena:
@@ -804,7 +818,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             raise feature_context.FeatureContextError('feature handoff changed after workflow start')
         if feature:
             state['feature_context'] = binding
-    except (OSError, ValueError, cli.WorkbenchError) as error:
+    except (AutopilotError, OSError, ValueError, cli.WorkbenchError) as error:
         _pause(task, str(error))
         raise AutopilotError(str(error)) from error
     had_issue_digest = state.get('issue_digest') is not None
@@ -861,13 +875,16 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     if feature:
         issue += feature_context.prompt(feature)
 
-    def verify_feature(head=None):
-        if feature:
+    def verify_candidate_scope(head=None):
+        if feature or phase:
             current = cli.read(task)
-            if current.get('feature_context') != binding:
-                raise AutopilotError('feature handoff changed during workflow')
+            if current.get('feature_context') != binding or current.get('phase_binding') != phase_binding:
+                raise AutopilotError('approved candidate scope changed during workflow')
             try:
-                feature_context.check_scope(current, head)
+                if feature:
+                    feature_context.check_scope(current, head)
+                if phase:
+                    phase_contract.check_scope(current, head)
             except (OSError, ValueError, cli.WorkbenchError) as error:
                 raise AutopilotError(str(error)) from error
 
@@ -946,7 +963,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 prompt += ('\nFor this existing feature PR also specify "baseline" in the same command format. '
                            'Run a user-visible comparison on the parent revision and use a marker that confirms '
                            'the prior behavior or absence of the feature. A missing test file is insufficient.')
-            if target and target.get('plan') is not None:
+            if phase:
+                plan = phase_contract.task_plan(phase)
+            elif target and target.get('plan') is not None:
                 plan = _result(json.dumps(target['plan'], ensure_ascii=False))
             else:
                 try:
@@ -1022,7 +1041,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 candidate = target['head']
             elif arena:
                 candidate = arena['candidate']
-                verify_feature(candidate)
+                verify_candidate_scope(candidate)
             elif isinstance(adoption, dict) and (
                     isinstance(adoption.get('candidate_commit'), str)
                     and re.fullmatch(r'[0-9a-f]{40}', adoption['candidate_commit'])
@@ -1090,7 +1109,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if _clean(workspace):
                 raise AutopilotError('implementer made no changes')
             # This worktree was clean before model execution; reject likely credentials.
-            verify_feature()
+            verify_candidate_scope()
             _commit_changes(workspace)
             state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
             cli.write(state_path, state)
@@ -1112,12 +1131,14 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError('worktree no longer contains the selected PR candidate')
             if candidate != state['candidate_commit'] or not _clean(workspace):
                 raise AutopilotError('candidate changed or workspace is dirty')
-            verify_feature(candidate)
+            verify_candidate_scope(candidate)
             architecture = check_design(current, candidate)
             check_image = candidate_image or image
             if build_source_image:
                 try:
-                    check_image = workflow.build_source_image(workspace, cli.read(task)['base_commit'], image,
+                    image_base = phase['contract']['plan']['baseline'] if phase else current['base_commit']
+                    base_image = cli.read(Path(phase['baseline_perf']['path']))['images']['baseline'] if phase else image
+                    check_image = workflow.build_source_image(workspace, image_base, base_image,
                                                               _remaining(cli.read(task)))
                 except workflow.WorkflowError as error:
                     raise AutopilotError(f'candidate image preparation failed: {error}') from error
@@ -1242,6 +1263,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             guard_instruction = ''
             impact_instruction = ''
             design_instruction = ''
+            if phase:
+                design_instruction = ('The frozen phase criterion "unit" must cite the independent unit report R5. '
+                                      'The criterion "live" must cite the independent live journey report R4. '
+                                      'Inspect each exact command, script and report before accepting.\n')
             runtime_ids = set()
             resolution_labels = set()
             if feature:
@@ -1314,6 +1339,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 delivery.validate_impact_review(data, candidate, impact, reports, verifier)
                 if runtime_ids:
                     delivery.validate_feature_resolution(runtime_ids, assessments, resolution_labels)
+                if phase:
+                    delivery.validate_phase_citations(assessments, reports, {
+                        'unit': reports['R5'], 'live': reports['R4']})
             except delivery.DeliveryError as error:
                 raise VerificationFailure(str(error)) from error
             if guard_run:
@@ -1339,12 +1367,25 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if 'impact_review' in data:
                 review_record['impact'] = impact
             if architecture is not None:
-                verify_feature(candidate)
+                verify_candidate_scope(candidate)
                 try:
                     feature_context.verify_review(cli.read(task), candidate, architecture)
                 except (OSError, ValueError, cli.WorkbenchError) as error:
                     raise AutopilotError(str(error)) from error
                 review_record['architecture'] = architecture
+            if phase:
+                from workbench import phase_runtime
+                try:
+                    verify_candidate_scope(candidate)
+                    if data.get('phase_result'):
+                        phase_contract.verify_completion(data, candidate)
+                    else:
+                        record = (phase_measure or phase_runtime.candidate)(
+                            data, phase, candidate, check_image, results[4]['report'], results[3]['report'],
+                            task.parent / f'phase-performance-{uuid.uuid4().hex}', timeout=_remaining(data))
+                        phase_contract.record_completion(task, data, record)
+                except (OSError, ValueError, cli.WorkbenchError) as error:
+                    raise VerificationFailure(f'multi-phase acceptance failed: {error}') from error
             cli.write(review_path, review_record)
             args = argparse.Namespace(file=str(review_path), kind='independent-review', commit=candidate,
                                       actor=verifier, description='Independent evidence review', criterion=ids)
@@ -1409,7 +1450,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             _remaining(cli.read(task))
             if _clean(workspace):
                 raise AutopilotError(f'repair made no changes; failure saved at {failure_path}')
-            verify_feature()
+            verify_candidate_scope()
             _commit_changes(workspace)
             state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
             cli.write(state_path, state)
@@ -1435,7 +1476,12 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             _validate_adoption(task, cli.read(task), issue_path, image, pr_repo, source_mode, candidate_image,
                                build_source_image, memory_mb)
             if not pr_repo:
+                if phase:
+                    _pause(task, 'multi-phase candidate verified; inspect the retained delivery evidence')
+                    return state
                 raise AutopilotError('PR must exist or specify a personal fork for publishing')
+            if phase:
+                phase_contract.require_delivery(cli.read(task), state['candidate_commit'], destination=pr_repo)
             if arena:
                 delivery.require_feature_arena_delivery(cli.read(task), feature, state['candidate_commit'], pr_repo)
             pending_update = state.get('ci_republish')
@@ -1524,7 +1570,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     _remaining(cli.read(task))
                     if _clean(workspace):
                         raise AutopilotError(f'CI repair made no changes; failure saved at {failure_path}')
-                    verify_feature()
+                    verify_candidate_scope()
                     _commit_changes(workspace)
                     state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
                     cli.write(state_path, state)
@@ -1535,7 +1581,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                        source_mode=source_mode, candidate_image=candidate_image,
                                        memory_mb=memory_mb, build_source_image=build_source_image,
                                        model=model, check=check, merge=merge, publisher=publisher,
-                                       closer=closer, vision=vision, architecture_review=architecture_review)
+                                       closer=closer, vision=vision, architecture_review=architecture_review,
+                                       phase_measure=phase_measure)
             result = merge(task, pr_repo, pr_number)
             state.update(phase='close-issue', delivery=result, delivery_repo=pr_repo, delivery_pr=pr_number)
             cli.write(state_path, state)
