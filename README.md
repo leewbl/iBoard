@@ -81,6 +81,8 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 [TDD 回归验证](skills/tdd/SKILL.md)支持独立 Node 测试和 OpenClaw 原生 Vitest。选用后，同一份测试先在干净基线触发指定断言，再在候选上通过。原生 Vitest 在基线只读挂入新用例，在候选直接运行已提交文件。工作台保留四份证据，交付前核对报告、独立复验和测试源码。
 
+[运行时诊断](skills/runtime-forensics/SKILL.md)在断网 Docker 中采集 Node CPU profile 和堆快照，保留原始文件、源码版本、热点或引用链。失败的沙箱运行会记录对应容器的状态和 OOM 事件。确认是 Docker OOM 时暂停验证并保留候选和证据。
+
 ### 工作台插件原型
 
 从终端加载本地插件（插件加载不代表任务已执行）：

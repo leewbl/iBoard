@@ -33,6 +33,11 @@ class WorkflowError(Exception):
     pass
 
 
+def docker_oom(report):
+    evidence = report.get('runtime_diagnostics')
+    return isinstance(evidence, dict) and evidence.get('classification') == 'docker-oom'
+
+
 def _workspace_command(command):
     """Require an explicit workspace entrypoint; inline code cannot attest its source."""
     if not command:
@@ -429,6 +434,7 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     cli.write(report_path, report)
     output = str(report.get('stdout', '')) + '\n' + str(report.get('stderr', ''))
     if (report.get('error') or report.get('timed_out') or not report.get('cleanup_confirmed')
+            or docker_oom(report)
             or report.get('exit_code') != expect_exit or (marker and marker not in output)
             or (regression is not None and (report.get('container_created') is not True
                                           or not tdd.matches(report, regression, kind)))

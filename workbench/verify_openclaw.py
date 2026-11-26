@@ -131,6 +131,8 @@ def collect(task, data, head, image, actors, *, remaining, memory_mb):
             report.update(actor=actor, source_mode='image', source_verified_commit=report.get('commit'))
             cli.write(path, report)
             if not report['passed'] or report['commit'] != head:
+                if workflow.docker_oom(report):
+                    raise GatewayGateError(f'OpenClaw {journey} exceeded available Docker memory; evidence: {path}')
                 raise GatewayGateError(f'OpenClaw {journey} verification failed: {path}')
             results.append({'report': str(path), 'actor': actor, 'journey': journey})
     return results

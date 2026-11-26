@@ -23,6 +23,12 @@ TMPFS_MB = 1024
 MAX_OUTPUT = 1_000_000
 MAX_CREATE_OUTPUT = 65_536
 MAX_SCREENSHOT = 8_000_000
+MAX_DIAGNOSTIC_OUTPUT = 65_536
+DIAGNOSTIC_TIMEOUT = 3
+PROFILE_ARTIFACTS = {
+    '.cpuprofile': ('cpu.cpuprofile', 16 * 1024 * 1024),
+    '.heapsnapshot': ('heap.heapsnapshot', 64 * 1024 * 1024),
+}
 
 
 class SandboxError(Exception):
@@ -66,15 +72,21 @@ def _validated_png(data):
         raise SandboxError('screenshot PNG is incomplete')
 
 
-def _copy_screenshot(directory, output):
-    source = Path(directory) / 'screenshot.png'
+def _copy_artifact(directory, name, output, limit, description, *, validate=None):
+    source = Path(directory) / name
     try:
         fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, 'rb') as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                raise SandboxError('screenshot must be a regular file')
-            data = stream.read(MAX_SCREENSHOT + 1)
-        _validated_png(data)
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise SandboxError(f'{description} must be a regular file')
+            if validate is None and not 0 < metadata.st_size <= limit:
+                raise SandboxError(f'{description} must be nonempty and at most {limit} bytes')
+            data = stream.read(limit + 1)
+        if validate is not None:
+            validate(data)
+        elif not data or len(data) > limit:
+            raise SandboxError(f'{description} must be nonempty and at most {limit} bytes')
         out = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
             with os.fdopen(out, 'wb') as stream:
@@ -84,17 +96,101 @@ def _copy_screenshot(directory, output):
             raise
         return hashlib.sha256(data).hexdigest()
     except OSError as error:
-        raise SandboxError(f'cannot collect screenshot: {type(error).__name__}') from error
+        raise SandboxError(f'cannot collect {description}: {type(error).__name__}') from error
+
+
+def _copy_screenshot(directory, output):
+    return _copy_artifact(directory, 'screenshot.png', output, MAX_SCREENSHOT, 'screenshot',
+                          validate=_validated_png)
+
+
+def _diagnostic_output(invoke, args):
+    try:
+        with tempfile.TemporaryFile() as stdout:
+            result = invoke(args, stdout=stdout, stderr=subprocess.DEVNULL,
+                            timeout=DIAGNOSTIC_TIMEOUT, check=False)
+            output, truncated = _read_limited(stdout, MAX_DIAGNOSTIC_OUTPUT)
+            if result.returncode == 0 and not truncated:
+                return output
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _container_state(invoke, docker, container):
+    output = _diagnostic_output(
+        invoke, [docker, 'container', 'inspect', '--format', '{{json .State}}', container])
+    try:
+        state = json.loads(output)
+        status, exit_code, oom_killed = state['Status'], state['ExitCode'], state['OOMKilled']
+        if (status in ('created', 'restarting', 'running', 'removing', 'paused', 'exited', 'dead')
+                and type(exit_code) is int and 0 <= exit_code <= 255 and type(oom_killed) is bool):
+            return {'status': status, 'exit_code': exit_code, 'oom_killed': oom_killed}
+    except (TypeError, ValueError, KeyError):
+        pass
+    return None
+
+
+def _time_ns(stamp):
+    elapsed = dt.datetime.fromisoformat(stamp) - dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    return ((elapsed.days * 86400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds) * 1000
+
+
+def _container_oom_events(invoke, docker, container, since, until):
+    output = _diagnostic_output(
+        invoke, [docker, 'events', '--since', since, '--until', until,
+                 '--filter', 'type=container', '--filter', 'event=oom',
+                 '--filter', f'container={container}', '--format', '{{json .}}'])
+    if output is None:
+        return None
+    start_ns, end_ns = _time_ns(since), _time_ns(until)
+    events = []
+    try:
+        for line in output.splitlines():
+            event = json.loads(line)
+            stamp = event['timeNano']
+            if (event['Type'] != 'container' or event['Action'] != 'oom'
+                    or event['Actor']['ID'] != container or type(stamp) is not int
+                    or not start_ns <= stamp <= end_ns or len(events) >= 32):
+                return None
+            events.append({'time_ns': stamp})
+    except (TypeError, ValueError, KeyError):
+        return None
+    return events
+
+
+def _failure_diagnostics(invoke, docker, container_output, report, until):
+    classification = 'command-timeout' if report['timed_out'] else 'command-failed'
+    diagnostics = {'classification': classification, 'container_id': None, 'state': None,
+                   'oom_events': None, 'unavailable': []}
+    unavailable = diagnostics['unavailable']
+    container = container_output.strip()
+    if not re.fullmatch(r'[0-9a-f]{64}', container):
+        unavailable.extend(('container-id', 'state', 'oom-events'))
+        return diagnostics
+    diagnostics['container_id'] = container
+    state = _container_state(invoke, docker, container)
+    events = _container_oom_events(invoke, docker, container, report['started_at'], until)
+    diagnostics.update(state=state, oom_events=events)
+    if state is None:
+        unavailable.append('state')
+    if events is None:
+        unavailable.append('oom-events')
+    if (state and state['oom_killed']) or events:
+        diagnostics['classification'] = 'docker-oom'
+    return diagnostics
 
 
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
-                workspace_read_only=False, regression_source=None, regression_file=None):
+                workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
     relative workdirs must still exist inside the host workspace. Set
     workspace_read_only when the command must not modify the mounted files.
+    Profile collection uses a scoped helper and copies its artifact out of a
+    disposable container mount.
     ``invoke`` and ``find_executable`` permit unit testing without a Docker daemon.
     """
     docker = find_executable("docker")
@@ -108,6 +204,13 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     if not command or not command[0] or command[0].startswith("-"):
         raise SandboxError("a command with a valid executable is required")
     regression = regression_source is not None or regression_file is not None
+    profile = None
+    if profile_output is not None:
+        profile = PROFILE_ARTIFACTS.get(Path(profile_output).suffix)
+        if (profile is None or not workspace_read_only or source_root != '/app' or workdir != '.'
+                or screenshot_output is not None or regression or list(command[:2]) != [
+                    'node', '/workspace/node-profile.mjs']):
+            raise SandboxError("invalid scoped profile input")
     if regression and (not workspace_read_only or screenshot_output is not None):
         raise SandboxError("invalid read-only focused regression input")
     if regression_source is not None and (
@@ -151,7 +254,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
 
     # An image's VOLUME directive could add unrequested mounts. Reject such images.
     image_format = "{{json .Config.Volumes}}"
-    if regression:
+    pin_image = regression or profile is not None
+    if pin_image:
         image_format = '{{.Id}}{{println}}{{json (index .Config "Volumes")}}'
     try:
         inspected = invoke([docker, "image", "inspect", image, "--format", image_format],
@@ -162,7 +266,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("Docker daemon unavailable or image not present locally; no image was pulled")
     try:
         details = inspected.stdout.strip()
-        if regression:
+        if pin_image:
             image, details = details.split("\n", 1)
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
                 raise ValueError("invalid resolved image ID")
@@ -197,10 +301,11 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
             tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr, \
             tempfile.TemporaryFile() as create_stdout, tempfile.TemporaryFile() as create_stderr:
         try:
-            if screenshot_output is not None:
-                create[create.index('--workdir'):create.index('--workdir')] = [
-                    '--mount', f'type=bind,src={artifact_dir},dst=/artifacts',
-                    '--env', 'WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png']
+            if screenshot_output is not None or profile is not None:
+                mount = ['--mount', f'type=bind,src={artifact_dir},dst=/artifacts']
+                if screenshot_output is not None:
+                    mount.extend(['--env', 'WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png'])
+                create[create.index('--workdir'):create.index('--workdir')] = mount
             if regression_source is not None:
                 asset = Path(artifact_dir) / ('check.mjs' if regression_file is None else 'check.ts')
                 asset.write_bytes(regression_source)
@@ -226,6 +331,11 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 if screenshot_output is not None and result.returncode == 0:
                     report['screenshot_sha256'] = _copy_screenshot(artifact_dir, screenshot_output)
                     report['screenshot_path'] = str(Path(screenshot_output).resolve())
+                if profile is not None and result.returncode == 0:
+                    filename, limit = profile
+                    report['profile_sha256'] = _copy_artifact(artifact_dir, filename, profile_output,
+                                                             limit, 'runtime profile')
+                    report['profile_path'] = str(Path(profile_output).resolve())
         except subprocess.TimeoutExpired:
             report["timed_out"] = True
             report["error"] = "execution timed out"
@@ -236,13 +346,20 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         finally:
             # A timed-out start may leave the container running after its CLI exits.
             try:
-                cleanup = invoke([docker, "rm", "--force", name], capture_output=True,
-                                 text=True, timeout=15, check=False)
-                report["cleanup_confirmed"] = cleanup.returncode == 0
-                if not report["cleanup_confirmed"]:
-                    report["cleanup_error"] = cleanup.stderr.strip()[:2000]
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                report["cleanup_error"] = str(exc)
+                if created and (report['timed_out'] or report['exit_code'] != 0):
+                    until = dt.datetime.now(dt.timezone.utc).isoformat()
+                    container_output, truncated = _read_limited(create_stdout, MAX_CREATE_OUTPUT)
+                    report['runtime_diagnostics'] = _failure_diagnostics(
+                        invoke, docker, '' if truncated else container_output, report, until)
+            finally:
+                try:
+                    cleanup = invoke([docker, "rm", "--force", name], capture_output=True,
+                                     text=True, timeout=15, check=False)
+                    report["cleanup_confirmed"] = cleanup.returncode == 0
+                    if not report["cleanup_confirmed"]:
+                        report["cleanup_error"] = cleanup.stderr.strip()[:2000]
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    report["cleanup_error"] = str(exc)
             report["create_stdout"], report["create_stdout_truncated"] = _read_limited(create_stdout, MAX_CREATE_OUTPUT)
             report["create_stderr"], report["create_stderr_truncated"] = _read_limited(create_stderr, MAX_CREATE_OUTPUT)
             report["stdout"], report["stdout_truncated"] = _read_limited(stdout)

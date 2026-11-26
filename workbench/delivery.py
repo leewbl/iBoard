@@ -289,6 +289,7 @@ def _valid_run(evidence, actor, kind, commit, repo, *, regression=None):
     return (report.get('actor') == actor and report.get('kind') == kind
             and report.get('commit') == commit and report.get('container_created') is True
             and report.get('cleanup_confirmed') is True and not report.get('timed_out')
+            and not workflow.docker_oom(report)
             and not report.get('error') and report.get('exit_code') == report.get('expected_exit')
             and (not marker or marker in output)
             and (kind != 'reproduction' or bool(marker)))

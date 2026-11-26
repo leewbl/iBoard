@@ -7,7 +7,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from runner.sandbox import MAX_CREATE_OUTPUT, SandboxError, _copy_screenshot, _validated_png, run_sandbox
+from runner.sandbox import MAX_CREATE_OUTPUT, SandboxError, _copy_screenshot, _time_ns, _validated_png, run_sandbox
 
 
 def tiny_png():
@@ -247,8 +247,172 @@ class SandboxTests(unittest.TestCase):
             return self.fake(args, **kwargs)
         report = self.run_it(timeout)
         self.assertTrue(report["timed_out"])
+        self.assertEqual(report['runtime_diagnostics']['classification'], 'command-timeout')
+        self.assertEqual(report['runtime_diagnostics']['unavailable'], ['container-id', 'state', 'oom-events'])
         self.assertTrue(report["cleanup_confirmed"])
         self.assertEqual(self.calls[-1][0][1:3], ["rm", "--force"])
+
+    def test_docker_event_proves_child_oom_despite_outer_exit_two(self):
+        container = 'a' * 64
+        def invoke(args, **kwargs):
+            if args[1] == 'create':
+                kwargs['stdout'].write((container + '\n').encode())
+            elif args[1] == 'start':
+                return subprocess.CompletedProcess(args, 2)
+            elif args[1:3] == ['container', 'inspect']:
+                self.assertEqual(args[-1], container)
+                kwargs['stdout'].write(b'{"Status":"exited","ExitCode":2,"OOMKilled":false,"Pid":0}')
+            elif args[1] == 'events':
+                self.assertIn(f'container={container}', args)
+                self.assertIn('event=oom', args)
+                self.assertIn('type=container', args)
+                self.assertLessEqual(kwargs['timeout'], 3)
+                time_ns = _time_ns(args[args.index('--until') + 1])
+                event = {'Type': 'container', 'Action': 'oom', 'Actor': {'ID': container,
+                                                                        'Attributes': {'unneeded': 'secret'}},
+                         'timeNano': time_ns}
+                kwargs['stdout'].write(json.dumps(event).encode() + b'\n')
+            return self.fake(args, **kwargs)
+
+        report = self.run_it(invoke)
+        self.assertEqual(report['exit_code'], 2)
+        diagnostics = report['runtime_diagnostics']
+        self.assertEqual(diagnostics['classification'], 'docker-oom')
+        self.assertEqual(diagnostics['container_id'], container)
+        self.assertEqual(diagnostics['state'], {'status': 'exited', 'exit_code': 2, 'oom_killed': False})
+        self.assertEqual(len(diagnostics['oom_events']), 1)
+        self.assertEqual(set(diagnostics['oom_events'][0]), {'time_ns'})
+        self.assertEqual(diagnostics['unavailable'], [])
+        operations = [args[1] for args, _ in self.calls]
+        self.assertEqual(operations[-3:], ['container', 'events', 'rm'])
+        self.assertTrue(report['cleanup_confirmed'])
+
+    def test_exit_137_needs_docker_evidence_and_invalid_events_are_unavailable(self):
+        container = 'a' * 64
+        for event_kind in ('none', 'malformed', 'wrong-container', 'outside-window', 'collection-timeout'):
+            with self.subTest(event_kind=event_kind):
+                self.calls.clear()
+
+                def invoke(args, **kwargs):
+                    if args[1] == 'create':
+                        kwargs['stdout'].write(container.encode())
+                    elif args[1] == 'start':
+                        return subprocess.CompletedProcess(args, 137)
+                    elif args[1:3] == ['container', 'inspect']:
+                        kwargs['stdout'].write(b'{"Status":"exited","ExitCode":137,"OOMKilled":false}')
+                    elif args[1] == 'events':
+                        if event_kind == 'collection-timeout':
+                            raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+                        if event_kind == 'malformed':
+                            kwargs['stdout'].write(b'bad JSON\n')
+                        if event_kind in ('wrong-container', 'outside-window'):
+                            time_ns = _time_ns(args[args.index('--until') + 1])
+                            event = {'Type': 'container', 'Action': 'oom',
+                                     'Actor': {'ID': 'b' * 64 if event_kind == 'wrong-container' else container},
+                                     'timeNano': time_ns if event_kind == 'wrong-container' else 1}
+                            kwargs['stdout'].write(json.dumps(event).encode() + b'\n')
+                    return self.fake(args, **kwargs)
+
+                report = self.run_it(invoke)
+                diagnostics = report['runtime_diagnostics']
+                self.assertEqual(diagnostics['classification'], 'command-failed')
+                self.assertEqual(diagnostics['oom_events'], [] if event_kind == 'none' else None)
+                self.assertEqual(diagnostics['unavailable'], [] if event_kind == 'none' else ['oom-events'])
+                self.assertTrue(report['cleanup_confirmed'])
+                self.assertEqual(self.calls[-1][0][1:3], ['rm', '--force'])
+
+    def test_container_inspect_timeout_does_not_prevent_cleanup(self):
+        container = 'a' * 64
+        def invoke(args, **kwargs):
+            if args[1] == 'create':
+                kwargs['stdout'].write(container.encode())
+            elif args[1] in ('start', 'container'):
+                raise subprocess.TimeoutExpired(args, kwargs['timeout'])
+            return self.fake(args, **kwargs)
+
+        report = self.run_it(invoke)
+        diagnostics = report['runtime_diagnostics']
+        self.assertEqual(diagnostics['classification'], 'command-timeout')
+        self.assertEqual(diagnostics['container_id'], container)
+        self.assertIsNone(diagnostics['state'])
+        self.assertEqual(diagnostics['unavailable'], ['state'])
+        self.assertTrue(report['cleanup_confirmed'])
+        self.assertEqual(self.calls[-1][0][1:3], ['rm', '--force'])
+
+    def test_scoped_profile_copies_only_the_fixed_artifact_to_an_owner_only_file(self):
+        pinned = 'sha256:' + 'a' * 64
+        payload = b'{"profile":true}\n'
+        for suffix, filename in (('.cpuprofile', 'cpu.cpuprofile'), ('.heapsnapshot', 'heap.heapsnapshot')):
+            with self.subTest(suffix=suffix):
+                destination = self.workspace / ('saved' + suffix)
+                ephemeral = []
+
+                def invoke(args, **kwargs):
+                    if args[1:3] == ['image', 'inspect']:
+                        return subprocess.CompletedProcess(args, 0, stdout=pinned + '\nnull\n', stderr='')
+                    if args[1] == 'create':
+                        bind = next(arg for arg in args if arg.endswith('dst=/artifacts'))
+                        directory = Path(bind.split(',')[1].removeprefix('src='))
+                        ephemeral.append(directory)
+                        (directory / filename).write_bytes(payload)
+                        self.assertNotEqual(directory, destination.parent)
+                        self.assertIn('--network=none', args)
+                        self.assertIn(f'type=bind,src={self.workspace.resolve()},dst=/workspace,readonly', args)
+                    return self.fake(args, **kwargs)
+
+                report = run_sandbox(self.workspace, 'example:latest', ['node', '/workspace/node-profile.mjs'],
+                                     10, invoke=invoke, find_executable=lambda _: '/usr/bin/docker',
+                                     source_root='/app', workspace_read_only=True, profile_output=destination)
+                self.assertEqual(report['image'], pinned)
+                self.assertEqual(report['profile_path'], str(destination.resolve()))
+                self.assertRegex(report['profile_sha256'], r'^[0-9a-f]{64}$')
+                self.assertEqual(destination.read_bytes(), payload)
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+                self.assertTrue(all(not path.exists() for path in ephemeral))
+                self.assertTrue(report['cleanup_confirmed'])
+
+    def test_profile_input_must_use_scoped_read_only_helper_without_other_artifacts(self):
+        for command, changed in (
+            (['node', '/app/other.mjs'], {}),
+            (['node', '/workspace/node-profile.mjs'], {'workspace_read_only': False}),
+            (['node', '/workspace/node-profile.mjs'], {'source_root': '/workspace'}),
+            (['node', '/workspace/node-profile.mjs'], {'screenshot_output': self.workspace / 'target.png'}),
+            (['node', '/workspace/node-profile.mjs'], {'regression_source': b'console.log(1)'}),
+            (['node', '/workspace/node-profile.mjs'], {'profile_output': self.workspace / 'target.json'}),
+        ):
+            with self.subTest(command=command, changed=changed):
+                options = {'workspace_read_only': True, 'source_root': '/app',
+                           'profile_output': self.workspace / 'target.cpuprofile'}
+                with self.assertRaisesRegex(SandboxError, 'scoped profile input'):
+                    run_sandbox(self.workspace, 'example', command, 10, invoke=self.fake,
+                                find_executable=lambda _: '/usr/bin/docker', **{**options, **changed})
+        self.assertEqual(self.calls, [])
+
+    def test_scoped_profile_rejects_symlink_and_existing_destination(self):
+        pinned = 'sha256:' + 'a' * 64
+        destination = self.workspace / 'saved.cpuprofile'
+        destination.write_bytes(b'original')
+        for symlink in (True, False):
+            with self.subTest(symlink=symlink):
+                def invoke(args, **kwargs):
+                    if args[1:3] == ['image', 'inspect']:
+                        return subprocess.CompletedProcess(args, 0, stdout=pinned + '\nnull\n', stderr='')
+                    if args[1] == 'create':
+                        bind = next(arg for arg in args if arg.endswith('dst=/artifacts'))
+                        source = Path(bind.split(',')[1].removeprefix('src=')) / 'cpu.cpuprofile'
+                        if symlink:
+                            source.symlink_to(destination)
+                        else:
+                            source.write_bytes(b'replacement')
+                    return self.fake(args, **kwargs)
+
+                report = run_sandbox(self.workspace, 'example:latest', ['node', '/workspace/node-profile.mjs'],
+                                     10, invoke=invoke, find_executable=lambda _: '/usr/bin/docker',
+                                     source_root='/app', workspace_read_only=True, profile_output=destination)
+                self.assertIn('cannot collect runtime profile', report['error'])
+                self.assertNotIn('profile_sha256', report)
+                self.assertEqual(destination.read_bytes(), b'original')
+                self.assertTrue(report['cleanup_confirmed'])
 
     def test_cleanup_failure_is_reported_not_success(self):
         def failed_cleanup(args, **kwargs):

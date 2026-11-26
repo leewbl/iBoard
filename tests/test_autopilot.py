@@ -1294,6 +1294,22 @@ class AutopilotTests(unittest.TestCase):
             autopilot.run(self.task, self.issue, 'image', model=self.model, check=check)
         self.assertEqual(cli.read(self.task)['iterations'], 1)
 
+    def test_confirmed_child_oom_pauses_without_spending_a_repair_iteration(self):
+        def check(**kwargs):
+            if kwargs['kind'] == 'resolution':
+                report = self.task.parent / 'oom.json'
+                cli.write(report, {'exit_code': 2, 'cleanup_confirmed': True,
+                                   'runtime_diagnostics': {'classification': 'docker-oom',
+                                                           'oom_events': [{'time_ns': 100}]}})
+                raise workflow.WorkflowError(f'check failed; raw report saved at {report}')
+            return self.check(**kwargs)
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'Docker reported an out-of-memory event'):
+            autopilot.run(self.task, self.issue, 'image', model=self.model, check=check)
+        self.assertEqual(cli.read(self.task)['iterations'], 1)
+        failure = json.loads((self.task.parent / 'verification-failure-1.json').read_text())
+        self.assertEqual(failure['runtime_diagnostics']['oom_events'], [{'time_ns': 100}])
+
     def test_credentials_are_not_committed(self):
         def model(workspace, prompt, timeout, *, read_only):
             result = self.model(workspace, prompt, timeout, read_only=read_only)

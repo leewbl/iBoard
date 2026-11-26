@@ -725,6 +725,7 @@ def _failure_details(task, error):
     content = ''
     execution_blocked = False
     diagnostics = ''
+    runtime = None
     match = re.search(r'raw report saved at (.+)$', message)
     if match:
         try:
@@ -735,13 +736,17 @@ def _failure_details(task, error):
                 diagnostics = _repair_context(raw_report)
                 try:
                     report = json.loads(raw_report)
+                    runtime = report.get('runtime_diagnostics')
                     execution_blocked = bool(report.get('error') or report.get('timed_out') or
-                                             not report.get('cleanup_confirmed'))
+                                             not report.get('cleanup_confirmed') or workflow.docker_oom(report))
                 except (ValueError, AttributeError):
                     execution_blocked = True
         except (OSError, UnicodeError):
             pass
-    return {'reason': message, 'report': content, 'diagnostics': diagnostics, 'execution_blocked': execution_blocked}
+    result = {'reason': message, 'report': content, 'diagnostics': diagnostics, 'execution_blocked': execution_blocked}
+    if isinstance(runtime, dict):
+        result['runtime_diagnostics'] = runtime
+    return result
 
 
 def run(task_path, issue_path, image, **kwargs):
@@ -1501,6 +1506,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if replay_candidate:
                 raise AutopilotError(f'replayed phase failed fresh verification; evidence saved at {failure_path}')
             if failure.get('execution_blocked'):
+                if workflow.docker_oom(failure):
+                    raise AutopilotError(f'Docker reported an out-of-memory event; failure saved at {failure_path}')
                 raise AutopilotError(f'verification environment unavailable; failure saved at {failure_path}')
             if cli.iteration_limit_reached(data):
                 raise AutopilotError(f'iteration limit reached; failure saved at {failure_path}')
