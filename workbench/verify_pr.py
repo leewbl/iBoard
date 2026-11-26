@@ -49,6 +49,7 @@ def _pair(reader, repo, number):
 def verify(*, task_id, repo, number, checkout, request, criteria, kind, surface, image, tasks_root,
            workspaces_root, seconds, memory_mb=2048, source_mode='workspace', candidate_image=None,
            build_source_image=False, expected_head=None, expected_base=None, plan=None, reader=None,
+           required_ci_workflows=None, local_verification=None,
            launch=start.start):
     if (not isinstance(repo, str) or not pr_watch.REPO.fullmatch(repo)
             or type(number) is not int or not 1 <= number <= 2_147_483_647
@@ -84,6 +85,7 @@ def verify(*, task_id, repo, number, checkout, request, criteria, kind, surface,
                    iterations=1, seconds=remaining, image=image, pr_repo=repo, tasks_root=tasks_root,
                    workspaces_root=workspaces_root, memory_mb=memory_mb, source_mode=source_mode,
                    candidate_image=candidate_image, build_source_image=build_source_image,
+                   required_ci_workflows=required_ci_workflows, local_verification=local_verification,
                    criteria=criteria, verification_target=target, implementer='pr-contributor')
     receipt = state.get('verification')
     if (state.get('phase') != 'complete' or not isinstance(receipt, dict) or receipt.get('verdict') != 'PASS'

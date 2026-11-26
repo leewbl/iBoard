@@ -718,7 +718,7 @@ def _openclaw_checks_pass(github, repo, number, pull, data, head, required):
                              for job in jobs if job.get('conclusion') == 'skipped'}
 
 
-def _required_workflows_pass(github, repo, number, pull, data, head, required):
+def _required_workflows_pass(github, repo, number, pull, data, head, required, *, base_branch='main'):
     """Verify the latest named PR runs directly; other successful checks do not imply CI ran."""
     for name in required:
         runs = github._call('run', 'list', '--repo', repo, '--workflow', name,
@@ -745,7 +745,7 @@ def _required_workflows_pass(github, repo, number, pull, data, head, required):
         prs = details.get('pull_requests')
         if not isinstance(prs, list) or not any(
                 isinstance(pr, dict) and pr.get('number') == int(number) and
-                isinstance(pr.get('base'), dict) and pr['base'].get('ref') == 'main' and
+                isinstance(pr.get('base'), dict) and pr['base'].get('ref') == base_branch and
                 pr['base'].get('sha') == data['base_commit'] and
                 isinstance(pr.get('head'), dict) and pr['head'].get('ref') == pull.get('headRefName') and
                 pr['head'].get('sha') == head for pr in prs):
