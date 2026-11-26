@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from workbench.investigate import SOURCES as INVESTIGATION_SOURCES
 from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
 
 
@@ -39,6 +40,8 @@ def main():
                 {'phase': phase, 'kind': kind}
                 for (phase, kind), (sources, _) in PROFILES.items() if source in sources
             ],
+            'native_commands': [f'python3 -m workbench.investigate {mode}'
+                                for mode, path in INVESTIGATION_SOURCES.items() if path == source],
         }
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

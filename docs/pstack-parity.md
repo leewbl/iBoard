@@ -16,6 +16,8 @@ python3 scripts/update_pstack_catalog.py /path/to/pinned-cursor-plugins --check
 
 iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/feature 规划、基线审查、实现、修复和终审。模型回执的 `workflow_guidance` 记录来源路径和实际所用提示词的哈希。目录用于查询，上游文档和脚本不会被直接交给执行器。
 
+只读调研可用 [`workbench.investigate`](../skills/investigate/SKILL.md) 或 Claude Code 的 `/agent-workbench:investigate` 启动。指定提交和文件即可运行 `how`、`why`、`teach` 或 `investigation`。合成模式分别向源码与历史阶段提供证据，再汇总为统一说明，保留两边的未知项。报告记录实际引用的源码行和提交、模型调用时间及提示词哈希。历史阶段可用 `--pr` 纳入用户明确选定、能与所选 Git 历史关联的 PR 正文和有界讨论摘录。
+
 | 能力 | iBoard 状态 | 等效能力的验收条件 |
 | --- | --- | --- |
 | 项目验证和功能地图 | 已有 Gateway 健康检查。本分支新增技能发现与状态检查。 | 从空状态启动或运行真实命令，完成明确的用户操作，记录结果、副作用和清理。回归脚本能检出已知错误。 |
@@ -27,7 +29,7 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/
 | 自主运行、暂停与恢复 | 有按任务预算、锁、恢复入口和修复循环。 | 在受控失败、工具超时及中断后安全恢复或明确阻断，回放不会重复写入远端，任务状态与产物一致。 |
 | 并行研究、方案比较和任务分派 | 实验有独立主体，常规入口以单任务为主。 | 独立任务并行时遵守资源限额，比较方案用同一条件和证据，存在共享写入时可安全排序。 |
 | PR 创建、跟踪、合并和 PR 栈 | 已有单 PR 创建与个人 fork 合并门禁，历史任务分别验证过。 | 跟踪同一 PR 的候选变化、检查和阻断项，安全验证并交付有依赖的多 PR 变更。 |
-| 调研、复盘、交接和工作流生成 | 已有保留的实验报告与任务记录。 | 工程调研和决策可追溯，阶段接续能从记录恢复上下文，将验证过的流程沉淀为可复用技能。 |
+| 调研、复盘、交接和工作流生成 | 已有实验报告、任务记录和只读调研入口。可按用户选择关联 GitHub PR。 | 从任务记录恢复上下文和复盘后生成技能。 |
 | 宿主集成 | iBoard 提供 Claude Code 插件和 Python 入口。 | 对照 [pstack 的 Claude Code 适配说明](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/docs/harness/claude-code.md)，对依赖 Cursor Automations、云代理或 Bugbot 的能力提供独立实现，或者记录具体的外部依赖及真实运行证据。 |
 
 公开功能目录是核对入口。每个功能仍需单独记录指令、测试环境、通过条件和运行证据。Lauren Tan 的生产案例用于理解工作方式，交付规模与团队内部环境另需实际测量。
