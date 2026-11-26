@@ -12,9 +12,9 @@ class RuntimeForensicsTests(unittest.TestCase):
             {'id': 4, 'callFrame': {'functionName': 'untracked', 'url': 'file:///app/missing.mjs', 'lineNumber': 0}},
         ], 'samples': [1, 2, 3, 4], 'timeDeltas': [1000, 3000, 1000, 1000]}
         report = forensics.summarize_cpu(data, lambda path: 8 if path == 'src/work.mjs' else 0)
-        self.assertEqual(report['sampled_ms'], 6)
+        self.assertEqual(report['sampled_ms'], 5)
         self.assertEqual(report['hot_frames'], [{'symbol': 'hotLoop', 'path': 'src/work.mjs', 'line': 3,
-                                                'sampled_ms': 4, 'share_pct': 66.67}])
+                                                'sampled_ms': 4, 'share_pct': 80.0}])
         data['samples'][0] = 99
         with self.assertRaisesRegex(forensics.ForensicsError, 'unknown frame'):
             forensics.summarize_cpu(data, lambda _: 0)

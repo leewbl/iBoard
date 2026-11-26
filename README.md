@@ -83,6 +83,8 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 [运行时诊断](skills/runtime-forensics/SKILL.md)在断网 Docker 中采集 Node CPU profile 和堆快照，保留原始文件、源码版本、热点或引用链。失败的沙箱运行会记录对应容器的状态和 OOM 事件。确认是 Docker OOM 时暂停验证并保留候选和证据。
 
+[离线轨迹分析](skills/trace-forensics/SKILL.md)可导入已有的 CPU profile、V8 堆快照、Chrome 轨迹和支持的 macOS 采样文本，生成带原始文件校验值的 SQLite 数据库。可以查询热点、引用链或线程调用栈，再对照同一格式的前后两份记录。
+
 ### 工作台插件原型
 
 从终端加载本地插件（插件加载不代表任务已执行）：

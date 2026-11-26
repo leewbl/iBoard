@@ -5,6 +5,7 @@ from array import array
 from collections import Counter, deque
 from datetime import datetime, timezone
 import hashlib
+from itertools import accumulate
 import json
 from pathlib import Path
 import re
@@ -57,11 +58,14 @@ def summarize_cpu(profile, source_lines):
     frames = {node['id']: node['callFrame'] for node in nodes}
     if len(frames) != len(nodes) or not all(type(item) is int and item in frames for item in samples):
         raise ForensicsError('CPU samples reference unknown frame IDs')
-    if not all(type(delta) is int and delta >= 0 for delta in deltas) or not sum(deltas):
+    if not all(type(delta) is int for delta in deltas):
         raise ForensicsError('CPU profile has an invalid time axis')
+    positions = sorted(zip(accumulate(deltas), samples), key=lambda sample: sample[0])
+    if positions[0][0] < 0:
+        raise ForensicsError('CPU sample timestamp precedes the profile start')
     durations = Counter()
-    for frame_id, delta in zip(samples, deltas):
-        durations[frame_id] += delta
+    for (offset, frame_id), (next_offset, _) in zip(positions, positions[1:]):
+        durations[frame_id] += next_offset - offset
     own = Counter()
     for frame_id, value in durations.items():
         frame = frames[frame_id]
@@ -75,7 +79,7 @@ def summarize_cpu(profile, source_lines):
             'application_sampled_ms': round(sum(own.values()) / 1000, 3),
             'hot_frames': [{'path': path, 'line': line, 'symbol': symbol or '(anonymous)',
                             'sampled_ms': round(value / 1000, 3), 'share_pct': round(100 * value / total, 2)}
-                           for (path, line, symbol), value in own.most_common(15)]}
+                           for (path, line, symbol), value in own.most_common(15) if total and value]}
 
 
 def summarize_heap(profile, class_name):
