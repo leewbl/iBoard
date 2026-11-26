@@ -25,6 +25,8 @@ class PstackHelpTests(unittest.TestCase):
             'resume-task': 'resume',
             'generate-verify': 'project_verify create',
             'maintain-verify': 'project_verify maintain',
+            'create-formal-verify': 'formal_verify create',
+            'maintain-formal-verify': 'formal_verify maintain',
         }
         for name, command in expected.items():
             with self.subTest(name=name):
@@ -47,7 +49,6 @@ class PstackHelpTests(unittest.TestCase):
 
     def test_catalog_only_and_prompt_guidance_have_no_runnable_route(self):
         for name, expected_status in (
-            ('/pstack:create-formal-verification-skill', 'catalog-only'),
             ('autopilot-full', 'catalog-only'),
             ('setup-pstack', 'catalog-only'),
             ('principle-prove-it-works', 'guidance-only'),

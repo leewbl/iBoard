@@ -115,6 +115,16 @@ SCENARIOS = {
         'Check project verification against a new revision', 'skills/maintain-verification-skill/SKILL.md',
         'skills/maintain-verification-skill/SKILL.md', 'project_verify maintain',
         'Source-drift findings, rerun receipts and skipped or blocked journeys'),
+    'create-formal-verify': Scenario(
+        'Verify a named property and generate its local skill', 'skills/create-formal-verification-skill/SKILL.md',
+        'skills/create-formal-verification-skill/SKILL.md', 'formal_verify create',
+        'Source anchors, declared scope, positive checks and a counterexample from a real-code mutation',
+        'Provide a runnable verifier and its dependencies in the exact local source image.'),
+    'maintain-formal-verify': Scenario(
+        'Sync a property check with newer code', 'skills/maintain-formal-verification-skill/SKILL.md',
+        'skills/maintain-formal-verification-skill/SKILL.md', 'formal_verify maintain',
+        'Commit review, as-installed result, new verification, negative control and a separate diff',
+        'An independently reproduced witness is required to report a product bug.'),
     'check-performance': Scenario(
         'Verify a performance claim against a baseline', 'skills/benchmark-checklist/SKILL.md',
         'skills/benchmark-checklist/SKILL.md', 'benchmark', 'Controlled workload, execution samples and comparable results'),

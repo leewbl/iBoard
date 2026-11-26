@@ -77,6 +77,8 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 在 Claude Code 中使用 [`/agent-workbench:poteto-help`](skills/poteto-help/SKILL.md) 查询适合当前任务的入口。也可运行 `python3 -m workbench.pstack_help scenario pr-status` 查看入口、前置条件和应保留的证据，或用 `show` 查询指定 pstack 技能的接入状态。
 
+[创建和维护形式化验证技能](skills/create-formal-verification-skill/SKILL.md) 支持按源码定义一项属性，并在断网容器中检验指定范围与反例。可从 [OpenClaw 命令队列示例](examples/formal/openclaw-command-lane/README.md) 开始。
+
 [verify-openclaw](skills/verify-openclaw/SKILL.md) 在断网 Docker 中验证 Gateway 启动和健康检查。技能与配置改动触发对应的 CLI 场景。会话界面相关改动触发浏览器验收，核对取消改名时无写入，以及保存后重启 Gateway 仍能读回同一会话的新名称。交付前，必跑场景需要同一候选镜像的两份通过报告和一次独立审查。使用 `--source-mode image --build-source-image` 启动交付任务，涉及浏览器验收时需在本地基线镜像预装 Chromium。仅提交 PR 时加 `--publish-only`。
 
 [生成项目验证技能](skills/create-verification-skill/SKILL.md)可把已有的源码锚点和真实场景封装为项目自己的功能地图。[维护验证技能](skills/maintain-verification-skill/SKILL.md)对照选定的 Git 版本逐条重跑，所有场景通过后才导出地图修订。
