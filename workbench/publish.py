@@ -416,14 +416,13 @@ def _pr_body(data, head):
             summary, excerpt = _report_summary(data, item, commit)
             body += f"- {summary}; commit `{commit}`; report SHA-256 `{item['sha256']}`\n"
             body += '\n' + '\n'.join('      ' + line for line in excerpt.splitlines()) + '\n'
-    gateway = _require_gateway(data, head, data.get('delivery_repo'))
-    if gateway:
-        author, verifier = gateway
-        body += ('\n## Offline Gateway verification\n\n'
-                 'The implementer and independent verifier used separate containers on the same source-verified '
-                 'image. Both completed startup, HTTP readiness and liveness, the real CLI health query, and cleanup.\n\n'
-                 f"- Implementer report SHA-256: `{author['sha256']}`\n"
-                 f"- Independent rerun report SHA-256: `{verifier['sha256']}`\n")
+    journeys = _require_gateway(data, head, data.get('delivery_repo'))
+    if journeys:
+        body += ('\n## Offline OpenClaw verification\n\n'
+                 'Each journey passed in two separate containers on the same source-verified image.\n\n')
+        for journey, (author, verifier) in journeys.items():
+            body += (f"- `{journey}` implementer report SHA-256: `{author['sha256']}`\n"
+                     f"- `{journey}` independent rerun report SHA-256: `{verifier['sha256']}`\n")
     body += '\nLog excerpts are bounded and common credentials, URLs, email addresses, and paths are redacted.\n'
     if len(body.encode('utf-8')) > 60000:
         raise PublishError('PR evidence summary exceeds the publication size limit')

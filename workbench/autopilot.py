@@ -1091,10 +1091,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError(str(error)) from error
             else:
                 guard_results = []
-            for actor_name, journey in zip((actor, verifier), journey_results):
+            for journey in journey_results:
                 cli.evidence_add(argparse.Namespace(
-                    file=journey['report'], kind='runtime-log', commit=candidate, actor=actor_name,
-                    description='Offline OpenClaw Gateway verification', criterion=[]), data)
+                    file=journey['report'], kind='runtime-log', commit=candidate, actor=journey['actor'],
+                    description=f"Offline OpenClaw verification: {journey['journey']}", criterion=[]), data)
             # A structured record is a statement, not a semantic proof by itself.
             review_path = task.parent / f'independent-review-{uuid.uuid4().hex}.json'
             ids = [criterion['id'] for criterion in data['criteria']]
