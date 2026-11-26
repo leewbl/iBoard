@@ -35,16 +35,19 @@ class LocalGateResumeTests(unittest.TestCase):
     def test_real_resume_passes_existing_reverify_option(self):
         self.select()
         stage = self.task.parent / 'input-stage.json'
-        cli.write(stage, {'schema': cli.SCHEMA})
         settings = {'image': 'image', 'pr_repo': 'alice/project', 'source_mode': 'image',
                     'candidate_image': None, 'build_source_image': True, 'memory_mb': 4096}
+        for name in ('issue.txt', 'input-base.txt'):
+            self.task.with_name(name).write_text('retained request')
+        fingerprint = cli.digest(self.task.with_name('issue.txt'))
+        cli.write(stage, {'schema':cli.SCHEMA, 'phase':'ready', 'input_digest':None,
+                          'base_digest':fingerprint, 'request_digest':fingerprint, 'run_settings':settings})
         calls = []
         def run(*args, **kwargs):
             calls.append(kwargs)
             self.assertEqual(cli.read(self.state)['phase'], 'delivery')
             return {'phase': 'verify'}
-        with patch('workbench.start._finish_screenshots', return_value={'run_settings': settings}):
-            start.resume_task(self.task, run=run)
+        start.resume_task(self.task, run=run)
         self.assertTrue(calls[0]['reverify'])
 
     def test_rejects_dirty_or_changed_delivery_before_configuring(self):

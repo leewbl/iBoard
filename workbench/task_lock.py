@@ -6,6 +6,7 @@ from functools import wraps
 from inspect import signature
 import os
 from pathlib import Path
+import stat
 
 
 class TaskBusy(OSError):
@@ -13,6 +14,28 @@ class TaskBusy(OSError):
 
 
 _held = ContextVar('workbench_task_locks', default=frozenset())
+
+
+@contextmanager
+def observe_task_lock(task):
+    """Observe an existing lock and keep idle records stable during inspection."""
+    path = task.parent / '.task.lock'
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+    except FileNotFoundError:
+        yield 'not-recorded'
+        return
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError('task lock is not a regular file')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield 'held'
+        else:
+            yield 'idle'
+    finally:
+        os.close(fd)
 
 
 @contextmanager

@@ -20,8 +20,10 @@ class StartError(Exception):
     pass
 
 
-def _finish_screenshots(task, *, vision):
+def _read_input_stage(task):
     stage_path = task.parent / 'input-stage.json'
+    if stage_path.is_symlink() or not stage_path.is_file():
+        raise StartError('retained input-stage.json is missing or unsafe; original input cannot be verified')
     stage = cli.read(stage_path)
     if autopilot._input_digest(task) != stage['input_digest']:
         raise StartError('input snapshot changed')
@@ -32,9 +34,26 @@ def _finish_screenshots(task, *, vision):
     if stage['phase'] == 'ready':
         if request.is_symlink() or cli.digest(request) != stage['request_digest']:
             raise StartError('prepared task input changed')
-        return stage
-    if stage['phase'] != 'screenshots':
+    elif stage['phase'] != 'screenshots':
         raise StartError('invalid input preparation phase')
+    settings = stage.get('run_settings')
+    if (not isinstance(settings, dict) or
+            not {'image', 'pr_repo', 'source_mode', 'candidate_image', 'build_source_image', 'memory_mb'} <= settings.keys()
+            or not isinstance(settings['image'], str) or not settings['image']
+            or settings['source_mode'] not in ('workspace', 'image')
+            or type(settings['memory_mb']) is not int or not 128 <= settings['memory_mb'] <= 8192):
+        raise StartError('retained execution settings are missing or invalid')
+    return stage
+
+
+def _finish_screenshots(task, *, vision, stage=None):
+    if stage is None:
+        stage = _read_input_stage(task)
+    if stage['phase'] == 'ready':
+        return stage
+    stage_path = task.parent / 'input-stage.json'
+    base_path = task.parent / 'input-base.txt'
+    request = task.parent / 'issue.txt'
     manifest = json.loads((task.parent / 'inputs/manifest.json').read_text(encoding='utf-8'))
     images = manifest['screenshots']
     descriptions = stage['descriptions']
@@ -81,19 +100,20 @@ def _resume_locked(task_path, *, run, vision):
     resumed = False
     try:
         data = cli.read(task)
+        state_path = task.parent / 'autopilot.json'
+        if state_path.is_file() and cli.read(state_path).get('phase') == 'complete':
+            raise StartError('completed task cannot be resumed; use --inspect to look up the outcome')
         if data['status'] != 'paused':
             raise StartError('only paused tasks can be resumed; inspect any active process first')
         if cli.enforce_budget(data):
             raise StartError('task budget exceeded; an explicitly authorized increase is required')
-        stage_path = task.parent / 'input-stage.json'
-        if not stage_path.is_file() or stage_path.is_symlink():
-            raise StartError('retained input-stage.json is missing or unsafe; original input and execution settings cannot be verified automatically; preserve the task and investigate its retained evidence')
+        stage = _read_input_stage(task)
         data['status'] = 'running'
         data['events'].append({'at': cli.now(), 'type': 'resume', 'reason': 'resume retained task'})
         cli.write(task, data)
         resumed = True
         autopilot._remaining(data)
-        stage = _finish_screenshots(task, vision=vision)
+        stage = _finish_screenshots(task, vision=vision, stage=stage)
         settings = stage['run_settings']
         options = {}
         if cli.read(task).get('local_gate_reverify') is not None:
