@@ -208,6 +208,13 @@ def gate(data, expected):
     if data['status'] != 'running':
         issues.append(f"task is {data['status']}, not running")
     issues += enforce_budget(data)
+    head, evidence_issues = evidence_gate(data, expected)
+    return head, issues + evidence_issues
+
+
+def evidence_gate(data, expected):
+    """Audit acceptance bound to the current worktree without authorizing work."""
+    issues = []
     if not data['criteria']:
         issues.append('no acceptance criteria recorded')
     for change in data['criterion_changes']:
@@ -245,6 +252,8 @@ def gate(data, expected):
             valid.append(e)
     kinds = {e['kind'] for e in valid}
     required = {'reproduction', 'resolution', 'test-result', 'independent-review'} if data['kind'] == 'bug' else {'feature-doc', 'test-result', 'independent-review'}
+    if 'verification_target' in data:
+        required.update(('reproduction', 'resolution'))
     required.add('screenshot' if data['surface'] == 'ui' else 'runtime-log')
     for missing in sorted(required - kinds):
         issues.append(f'missing valid {missing} evidence')

@@ -221,6 +221,8 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
     """Close a specified issue only after its exact candidate PR is merged."""
     github = github or GitHub()
     data = cli.read(Path(task_path))
+    if 'verification_target' in data:
+        raise DeliveryError('verification-only task does not authorize issue closure')
     issue = own_issue_number(data.get('source'), repo) if data.get('kind') == 'bug' else None
     if issue is None:
         return {'closed': False, 'reason': 'task does not name an issue in the destination repository'}
@@ -422,7 +424,7 @@ def _independent_verification(data, target, *, destination=None):
         except DeliveryError:
             continue
         required = [('test-result', target)]
-        if data['kind'] == 'bug':
+        if data['kind'] == 'bug' or 'verification_target' in data:
             required += [('reproduction', data['base_commit']), ('resolution', target)]
         if all(any(_valid_run(evidence, actor, kind, commit, data['repo']) for evidence in data['evidence'])
                for kind, commit in required):
@@ -439,7 +441,7 @@ def _independent_verification(data, target, *, destination=None):
                     verify_openclaw.require(data, target, destination, review_item=item)
                 except verify_openclaw.GatewayGateError:
                     continue
-            return
+            return item
     raise DeliveryError('independent PASS and independent sandbox reruns are not proven')
 
 
@@ -771,6 +773,8 @@ def guarded_merge(task_path, repo, number, github=None):
         raise DeliveryError('invalid repository or pull request number')
     github = github or GitHub()
     data = cli.read(Path(task_path))
+    if 'verification_target' in data:
+        raise DeliveryError('verification-only task does not authorize merging')
     local_policy = data.get('local_gate')
     try:
         required_workflows = workflow.validate_required_ci_workflows(data.get('required_ci_workflows'), required=not local_policy)

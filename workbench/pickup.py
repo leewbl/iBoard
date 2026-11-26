@@ -156,6 +156,20 @@ def _inspect(task, lock, since):
         if report['pr']:
             report['outcome'] = 'merge-recorded'
     if phase == 'complete':
+        verification = state.get('verification')
+        target = data.get('verification_target')
+        if (isinstance(target, dict) and isinstance(verification, dict)
+                and state.get('verification_target') == target and verification.get('verdict') == 'PASS'
+                and verification.get('base') == data['base_commit'] == target.get('base')
+                and verification.get('head') == candidate == target.get('head') == head and dirty is False
+                and (verification.get('repo'), verification.get('pr')) == (target.get('repo'), target.get('pr'))
+                and isinstance(verification.get('review'), str)
+                and verification['review'] == report['bound_review_record']
+                and any(item['path'] == verification['review'] and item['sha256'] == verification.get('review_sha256')
+                        for item in report['evidence']['retained']) and not report['evidence']['invalid']):
+            report['pr'] = _pr_identity(verification, candidate)
+            if report['pr']:
+                report['outcome'] = 'verification-recorded'
         if 'outcome' not in report and data.get('publish_only') is True and report.get('pr'):
             report['outcome'] = 'publication-recorded'
         report['execution'] = 'complete' if 'outcome' in report else 'needs-inspection'
@@ -206,7 +220,10 @@ def inspect(task_path, *, since=None, check_pr=False, github=None):
             same_head = observed.get('headRefOid') == pr['candidate']
             pr.update(state=observed['state'], observed_at=cli.now(), head_matches=same_head,
                       head=observed.get('headRefOid'), checks=_checks(observed.get('statusCheckRollup')))
-            if not same_head or (report.get('outcome') == 'merge-recorded' and observed['state'] != 'MERGED'):
+            if report.get('outcome') == 'verification-recorded':
+                pr['base_matches'] = observed.get('baseRefOid') == report['base']
+            if (not same_head or pr.get('base_matches') is False
+                    or (report.get('outcome') == 'merge-recorded' and observed['state'] != 'MERGED')):
                 report['execution'] = 'needs-inspection'
                 report['next'] = 'reconcile-pr-with-recorded-candidate'
         except (delivery.DeliveryError, OSError, ValueError, AttributeError):

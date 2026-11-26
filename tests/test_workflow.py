@@ -203,6 +203,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(cli.read(task)['evidence']), 1)
         self.assertEqual(len(list(Path(task).parent.glob('reproduction-*.json'))), 2)
 
+    def test_feature_parent_check_requires_a_bound_existing_pr(self):
+        task = Path(self.prepare()['task'])
+        self.criterion(task)
+        data = cli.read(task)
+        data['kind'] = 'feature'
+        cli.write(task, data)
+        arguments = dict(task=task, kind='reproduction', image='local-image', command=['/workspace/test-command'],
+                         timeout=10, expect_exit=0, marker='PRIOR', actor='independent-verifier',
+                         description='observe prior feature behavior')
+        with self.assertRaisesRegex(workflow.WorkflowError, 'baseline commit'):
+            workflow.run_check(**arguments, runner=lambda *_:self.fail('unbound run reached the sandbox'))
+        data['verification_target'] = {'base':data['base_commit']}
+        cli.write(task, data)
+        result = workflow.run_check(**arguments, runner=lambda *_:{
+            'exit_code':0, 'stdout':'PRIOR', 'cleanup_confirmed':True, 'timed_out':False,
+        })
+        self.assertEqual(result['commit'], data['base_commit'])
+        proof = cli.read(task)['evidence'][0]
+        self.assertEqual((proof['actor'], proof['kind']), ('independent-verifier', 'reproduction'))
+
     def test_nonisolated_or_unexpected_results_cannot_be_recorded(self):
         task = self.prepare()['task']
         self.criterion(task)

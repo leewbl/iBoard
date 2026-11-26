@@ -165,7 +165,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           iterations, seconds, image, pr_repo=None, tasks_root, workspaces_root,
           source_mode='workspace', candidate_image=None, build_source_image=False, memory_mb=2048,
           log_files=(), screenshot_files=(), required_ci_workflows=None, ci_skip_policy=None, ci_skip_reason=None,
-          publish_only=False, implementer='glm-implementer', prepare=workflow.prepare, run=autopilot.run,
+          publish_only=False, verification_target=None, criteria=(), implementer='glm-implementer',
+          prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
         raise StartError('provide exactly one issue file or GitHub issue URL')
@@ -179,8 +180,11 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         return value
     if pr_repo and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pr_repo):
         raise StartError('invalid personal fork name')
+    if verification_target is not None and (not criteria or not pr_repo or publish_only or screenshot_files):
+        raise StartError('existing PR verification requires frozen criteria, repository, and a completed request')
     try:
-        required_ci_workflows = workflow.validate_required_ci_workflows(required_ci_workflows, required=bool(pr_repo) and not publish_only)
+        required_ci_workflows = workflow.validate_required_ci_workflows(
+            required_ci_workflows, required=bool(pr_repo) and not publish_only and verification_target is None)
         ci_skip_policy = workflow.validate_ci_skip_policy(ci_skip_policy, ci_skip_reason, required_ci_workflows)
     except workflow.WorkflowError as error:
         raise StartError(str(error)) from error
@@ -246,11 +250,12 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('cannot inspect the local Docker image') from error
     if inspected.returncode:
         raise StartError('Docker image must already exist locally')
+    baseline = {'base_commit':verification_target['base']} if verification_target is not None else {}
     info = prepare(task_id=task_id, repo=repo, tasks_root=tasks_root, workspaces_root=workspaces_root,
                    source=origin, kind=kind, surface=surface, iterations=iterations,
                    seconds=seconds, implementer=implementer, started_at=began.isoformat(),
                    required_ci_workflows=required_ci_workflows,
-                   ci_skip_policy=ci_skip_policy, ci_skip_reason=ci_skip_reason)
+                   ci_skip_policy=ci_skip_policy, ci_skip_reason=ci_skip_reason, **baseline)
     task = Path(info['task'])
     request = task.parent / 'issue.txt'
     print(json.dumps({'event': 'task-created', **info}, ensure_ascii=False), flush=True)
@@ -262,6 +267,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 if publish_only:
                     data['publish_only'] = True
                 cli.write(task, data)
+                if criteria:
+                    autopilot._add_criteria(task, criteria)
                 request.write_text(issue_with_logs, encoding='utf-8')
                 request.chmod(0o600)
                 if logs or screenshots:
@@ -294,6 +301,13 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 }
                 if not screenshots:
                     stage['request_digest'] = cli.digest(request)
+                if verification_target is not None:
+                    data = cli.read(task)
+                    data['verification_target'] = {
+                        **verification_target, 'request_digest':stage['request_digest'],
+                        'criterion_digest':cli.criteria_digest(data), 'settings':stage['run_settings'],
+                    }
+                    cli.write(task, data)
                 cli.write(task.parent / 'input-stage.json', stage)
                 if screenshots:
                     _finish_screenshots(task, vision=vision)

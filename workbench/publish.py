@@ -552,6 +552,8 @@ def publish(task_path, repo, github=None):
         raise PublishError('invalid repository')
     task_path = Path(task_path)
     data = cli.read(task_path)
+    if 'verification_target' in data:
+        raise PublishError('verification-only task does not authorize publishing')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
     head, issues = cli.gate(data, 'HEAD')
@@ -630,6 +632,8 @@ def republish(task_path, repo, number, previous_head, github=None):
         raise PublishError('invalid previously published revision')
     task_path = Path(task_path)
     data = cli.read(task_path)
+    if 'verification_target' in data:
+        raise PublishError('verification-only task does not authorize publishing')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
     head, issues = cli.gate(data, 'HEAD')

@@ -375,10 +375,13 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     else:
         raise WorkflowError('unknown source mode')
     if kind == 'reproduction':
-        if data['kind'] != 'bug' or head != data['base_commit']:
-            raise WorkflowError('reproduction must run on the bug baseline commit')
+        target = data.get('verification_target')
+        feature_comparison = (data['kind'] == 'feature' and isinstance(target, dict)
+                              and target.get('base') == data['base_commit'])
+        if head != data['base_commit'] or (data['kind'] != 'bug' and not feature_comparison):
+            raise WorkflowError('reproduction must run on a bug or existing PR baseline commit')
         if not marker:
-            raise WorkflowError('reproduction needs an observable failure marker')
+            raise WorkflowError('reproduction needs an observable baseline marker')
     remaining = timeout if data['limits']['seconds'] is None else data['limits']['seconds'] - (
         datetime.now(timezone.utc) - datetime.fromisoformat(data['started_at'])).total_seconds()
     if remaining <= 0:

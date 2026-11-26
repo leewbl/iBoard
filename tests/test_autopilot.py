@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from test_runner import tiny_png
 
-from workbench import autopilot, cli, delivery, workflow
+from workbench import autopilot, cli, delivery, pickup, publish, stack_verify, workflow
 
 
 class CompletedCI:
@@ -407,6 +407,91 @@ class AutopilotTests(unittest.TestCase):
         self.assertNotIn('implement', self.calls)
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
         self.assertEqual(cli.read(self.task)['status'], 'paused')
+
+    def _pin_existing_pr(self):
+        base = cli.sha(self.workspace, 'HEAD')
+        (self.workspace / 'code.txt').write_text('fixed')
+        cli.git(self.workspace, 'add', 'code.txt')
+        cli.git(self.workspace, 'commit', '-qm', 'existing PR change')
+        head = cli.sha(self.workspace, 'HEAD')
+        cli.git(self.workspace, 'reset', '--hard', base)
+        frozen = self.task.with_name('issue.txt')
+        frozen.write_bytes(self.issue.read_bytes())
+        self.issue = frozen
+        self.task.with_name('input-base.txt').write_bytes(frozen.read_bytes())
+        data = cli.read(self.task)
+        data['source'] = data['original_source'] = 'https://github.com/user/fork/pull/12'
+        data['criteria'] = [{'id':'one', 'text':'correct behavior', 'revision':1}]
+        settings = {'image':'image', 'pr_repo':'user/fork', 'source_mode':'workspace',
+                    'candidate_image':None, 'build_source_image':False, 'memory_mb':2048}
+        request_digest = cli.digest(frozen)
+        cli.write(self.task.with_name('input-stage.json'), {
+            'schema':cli.SCHEMA, 'phase':'ready', 'base_digest':request_digest,
+            'request_digest':request_digest, 'input_digest':None, 'run_settings':settings,
+        })
+        data['verification_target'] = {'repo':'user/fork', 'pr':12, 'head':head, 'base':base,
+                                       'request_digest':request_digest, 'criterion_digest':cli.criteria_digest(data),
+                                       'settings':settings, 'plan':self.plan}
+        cli.write(self.task, data)
+        return head, base
+
+    def test_existing_pr_replays_verification_without_implementing_or_delivering(self):
+        head, base = self._pin_existing_pr()
+        never = lambda *args: self.fail('tried to write to GitHub during verification')
+        result = autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork',
+                               model=self.model, check=self.check, publisher=never, merge=never, closer=never)
+        self.assertEqual(result['phase'], 'complete')
+        self.assertEqual(result['verification']['head'], head)
+        self.assertEqual(result['verification']['base'], base)
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), head)
+        self.assertNotIn('implement', self.calls)
+        self.assertNotIn('plan', self.calls)
+        self.assertEqual(pickup.inspect(self.task)['outcome'], 'verification-recorded')
+        metadata = {'number':12, 'head':head, 'base':base}
+        proof = stack_verify._proof('user/fork', metadata, self.task)
+        self.assertEqual(proof['status'], 'verified')
+        self.assertEqual(proof['review_sha256'], result['verification']['review_sha256'])
+        self.assertEqual(stack_verify._proof('user/fork', {**metadata,'base':'0'*40}, self.task)['status'], 'stale')
+        with self.assertRaisesRegex(publish.PublishError, 'verification-only'):
+            publish.publish(self.task, 'user/fork')
+        with self.assertRaisesRegex(delivery.DeliveryError, 'verification-only'):
+            delivery.guarded_merge(self.task, 'user/fork', 12)
+
+    def test_failed_existing_pr_cannot_repair_or_rebind_the_pair_on_resume(self):
+        head, _ = self._pin_existing_pr()
+
+        def check(**args):
+            if args['kind'] == 'resolution':
+                raise workflow.WorkflowError('candidate behavior did not pass')
+            return self.check(**args)
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'existing PR verification failed'):
+            autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork', model=self.model, check=check)
+        state = cli.read(self.task.with_name('autopilot.json'))
+        self.assertNotIn('verification', state)
+        self.assertEqual(state['phase'], 'verify')
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), head)
+        data = cli.read(self.task)
+        self.assertEqual(data['status'], 'paused')
+        self.assertEqual(data['iterations'], 0)
+        data['status'] = 'running'
+        data['verification_target']['pr'] = 13
+        data['original_source'] = 'https://github.com/user/fork/pull/13'
+        cli.write(self.task, data)
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'changed after'):
+            autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork', model=self.model, check=check)
+
+    def test_existing_feature_replays_and_reviews_prior_behavior(self):
+        head, _ = self._pin_existing_pr()
+        data = cli.read(self.task)
+        data['kind'] = 'feature'
+        plan = data['verification_target']['plan']
+        plan.update(feature_doc='code.txt', baseline=plan.pop('reproduction'))
+        cli.write(self.task, data)
+        result = autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork',
+                               model=self.model, check=self.check)
+        self.assertEqual(result['verification']['head'], head)
+        self.assertEqual(self.calls[:3], ['reproduction:implementer', 'reproduction:independent-verifier', 'baseline-review'])
 
     def test_new_task_review_binds_impact_to_candidate_source_and_independent_runtime(self):
         data = cli.read(self.task)
