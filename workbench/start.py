@@ -169,12 +169,31 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           publish_only=False, verification_target=None, criteria=(), retained_contract=None,
           local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
           feature_arena_out=None, visual_baseline=None, visual_baseline_sha256=None,
+          refactor_contract=None, refactor_contract_sha256=None,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
         raise StartError('provide exactly one issue file or GitHub issue URL')
-    if kind not in ('bug', 'feature') or surface not in ('ui', 'non-ui') or iterations < 1 or seconds < 1:
+    if kind not in cli.TASK_KINDS or surface not in ('ui', 'non-ui') or iterations < 1 or seconds < 1:
         raise StartError('task kind, surface and positive limits are required')
+    refactor_input = None
+    if kind == 'refactor':
+        from workbench import refactor, refactor_delivery
+        if (not refactor_contract or not refactor_contract_sha256 or verification_target is not None
+                or source_mode != 'image' or not build_source_image or candidate_image is not None):
+            raise StartError('refactoring needs its frozen contract digest and a source-built image task')
+        try:
+            refactor_input = refactor_delivery.bind(refactor_contract, refactor_contract_sha256)
+            frozen = refactor.load_frozen(refactor_input['path'], refactor_input['sha256'])[0]
+        except refactor.ERRORS as error:
+            raise StartError(str(error)) from error
+        if memory_mb != frozen['memory_mb']:
+            raise StartError('refactoring must use the memory limit in its frozen contract')
+        if any(item.get('id') == cli.REFACTOR_CRITERION for item in criteria):
+            raise StartError('the frozen refactoring behavior criterion is supplied by iBoard')
+        criteria = (*criteria, {'id': cli.REFACTOR_CRITERION, 'text': cli.REFACTOR_CRITERION_TEXT})
+    elif refactor_contract is not None or refactor_contract_sha256 is not None:
+        raise StartError('refactor contracts apply to refactoring tasks')
     began = datetime.now(timezone.utc)
     def remaining():
         value = seconds - (datetime.now(timezone.utc) - began).total_seconds()
@@ -277,6 +296,14 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('cannot inspect the local Docker image') from error
     if inspected.returncode:
         raise StartError('Docker image must already exist locally')
+    if refactor_input:
+        try:
+            selected_image, = json.loads(inspected.stdout)
+            if selected_image.get('Id') != frozen['image']:
+                raise ValueError('different image')
+        except (AttributeError, TypeError, ValueError) as error:
+            raise StartError('refactoring must use the image in its frozen contract') from error
+        image = frozen['image']
     if feature_arena_out:
         from workbench import feature_arena
         try:
@@ -288,6 +315,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         except (OSError, ValueError, cli.WorkbenchError) as error:
             raise StartError(str(error)) from error
     baseline = {'base_commit':verification_target['base']} if verification_target is not None else {}
+    if refactor_input:
+        baseline['base_commit'] = frozen['baseline']
     if handoff is not None:
         if handoff.get('arena') and hashlib.sha256(issue.encode()).hexdigest() != handoff['arena']['request_sha256']:
             raise StartError('feature request differs from the Arena comparison')
@@ -317,6 +346,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                     from workbench import visual_parity
                     data['visual_baseline'] = visual_parity.bind(visual_baseline, visual_baseline_sha256,
                                                                 data['base_commit'])
+                if refactor_input:
+                    data['refactor_contract'] = refactor_input
+                    refactor_delivery.contract(data)
                 cli.write(task, data)
                 if criteria:
                     autopilot._add_criteria(task, criteria)
@@ -364,6 +396,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 }
                 if not screenshots:
                     stage['request_digest'] = cli.digest(request)
+                if refactor_input:
+                    stage['refactor_contract'] = refactor_input
                 if verification_target is not None:
                     data = cli.read(task)
                     if local_verification:
@@ -404,7 +438,7 @@ def main(argv=None):
     parser.add_argument('--source', help='source description when using --issue-file')
     parser.add_argument('--log-file', action='append', default=[], help='UTF-8 log file; may be repeated')
     parser.add_argument('--screenshot', action='append', default=[], help='PNG, JPEG or WebP screenshot; may be repeated')
-    parser.add_argument('--kind', choices=('bug', 'feature'), required=True)
+    parser.add_argument('--kind', choices=cli.TASK_KINDS, required=True)
     parser.add_argument('--surface', choices=('ui', 'non-ui'), required=True)
     parser.add_argument('--iterations', type=int, required=True)
     parser.add_argument('--seconds', type=int, required=True)
@@ -427,6 +461,8 @@ def main(argv=None):
     parser.add_argument('--feature-arena-out', help='run an approved two-design comparison before Feature verification')
     parser.add_argument('--visual-baseline', help='frozen screenshot baseline record for this new UI task')
     parser.add_argument('--visual-baseline-sha256', help='expected SHA-256 of the screenshot baseline record')
+    parser.add_argument('--refactor-contract', help='completed frozen refactoring contract')
+    parser.add_argument('--refactor-contract-sha256', help='expected SHA-256 of the frozen refactoring contract')
     args = parser.parse_args(argv)
     result = start(task_id=args.id, repo=args.repo, issue_file=args.issue_file, issue_url=args.issue_url,
                    source=args.source, kind=args.kind, surface=args.surface, iterations=args.iterations,
@@ -438,7 +474,8 @@ def main(argv=None):
                    ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason,
                    feature_manifest=args.feature_manifest, feature_sha256=args.feature_sha256,
                    feature_arena_out=args.feature_arena_out, visual_baseline=args.visual_baseline,
-                   visual_baseline_sha256=args.visual_baseline_sha256)
+                   visual_baseline_sha256=args.visual_baseline_sha256, refactor_contract=args.refactor_contract,
+                   refactor_contract_sha256=args.refactor_contract_sha256)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

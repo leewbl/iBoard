@@ -23,6 +23,24 @@ PROFILES = {
         'paths when relevant. Prefer an existing type or interface and identify any new boundary '
         'the task actually needs. Use the existing JSON schema.',
     ),
+    ('plan', 'refactor'): (
+        ('skills/poteto-mode/playbooks/refactoring.md', 'skills/principle-test-behavior-not-implementation/SKILL.md'),
+        'Trace the affected callers. Assess the already frozen behavior contract and name the small structural '
+        'change that makes the code easier to read. Preserve the contract and its checks. Choose additional '
+        'existing runtime checks within the approved scope. Use the existing JSON schema.',
+    ),
+    ('implementation', 'refactor'): (
+        ('skills/poteto-mode/playbooks/refactoring.md', 'skills/principle-subtract-before-you-add/SKILL.md'),
+        'Perform the named structural change within the frozen scope. Preserve user-visible behavior, '
+        'outputs and errors. Prefer removing redundant branching or indirection. Do not edit the frozen '
+        'drivers, split off unrelated behavior changes, or commit changes yourself.',
+    ),
+    ('final-review', 'refactor'): (
+        ('skills/poteto-mode/playbooks/refactoring.md', 'skills/principle-prove-it-works/SKILL.md'),
+        'Read the changed callers and independent evidence. Reject a change of behavior, an untested necessary '
+        'entry point, or a patch that adds complexity without reaching the approved target. Cite the frozen '
+        'comparison and observe the same public inputs and outputs through the candidate source.',
+    ),
     ('baseline-review', '*'): (
         ('skills/poteto-mode/playbooks/bug-fix.md', 'skills/principle-prove-it-works/SKILL.md'),
         'Verify the trigger, surface, and observed failure against the original request. '

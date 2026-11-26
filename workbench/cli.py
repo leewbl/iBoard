@@ -22,6 +22,9 @@ SCHEMA = 1
 KINDS = ('reproduction', 'resolution', 'feature-doc', 'test-result', 'screenshot', 'runtime-log',
          'independent-review', 'tdd-red', 'tdd-green')
 CI_SKIP_POLICIES = ('openclaw-selected-v1',)
+TASK_KINDS = ('bug', 'feature', 'refactor')
+REFACTOR_CRITERION = 'refactor-behavior'
+REFACTOR_CRITERION_TEXT = 'Every candidate commit preserves all observations in the approved frozen refactor contract.'
 
 class WorkbenchError(Exception):
     pass
@@ -142,6 +145,8 @@ def criterion_add(a, data):
     data['criterion_changes'].append({'at':now(), 'id':cid, 'action':'add', 'text':a.text, 'reason':nonempty(a.reason, 'reason')})
 
 def criterion_change(a, data):
+    if data['kind'] == 'refactor' and a.id == REFACTOR_CRITERION:
+        raise WorkbenchError('the frozen refactoring behavior criterion cannot be changed')
     c = find_criterion(data, a.id)
     old = c['text']
     new = nonempty(a.text, 'criterion text')
@@ -254,7 +259,20 @@ def evidence_gate(data, expected):
         elif e['commit'] == target:
             valid.append(e)
     kinds = {e['kind'] for e in valid}
-    required = {'reproduction', 'resolution', 'test-result', 'independent-review'} if data['kind'] == 'bug' else {'feature-doc', 'test-result', 'independent-review'}
+    required = {'test-result', 'independent-review'}
+    if data['kind'] == 'bug':
+        required.update(('reproduction', 'resolution'))
+    elif data['kind'] == 'refactor':
+        from workbench import refactor_delivery
+        if not any(c == {'id': REFACTOR_CRITERION, 'text': REFACTOR_CRITERION_TEXT, 'revision': 1}
+                   for c in data['criteria']):
+            issues.append('missing the original refactoring behavior criterion')
+        try:
+            refactor_delivery.require(data, target)
+        except refactor_delivery.RefactorGateError as error:
+            issues.append(str(error))
+    else:
+        required.add('feature-doc')
     if 'verification_target' in data:
         required.update(('reproduction', 'resolution'))
     if data.get('regression_test') is not None:
@@ -277,7 +295,7 @@ def evidence_gate(data, expected):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     sp = p.add_subparsers(dest='command', required=True)
-    q = sp.add_parser('init'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--repo', required=True); q.add_argument('--kind', choices=('bug','feature'), required=True); q.add_argument('--source', required=True); q.add_argument('--implementer', required=True); q.add_argument('--surface', choices=('ui','non-ui'), required=True); q.add_argument('--iterations', type=int, required=True); q.add_argument('--seconds', type=int, required=True)
+    q = sp.add_parser('init'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--repo', required=True); q.add_argument('--kind', choices=TASK_KINDS, required=True); q.add_argument('--source', required=True); q.add_argument('--implementer', required=True); q.add_argument('--surface', choices=('ui','non-ui'), required=True); q.add_argument('--iterations', type=int, required=True); q.add_argument('--seconds', type=int, required=True)
     q = sp.add_parser('criterion-add'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--text', required=True); q.add_argument('--reason', required=True)
     q = sp.add_parser('criterion-change'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--text', required=True); q.add_argument('--reason', required=True); q.add_argument('--basis', required=True)
     q = sp.add_parser('evidence-add'); q.add_argument('--task', required=True); q.add_argument('--kind', choices=KINDS, required=True); q.add_argument('--file', required=True); q.add_argument('--commit', required=True); q.add_argument('--actor', required=True); q.add_argument('--description', required=True); q.add_argument('--criterion', action='append')

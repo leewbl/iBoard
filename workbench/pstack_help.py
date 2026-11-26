@@ -55,7 +55,7 @@ SCENARIOS = {
     'refactor': Scenario(
         'Change code structure while preserving observed behavior', 'skills/poteto-mode/playbooks/refactoring.md',
         'skills/refactor/SKILL.md', 'refactor freeze', 'A frozen baseline and byte-for-byte receipts from each commit',
-        'Freeze the probes before editing. Use the independent comparison report when preparing delivery.'),
+        'Freeze the probes before editing, then use workbench.start --kind refactor for guarded delivery.'),
     'build-feature': Scenario(
         'Deliver a feature using an approved design', 'skills/poteto-mode/playbooks/feature.md',
         'skills/feature-handoff/SKILL.md', 'start --kind feature',

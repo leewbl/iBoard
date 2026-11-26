@@ -229,16 +229,15 @@ def _steps(repo, base, head, scope, remaining):
     return paths_by_step
 
 
-def verify(*, repo, contract, contract_sha256, candidate, out, seconds=600,
-           sandbox=run_sandbox, attest=workflow._verified_image, derive=project_triage._derive):
-    repo = Path(repo).expanduser().resolve(strict=True)
-    remaining = _deadline(seconds)
+def load_frozen(contract, contract_sha256):
+    """Load the pinned baseline and recompute its observations from the original receipts."""
     contract = Path(contract).expanduser().absolute()
     content = _read(contract, 512_000)
     if contract_sha256 != _digest(content):
         raise ValueError('frozen behavior contract SHA-256 does not match')
     plan = json.loads(content)
-    if plan.get('schema') != cli.SCHEMA or plan.get('source') != SOURCE or plan.get('status') != 'frozen':
+    if (not isinstance(plan, dict) or type(plan.get('schema')) is not int or plan['schema'] != cli.SCHEMA
+            or plan.get('source') != SOURCE or plan.get('status') != 'frozen' or 'error' in plan):
         raise ValueError('a completed refactoring freeze is required')
     base, image, memory = plan['baseline'], plan['image'], _memory(plan['memory_mb'])
     if not COMMIT.fullmatch(base) or not IMAGE.fullmatch(image):
@@ -253,6 +252,15 @@ def verify(*, repo, contract, contract_sha256, candidate, out, seconds=600,
     if plan['observed'] != observations or any(observations[case['id']]['exit_code'] != case['exit_code']
                                                 for case in spec['cases']):
         raise ValueError('recorded baseline does not satisfy the frozen behavior contract')
+    return plan, frozen, observations, containers
+
+
+def verify(*, repo, contract, contract_sha256, candidate, out, seconds=600,
+           sandbox=run_sandbox, attest=workflow._verified_image, derive=project_triage._derive):
+    repo = Path(repo).expanduser().resolve(strict=True)
+    remaining = _deadline(seconds)
+    plan, frozen, observations, containers = load_frozen(contract, contract_sha256)
+    base, image, memory, spec = plan['baseline'], plan['image'], plan['memory_mb'], plan['spec']
     head = cli.sha(repo, candidate, timeout=min(15, remaining()))
     steps = _steps(repo, base, head, spec['scope'], remaining)
     root = _output(repo, out)

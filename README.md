@@ -83,7 +83,7 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 [TDD 回归验证](skills/tdd/SKILL.md)支持独立 Node 测试和 OpenClaw 原生 Vitest。选用后，同一份测试先在干净基线触发指定断言，再在候选上通过。原生 Vitest 在基线只读挂入新用例，在候选直接运行已提交文件。工作台保留四份证据，交付前核对报告、独立复验和测试源码。
 
-[重构行为对照](skills/refactor/SKILL.md)在改代码前冻结用户可见的行为和允许改动的路径。断网 Docker 用同一份只读验证脚本逐个检查提交，对照退出码及 stdout、stderr 的原始字节。中间提交改变行为时，即使最终提交改回去，检查也会在该步拦下。
+[重构行为对照](skills/refactor/SKILL.md)在改代码前冻结用户可见的行为和允许改动的路径。断网 Docker 用同一份只读验证脚本逐个检查提交，对照退出码及 stdout、stderr 的原始字节。用 `workbench.start --kind refactor` 执行时，独立终审必须引用对照报告，PR 写入前还会重核原始证据。中间提交改变行为时，即使最终提交改回去，检查也会在该步拦下。
 
 [运行时诊断](skills/runtime-forensics/SKILL.md)在断网 Docker 中采集 Node CPU profile 和堆快照，保留原始文件、源码版本、热点或引用链。失败的沙箱运行会记录对应容器的状态和 OOM 事件。确认是 Docker OOM 时暂停验证并保留候选和证据。
 

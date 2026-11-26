@@ -294,7 +294,7 @@ def prepare(*, task_id, repo, tasks_root, workspaces_root, source, kind, surface
     """
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', task_id):
         raise WorkflowError('invalid task ID')
-    if kind not in ('bug', 'feature') or surface not in ('ui', 'non-ui'):
+    if kind not in cli.TASK_KINDS or surface not in ('ui', 'non-ui'):
         raise WorkflowError('invalid task kind or surface')
     if (not source.strip() or not implementer.strip() or
             (iterations is not None and (type(iterations) is not int or iterations < 1)) or
@@ -420,7 +420,7 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
             runner_options['regression_file'] = regression['path']
         if not native or kind == 'tdd-red':
             runner_options['regression_source'] = regression['source'].encode()
-    if data.get('phase_binding'):
+    if data.get('phase_binding') or data.get('kind') == 'refactor':
         runner_options['workspace_read_only'] = True
     if screenshot_path is not None:
         runner_options.update(memory_mb=memory_mb, screenshot_output=screenshot_path)
@@ -472,7 +472,7 @@ def main(argv=None):
     create = commands.add_parser('prepare')
     for name in ('id', 'repo', 'tasks-root', 'workspaces-root', 'source', 'implementer'):
         create.add_argument(f'--{name}', required=True)
-    create.add_argument('--kind', choices=('bug', 'feature'), required=True)
+    create.add_argument('--kind', choices=cli.TASK_KINDS, required=True)
     create.add_argument('--surface', choices=('ui', 'non-ui'), required=True)
     create.add_argument('--iterations', type=int, required=True)
     create.add_argument('--seconds', type=int, required=True)

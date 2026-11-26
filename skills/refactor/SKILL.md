@@ -48,6 +48,16 @@ python3 -m workbench.refactor verify --repo "$TARGET_REPO" \
   --candidate "$CANDIDATE_COMMIT" --out "$CANDIDATE_EVIDENCE"
 ```
 
-Ask the independent verifier to inspect the drivers, changed callers and the coverage of each case, then run verification again into a different directory. Report the simplified structure, any unexplored behavior, the exact revision and report paths. Check whether the change actually makes the code easier to read before keeping it. Use the approved PR workflow for publication once the independent evidence passes.
+For an automated iBoard task, give `workbench.start` the frozen record and its SHA-256. Use the same image and memory limit that were recorded in the contract.
 
-The command checks the behaviors covered by the frozen cases. It produces comparison reports. The normal iBoard publish gate and automatic PR creation do not yet call this workflow.
+```sh
+python3 -m workbench.start --id "$TASK_ID" --kind refactor --surface non-ui \
+  --repo "$TARGET_REPO" --issue-file "$REQUEST" --source 'approved refactor' \
+  --iterations 2 --seconds 1800 --image "$BASELINE_IMAGE" --memory-mb "$MEMORY_MB" \
+  --source-mode image --build-source-image \
+  --refactor-contract "$BASELINE_EVIDENCE/contract.json" --refactor-contract-sha256 "$CONTRACT_SHA256"
+```
+
+The task uses the frozen baseline and adds a permanent behavior criterion. The independent reviewer must cite the comparison report. Report the simplified structure, any unexplored behavior, the exact revision and evidence paths. The task pauses after verification when no delivery repository was provided. For an authorized fork, the normal publish and merge path revalidates the contract, exact candidate, ordered receipts and the same independent review before each remote write. With `--publish-only`, it stops after PR publication.
+
+The comparison checks the behaviors covered by the frozen cases. If an ordered commit changes one, the task retains its report and stops. A follow-on repair cannot make that earlier commit pass, so review the retained sequence before trying again.

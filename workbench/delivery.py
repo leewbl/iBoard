@@ -446,10 +446,20 @@ def validate_phase_citations(assessments, reports, required):
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
     from workbench import feature_context, phase_contract, tdd, visual_parity
+    is_refactor = data.get('kind') == 'refactor'
+    if not is_refactor and ('refactor_contract' in data or 'refactor_result' in data):
+        raise DeliveryError('refactoring evidence requires a refactor task')
+    if is_refactor and {'id': cli.REFACTOR_CRITERION, 'text': cli.REFACTOR_CRITERION_TEXT,
+                        'revision': 1} not in data['criteria']:
+        raise DeliveryError('refactoring requires its approved behavior criterion')
+    refactor_proof = None
     try:
         feature = feature_context.read(data)
         phase_contract.require_delivery(data, target, destination=destination)
         parity = visual_parity.require(data, target)
+        if is_refactor:
+            from workbench import refactor_delivery
+            refactor_proof = refactor_delivery.require(data, target)
     except (OSError, ValueError, cli.WorkbenchError) as error:
         raise DeliveryError(str(error)) from error
     require_feature_arena_delivery(data, feature, target, destination)
@@ -460,7 +470,7 @@ def _independent_verification(data, target, *, destination=None):
                 or item['criteria_digest'] != cli.criteria_digest(data)):
             continue
         try:
-            if (feature or parity) and cli.digest(item['path']) != item['sha256']:
+            if (feature or parity or refactor_proof) and cli.digest(item['path']) != item['sha256']:
                 continue
             report = json.loads(Path(item['path']).read_text())
         except (OSError, ValueError, cli.WorkbenchError):
@@ -516,6 +526,17 @@ def _independent_verification(data, target, *, destination=None):
         if not valid_assessments or seen != desired_ids or not any(ref != 'DIFF' for ref in cited):
             continue
         actor = item['actor']
+        if refactor_proof:
+            assessment = next((entry for entry in assessments if entry['id'] == cli.REFACTOR_CRITERION), None)
+            if (report.get('refactor_report_sha256') != refactor_proof['sha256']
+                    or reports.get('REFAC') != refactor_proof
+                    or not assessment or 'REFAC' not in assessment['evidence']
+                    or not any(not evidence.get('superseded') and evidence.get('kind') == 'runtime-log'
+                               and evidence.get('commit') == target and evidence.get('actor') == actor
+                               and evidence.get('path') == refactor_proof['path']
+                               and evidence.get('sha256') == refactor_proof['sha256']
+                               for evidence in data['evidence'])):
+                continue
         try:
             validate_impact_review(data, target, report.get('impact'), reports, actor)
             if data.get('regression_test') is not None:
@@ -559,6 +580,38 @@ def _independent_verification(data, target, *, destination=None):
                     continue
             return item
     raise DeliveryError('independent PASS and independent sandbox reruns are not proven')
+
+
+def recheck_refactor_write(task_path, expected, head, destination, review):
+    """Keep the same approved contract and independent review before remote mutations."""
+    require_refactor_intake(task_path, expected)
+    if expected.get('kind') != 'refactor':
+        return
+    latest = cli.read(Path(task_path))
+    if (latest.get('kind') != 'refactor'
+            or any(latest.get(key) != expected.get(key) for key in ('refactor_contract', 'refactor_result'))):
+        raise DeliveryError('refactoring contract or result changed before GitHub write')
+    if _independent_verification(latest, head, destination=destination) != review:
+        raise DeliveryError('refactoring independent review changed before GitHub write')
+
+
+def require_refactor_intake(task_path, data):
+    """Check a recorded refactoring intake even when the task claims another kind."""
+    path = Path(task_path).parent / 'input-stage.json'
+    if path.is_symlink():
+        raise DeliveryError('task intake path changed before GitHub operation')
+    if not path.exists():
+        if data.get('kind') == 'refactor':
+            raise DeliveryError('frozen refactoring intake is missing before GitHub operation')
+        return
+    try:
+        stage = cli.read(path)
+    except (AttributeError, OSError, TypeError, cli.WorkbenchError) as error:
+        raise DeliveryError('task intake could not be verified before GitHub operation') from error
+    if 'refactor_contract' in stage or data.get('kind') == 'refactor':
+        if (data.get('kind') != 'refactor' or not stage.get('refactor_contract')
+                or data.get('refactor_contract') != stage['refactor_contract']):
+            raise DeliveryError('task does not match its frozen refactoring intake')
 
 
 def recheck_visual_write(task_path, expected, head, destination):
@@ -915,6 +968,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         raise DeliveryError('invalid repository or pull request number')
     github = github or GitHub()
     data = cli.read(Path(task_path))
+    require_refactor_intake(task_path, data)
     if 'verification_target' in data and stack_binding is None:
         raise DeliveryError('verification-only task does not authorize merging')
     if stack_binding is not None and (not isinstance(stack_binding, dict) or not callable(revalidate)
@@ -930,7 +984,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         raise DeliveryError('local evidence gate failed: ' + '; '.join(issues))
     if stack_binding and (stack_binding['head'] != head or stack_binding['base'] != data['base_commit']):
         raise DeliveryError('task does not match the exact stack revision')
-    _independent_verification(data, head, destination=repo)
+    review = _independent_verification(data, head, destination=repo)
     from workbench import verify_openclaw
     try:
         verify_openclaw.require(data, head, repo)
@@ -1016,6 +1070,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
             revalidate()
         recheck_phase()
         recheck_visual_write(task_path, data, head, repo)
+        recheck_refactor_write(task_path, data, head, repo, review)
         github.merge(repo, number, head)
     else:
         # Do not use an indirect merge if protection appeared while validating.
@@ -1033,6 +1088,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
             revalidate()
         recheck_phase()
         recheck_visual_write(task_path, data, head, repo)
+        recheck_refactor_write(task_path, data, head, repo, review)
         github.fast_forward(data['repo'], repo, data['base_commit'], head)
     try:
         final = github.pull(repo, number)

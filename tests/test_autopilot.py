@@ -854,6 +854,74 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual(builder.call_count, 1)
         self.assertEqual(builder.call_args.args[1], cli.read(self.task)['base_commit'])
 
+    def run_refactor_fixture(self, outcome, *, cite=True):
+        from workbench import refactor, refactor_delivery
+        data = cli.read(self.task)
+        contract = {'path': str(self.task.parent / 'frozen' / 'contract.json'), 'sha256': 'f' * 64}
+        data.update(kind='refactor', refactor_contract=contract)
+        cli.criterion_add(argparse.Namespace(id=cli.REFACTOR_CRITERION, text=cli.REFACTOR_CRITERION_TEXT,
+                                            reason='frozen test contract'), data)
+        cli.write(self.task, data)
+        baseline = 'sha256:' + 'b' * 64
+        candidate = 'sha256:' + 'c' * 64
+        plan = {'spec': {'scope': ['code.txt']}, 'image': baseline, 'memory_mb': 2048, 'helpers': {}, 'runs': {}}
+
+        def verify(**kwargs):
+            self.assertEqual(kwargs['contract_sha256'], contract['sha256'])
+            self.assertEqual(kwargs['candidate'], cli.sha(self.workspace, 'HEAD'))
+            result = {'status': outcome, 'baseline': data['base_commit'], 'steps': [
+                {'commit': kwargs['candidate'], 'image': candidate, 'paths': ['code.txt'], 'observed': {}}]}
+            cli.write(kwargs['out'] / 'report.json', result)
+            return result
+
+        def checked(**kwargs):
+            self.assertEqual(kwargs.pop('source_mode'), 'image')
+            self.assertEqual(kwargs['image'], candidate)
+            return self.check(**kwargs)
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if self.calls[-1] == 'final-review':
+                self.assertIn('Cite REFAC on that criterion.', prompt)
+                if cite:
+                    record = json.loads(result['stdout'])
+                    record['assessments'][0]['evidence'] = ['REFAC']
+                    result['stdout'] = json.dumps(record)
+            return result
+
+        with patch.object(refactor_delivery, 'contract', return_value=plan), \
+                patch.object(refactor_delivery, 'require', side_effect=lambda task, head: task['refactor_result']), \
+                patch.object(refactor, 'verify', side_effect=verify):
+            return autopilot.run(self.task, self.issue, baseline, source_mode='image', build_source_image=True,
+                                model=model, check=checked, publisher=lambda *_: self.fail('unexpected publication'))
+
+    def test_refactor_comparison_becomes_mandatory_review_evidence(self):
+        result = self.run_refactor_fixture('equivalent')
+        data = cli.read(self.task)
+        self.assertEqual(result['phase'], 'delivery')
+        self.assertEqual(data['status'], 'paused')
+        self.assertNotIn('reproduction:implementer', self.calls)
+        report = next(item for item in data['evidence'] if item['kind'] == 'independent-review')
+        review = json.loads(Path(report['path']).read_text())
+        self.assertEqual(review['reports']['REFAC'], data['refactor_result'])
+        self.assertEqual(review['refactor_report_sha256'], data['refactor_result']['sha256'])
+
+    def test_refactor_drift_stops_before_candidate_review_or_publication(self):
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'refactoring comparison failed'):
+            self.run_refactor_fixture('behavior-changed')
+        self.assertEqual(self.calls, ['plan', 'implement'])
+        self.assertNotIn('refactor_result', cli.read(self.task))
+
+    def test_refactor_review_without_comparison_citation_cannot_advance(self):
+        data = cli.read(self.task)
+        data['limits']['iterations'] = 1
+        cli.write(self.task, data)
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'iteration limit reached'):
+            self.run_refactor_fixture('equivalent', cite=False)
+        failure, = self.task.parent.glob('verification-failure-*.json')
+        self.assertIn('must cite the refactoring comparison', json.loads(failure.read_text())['reason'])
+        self.assertNotIn('refactor_result', cli.read(self.task))
+
     def test_openclaw_session_checks_use_the_offline_rebuilt_ui_image(self):
         checks = []
 
