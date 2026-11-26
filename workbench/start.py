@@ -165,7 +165,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           iterations, seconds, image, pr_repo=None, tasks_root, workspaces_root,
           source_mode='workspace', candidate_image=None, build_source_image=False, memory_mb=2048,
           log_files=(), screenshot_files=(), required_ci_workflows=None, ci_skip_policy=None, ci_skip_reason=None,
-          publish_only=False, verification_target=None, criteria=(), implementer='glm-implementer',
+          publish_only=False, verification_target=None, criteria=(), retained_contract=None,
+          local_verification=None, implementer='glm-implementer',
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
@@ -182,6 +183,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('invalid personal fork name')
     if verification_target is not None and (not criteria or not pr_repo or publish_only or screenshot_files):
         raise StartError('existing PR verification requires frozen criteria, repository, and a completed request')
+    if verification_target is None and (retained_contract or local_verification):
+        raise StartError('retained verification settings require an existing PR target')
     try:
         required_ci_workflows = workflow.validate_required_ci_workflows(
             required_ci_workflows, required=bool(pr_repo) and not publish_only and verification_target is None)
@@ -269,6 +272,14 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 cli.write(task, data)
                 if criteria:
                     autopilot._add_criteria(task, criteria)
+                if retained_contract:
+                    data = cli.read(task)
+                    prior = retained_contract['criteria']
+                    if [{key:item[key] for key in ('id', 'text')} for item in prior] != criteria:
+                        raise StartError('retained acceptance criteria changed')
+                    data['criteria'] = prior
+                    data['criterion_changes'] = retained_contract['changes']
+                    cli.write(task, data)
                 request.write_text(issue_with_logs, encoding='utf-8')
                 request.chmod(0o600)
                 if logs or screenshots:
@@ -303,6 +314,13 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                     stage['request_digest'] = cli.digest(request)
                 if verification_target is not None:
                     data = cli.read(task)
+                    if local_verification:
+                        from workbench import local_gate
+                        try:
+                            local_gate._select(data, verification_target['head'], local_verification['files'],
+                                               local_verification['reason'])
+                        except local_gate.LocalGateError as error:
+                            raise StartError(str(error)) from error
                     data['verification_target'] = {
                         **verification_target, 'request_digest':stage['request_digest'],
                         'criterion_digest':cli.criteria_digest(data), 'settings':stage['run_settings'],

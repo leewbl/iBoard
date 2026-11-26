@@ -32,7 +32,23 @@ confirms landing by reading the PR and main. If a request has an uncertain
 outcome, inspect the same plan and remote state on the next invocation.
 
 A child can target main automatically when main is exactly its verified parent
-commit. When main has a different commit, prepare and verify an updated PR on
-that base before freezing a new plan. Report each confirmed PR and the next
-blocked PR, if any. For an autopilot-stack handoff that stops at verification,
-use `workbench.stack_verify`.
+commit. When main has a different commit, replay and verify the blocked child
+with the original request, acceptance history and local policy:
+
+```sh
+python3 -m workbench.stack_rebase verify --plan shipping-plan.json --id child-on-main \
+  --tasks-root tasks --workspaces-root workspaces --seconds 900
+```
+
+Image-based verification takes `--image` for the new main commit. If the
+rebase conflicts, preserve the worktree and report its path. With explicit
+authorization to update the selected PR, apply the verified receipt:
+
+```sh
+python3 -m workbench.stack_rebase update --receipt tasks/child-on-main-restack/restack.json
+```
+
+The update checks main and the old PR head, and the push requires that exact
+old head. Freeze a new shipping plan using the fresh task after confirmation.
+Report each confirmed PR and the next blocked PR, if any. For an autopilot-stack
+handoff that stops at verification, use `workbench.stack_verify`.

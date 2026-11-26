@@ -53,7 +53,8 @@ def main():
                                 (['python3 -m workbench.pr_watch'] if source == PR_WATCH_SOURCE else []) +
                                 (['python3 -m workbench.verify_pr', 'python3 -m workbench.stack_verify']
                                  if source in STACK_VERIFICATION_SOURCES else []) +
-                                (['python3 -m workbench.stack_ship'] if source == STACK_SHIPPING_SOURCE else []) +
+                                (['python3 -m workbench.stack_ship','python3 -m workbench.stack_rebase']
+                                 if source == STACK_SHIPPING_SOURCE else []) +
                                 ([PICKUP_SOURCES[source]] if source in PICKUP_SOURCES else [])),
         }
     print(json.dumps(result, ensure_ascii=False, indent=2))

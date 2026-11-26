@@ -27,6 +27,23 @@ class GitHub(pr_watch.GitHubReader):
                 and comparison.get('merge_base_commit', {}).get('sha') == head
                 and comparison.get('base_commit', {}).get('sha') == head)
 
+    def squash_result(self, repo, number, head, base, trunk):
+        pull = self._call('api', '--method', 'GET', f'repos/{repo}/pulls/{number}')
+        merged = pull.get('merge_commit_sha')
+        if (pull.get('merged') is not True or pull.get('head', {}).get('sha') != head
+                or pull.get('base', {}).get('ref') != 'main'
+                or not isinstance(merged, str) or not pr_watch.SHA.fullmatch(merged)):
+            return False
+        candidate = self._call('api', '--method', 'GET', f'repos/{repo}/git/commits/{head}')
+        landing = self._call('api', '--method', 'GET', f'repos/{repo}/git/commits/{merged}')
+        tree = candidate.get('tree', {}).get('sha')
+        parents = landing.get('parents')
+        return (candidate.get('sha') == head and landing.get('sha') == merged
+                and isinstance(tree, str) and pr_watch.SHA.fullmatch(tree) is not None
+                and landing.get('tree', {}).get('sha') == tree
+                and isinstance(parents, list) and [item.get('sha') for item in parents] == [base]
+                and (merged == trunk or self.contains(repo, merged, trunk)))
+
 
 def plan(repo, numbers, tasks, *, ci_workflows=None, timeout=90, reader=None):
     observation = stack_verify.audit(repo, numbers, tasks, timeout=timeout, reader=reader)
@@ -116,9 +133,12 @@ def _landed(pull):
 
 def _confirmed_main(github, repo, member):
     trunk = github.branch(repo, 'main')
-    if (not isinstance(trunk, str) or not pr_watch.SHA.fullmatch(trunk)
-            or (trunk != member['head'] and not github.contains(repo, member['head'], trunk))):
+    if not isinstance(trunk, str) or not pr_watch.SHA.fullmatch(trunk):
         raise ShippingError('the verified PR head is not confirmed in main')
+    if trunk != member['head'] and not github.contains(repo, member['head'], trunk):
+        squash = getattr(github, 'squash_result', None)
+        if not squash or not squash(repo, member['number'], member['head'], member['base'], trunk):
+            raise ShippingError('the verified PR head is not confirmed in main')
     return trunk
 
 
