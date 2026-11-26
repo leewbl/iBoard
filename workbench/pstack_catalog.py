@@ -7,6 +7,7 @@ from pathlib import Path
 from workbench.decisions import PSTACK_SOURCE as DECISION_SOURCE
 from workbench.investigate import SOURCES as INVESTIGATION_SOURCES
 from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
+from workbench.pr_watch import PSTACK_SOURCE as PR_WATCH_SOURCE
 from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
 
 
@@ -47,6 +48,7 @@ def main():
                                 (['python3 -m workbench.decisions audit', 'python3 -m workbench.decisions record',
                                   'python3 -m workbench.decision_review']
                                  if source == DECISION_SOURCE else []) +
+                                (['python3 -m workbench.pr_watch'] if source == PR_WATCH_SOURCE else []) +
                                 ([PICKUP_SOURCES[source]] if source in PICKUP_SOURCES else [])),
         }
     print(json.dumps(result, ensure_ascii=False, indent=2))
