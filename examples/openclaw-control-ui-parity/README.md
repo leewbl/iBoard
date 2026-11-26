@@ -8,53 +8,35 @@ The example runs OpenClaw's production Vite configuration. It serves compiled as
 
 Select a clean OpenClaw checkout and a local image that contains all tracked files of that exact revision under `/app`. The image also needs the installed OpenClaw build dependencies, Playwright and a compatible Chromium binary. The observed run used the `54710b123fe94a2139930c1d7c038e7623345a5e` commit and the immutable image behind `iboard-benchmark-v1-browser:local`.
 
-Run from the iBoard root. Set `OPENCLAW_REPO`, `OPENCLAW_BROWSER_IMAGE` and `ARTIFACTS`, an output directory outside the OpenClaw checkout. Use a local image tag for the Dockerfile. The actual capture independently verifies the image contents against Git and stores the immutable image ID.
+Run from the iBoard root. Set `OPENCLAW_REPO`, `OPENCLAW_BROWSER_IMAGE` and `ARTIFACTS`, an output directory outside the OpenClaw checkout. The state manifest approves the built-in `openclaw-control-ui-login` profile and fixes its recipe digest. The baseline command verifies the image against Git, compiles the original UI offline, then freezes the two Chromium states.
 
 ```bash
 BASE=$(git -C "$OPENCLAW_REPO" rev-parse HEAD)
-mkdir -p "$ARTIFACTS/image-base"
-cp examples/openclaw-control-ui-parity/build-login-ui.mjs "$ARTIFACTS/image-base/"
-cat > "$ARTIFACTS/image-base/Dockerfile" <<EOF
-FROM $OPENCLAW_BROWSER_IMAGE
-WORKDIR /app
-COPY build-login-ui.mjs /tmp/iboard-build-login-ui.mjs
-RUN node --import /app/scripts/tsx.mjs /tmp/iboard-build-login-ui.mjs && rm /tmp/iboard-build-login-ui.mjs
-EOF
-docker build --network=none --pull=false -t iboard-control-ui:baseline "$ARTIFACTS/image-base"
 python3 -m workbench.visual_parity baseline \
-  --repo "$OPENCLAW_REPO" --revision "$BASE" --image iboard-control-ui:baseline \
+  --repo "$OPENCLAW_REPO" --revision "$BASE" --image "$OPENCLAW_BROWSER_IMAGE" \
   --manifest examples/openclaw-control-ui-parity/states.json \
   --out "$ARTIFACTS/baseline" --timeout 420 --memory-mb 1536
 ```
 
-Freeze and retain the baseline record before editing. The capture containers use a read-only root filesystem. Assets are built in the offline image build because the project's ordinary dev launch prepares plugin assets under the app directory.
+The baseline record gives the immutable image ID and binds it to the selected Git commit, source image, recipe digest and screenshots. Freeze and retain that record before editing.
 
 ## Rebuild and compare the candidate
 
-Create the candidate in a separate Git worktree. The example merges the duplicate `color: var(--muted)` declarations for the summary and raw text in `ui/src/styles/connection-surfaces.css`. As a sensitivity check, another candidate assigns `#b83a22` to the raw text. The extra color is observable only with the details expanded.
+Create the candidate in a separate Git worktree. The example merges duplicate `color: var(--muted)` declarations for the summary and raw text in `ui/src/styles/connection-surfaces.css`. As a sensitivity check, another candidate assigns `#b83a22` to the raw text. The extra color is visible only with the details expanded.
 
-Set `CANDIDATE_REPO` to the committed candidate worktree. The commands below are scoped to that single stylesheet. For any other migration, overlay every affected tracked path and rebuild the application before comparing. A source-only overlay would preserve stale generated assets.
+Set `CANDIDATE_REPO` to the committed candidate worktree. With the rebuild profile enabled, pass the frozen baseline image. The compare command overlays tracked changes, clears the inherited UI bundle inside the image, and rebuilds offline with the exact candidate commit as build metadata. It checks the new output exists and validates the image against Git before taking screenshots. The profile uses the frozen installed dependencies and rejects changes to dependency manifests, the lockfile and dependency patches.
 
 ```bash
 CANDIDATE=$(git -C "$CANDIDATE_REPO" rev-parse HEAD)
 BASELINE_HASH=$(shasum -a 256 "$ARTIFACTS/baseline/baseline.json" | cut -d ' ' -f 1)
-STYLE=ui/src/styles/connection-surfaces.css
-mkdir -p "$ARTIFACTS/image-candidate"
-cp examples/openclaw-control-ui-parity/build-login-ui.mjs "$ARTIFACTS/image-candidate/"
-git -C "$CANDIDATE_REPO" show "$CANDIDATE:$STYLE" > "$ARTIFACTS/image-candidate/connection-surfaces.css"
-cat > "$ARTIFACTS/image-candidate/Dockerfile" <<EOF
-FROM iboard-control-ui:baseline
-WORKDIR /app
-COPY connection-surfaces.css /app/$STYLE
-COPY build-login-ui.mjs /tmp/iboard-build-login-ui.mjs
-RUN node --import /app/scripts/tsx.mjs /tmp/iboard-build-login-ui.mjs && rm /tmp/iboard-build-login-ui.mjs
-EOF
-docker build --network=none --pull=false -t iboard-control-ui:candidate "$ARTIFACTS/image-candidate"
+BASELINE_IMAGE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image"])' "$ARTIFACTS/baseline/baseline.json")
 python3 -m workbench.visual_parity compare \
-  --repo "$CANDIDATE_REPO" --revision "$CANDIDATE" --image iboard-control-ui:candidate \
+  --repo "$CANDIDATE_REPO" --revision "$CANDIDATE" --image "$BASELINE_IMAGE" \
   --baseline "$ARTIFACTS/baseline/baseline.json" --baseline-sha256 "$BASELINE_HASH" \
   --out "$ARTIFACTS/candidate" --timeout 420 --memory-mb 1536
 ```
+
+For an automated UI task, pass the frozen record with `workbench.start --visual-baseline ... --visual-baseline-sha256 ... --source-mode image --build-source-image`. Configure the same manifest in a phase's `visual_parity` entry to rebuild during staged dispatch. Unit and live acceptance and the performance measurement use the same rebuilt candidate image.
 
 The CLI exits 0 when both states match and 1 when pixels differ. Review the difference masks and independent reports under the output directory.
 

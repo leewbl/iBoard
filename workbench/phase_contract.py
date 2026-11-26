@@ -256,7 +256,7 @@ def _image_matches(image, proof):
     return not image.startswith('sha256:') or proof == image
 
 
-def _benchmark_receipt(contract, phase_id, reference, candidate, directory):
+def _benchmark_receipt(contract, phase_id, reference, candidate, directory, *, visual_baseline=None):
     entry, step = _entry(contract, phase_id), contract['steps'][phase_id]
     expected = _ref(directory, reference)
     path, score = phase_audit._receipt(expected, directory)
@@ -264,9 +264,11 @@ def _benchmark_receipt(contract, phase_id, reference, candidate, directory):
     values, measured, started = phase_audit._samples(path, score, baseline, candidate, entry['verify']['perf']['probe'])
     spec = _benchmark_spec(step['benchmark'])
     approved_helpers = {name: ref['sha256'] for name, ref in step['helpers'].items()}
+    proof = verify_visual_baseline(contract, phase_id, visual_baseline) if visual_baseline else None
+    pinned_image = proof['image'] if proof else step['image']
     _require(values == {**spec, 'schema': cli.SCHEMA, 'helpers': approved_helpers,
                         'memory_mb': contract['memory_mb'], 'cpu_limit': 2}
-             and _image_matches(step['image'], score['images']['baseline']),
+             and _image_matches(pinned_image, score['images']['baseline']),
              'phase benchmark ran different immutable inputs or resource limits')
     for name, digest in approved_helpers.items():
         contents = project_verify._helper(path.parent / 'frozen', name)
@@ -274,10 +276,10 @@ def _benchmark_receipt(contract, phase_id, reference, candidate, directory):
     return expected, measured, started, score
 
 
-def verify_baseline(contract, phase_id, baseline_perf, *, before=None):
+def verify_baseline(contract, phase_id, baseline_perf, *, before=None, visual_baseline=None):
     """Verify the original trunk proof before a phase's edit can start."""
     result = _benchmark_receipt(contract, phase_id, baseline_perf, contract['plan']['baseline'],
-                                Path(contract['manifest_path']).parent)
+                                Path(contract['manifest_path']).parent, visual_baseline=visual_baseline)
     score = result[3]
     _require(score['outcome'] == 'no-measurable-difference' and score['images']['baseline'] == score['images']['candidate'],
              'phase trunk control was not stable on one immutable image')
@@ -294,8 +296,9 @@ def verify_visual_baseline(contract, phase_id, ref, *, baseline_perf=None, befor
         return None
     base = contract['plan']['baseline']
     _, proof, _ = visual_parity.read_baseline(ref, base)
+    source_image = proof['build']['input_image'] if 'build' in proof else proof['image']
     _require(proof['manifest_sha256'] == spec['sha256'] and proof['driver_sha256'] == spec['driver_sha256']
-             and _image_matches(step['image'], proof['image']),
+             and _image_matches(step['image'], source_image),
              'phase visual baseline does not match the approved states, driver or image')
     if baseline_perf:
         _, perf = phase_audit._receipt(baseline_perf, Path(contract['manifest_path']).parent)
@@ -303,7 +306,7 @@ def verify_visual_baseline(contract, phase_id, ref, *, baseline_perf=None, befor
     if before is not None:
         _require(visual_parity.bind(ref['path'], ref['sha256'], base, memory_mb=contract['memory_mb'], before=before) == ref,
                  'phase visual baseline path changed')
-    return ref
+    return proof
 
 
 def _event_ref(data, field, event_type, filename):
@@ -422,7 +425,7 @@ def bind(task_path, data, contract, phase_id, parent, request_path, baseline_per
     parent_dir = task_path.parent
     entry = _entry(contract, phase_id)
     _workspace_settings(data, contract, entry, parent, replay=replay is not None)
-    before = verify_baseline(contract, phase_id, baseline_perf, before=data['started_at'])
+    before = verify_baseline(contract, phase_id, baseline_perf, before=data['started_at'], visual_baseline=visual_baseline)
     source = Path(request_path)
     _require(source == parent_dir / 'issue.txt' and not source.is_symlink(), 'phase task request must be its retained issue.txt')
     expected = hashlib.sha256(request(contract, phase_id).encode('utf-8')).hexdigest()
@@ -462,7 +465,8 @@ def read(data):
         expected = hashlib.sha256(request(contract, value['phase']).encode('utf-8')).hexdigest()
         _require(value['request_sha256'] == expected, 'phase approval no longer matches its original request')
         _bytes(request_path, 100_000, expected)
-        _require(verify_baseline(contract, entry['id'], value['baseline_perf'], before=data['started_at']) == value['baseline_perf'],
+        _require(verify_baseline(contract, entry['id'], value['baseline_perf'], before=data['started_at'],
+                                 visual_baseline=value.get('visual_baseline')) == value['baseline_perf'],
                  'phase trunk baseline evidence changed')
         _require(data.get('visual_baseline') == value.get('visual_baseline'), 'phase visual baseline binding changed')
         verify_visual_baseline(contract, entry['id'], value.get('visual_baseline'), baseline_perf=value['baseline_perf'])
@@ -517,7 +521,8 @@ def _verify_result(data, context, record, candidate):
     _changed(data['repo'], context, candidate)
     directory = context['task_path'].parent
     contract, entry, step = context['contract'], context['entry'], context['step']
-    _, _, _, performance = _benchmark_receipt(contract, entry['id'], record['perf'], candidate, directory)
+    _, _, _, performance = _benchmark_receipt(contract, entry['id'], record['perf'], candidate, directory,
+                                                visual_baseline=context.get('visual_baseline'))
     parity = record.get('visual_parity')
     if step.get('visual_parity'):
         _require(parity is not None and parity == data.get('visual_parity_result'), 'phase visual result binding changed')

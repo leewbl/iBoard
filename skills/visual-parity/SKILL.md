@@ -32,6 +32,6 @@ Compare decoded pixels with a zero threshold. Nonzero results retain each state,
 
 For a staged migration, configure `visual_parity` for each component in the [approved phase dispatch](../multi-phase-plan/SKILL.md). The dispatcher freezes all declared states from trunk before launching any edits. Dependent and replayed candidates use those original screenshots.
 
-When the server delivers generated assets, rebuild them from each committed revision before capturing. The [OpenClaw Control UI example](../../examples/openclaw-control-ui-parity/README.md) shows an offline Vite build and a frozen interaction on the real login screen.
+When the server delivers generated assets, rebuild them from each committed revision before capturing. The [OpenClaw Control UI example](../../examples/openclaw-control-ui-parity/README.md) declares `rebuild.profile: openclaw-control-ui-login` and the SHA-256 of the installed build recipe. iBoard compiles the original and each candidate offline from their tracked source. Standalone `compare` takes the immutable built baseline image as its input in this mode. For a dispatched phase, screenshots and the benchmark use the same compiled image.
 
 The PR gate reopens both pairs of captures, checks their digests and recomputes the comparisons for the exact candidate. The original independent UI and delivery checks still apply. Report the verified states, pixel counts, baseline record and pending component work.

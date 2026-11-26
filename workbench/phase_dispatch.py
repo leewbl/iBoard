@@ -137,6 +137,7 @@ def _run(root, contract, launch, resume, measure, execute, capture):
     work_started = any('task' in row for row in state['phases'].values()) or any(
         (root / 'tasks' / _task_id(root, ident) / 'task.json').exists() for ident in entries)
     has_visual = any('visual_parity' in step for step in contract['steps'].values())
+    rebuilt_visual = {}
     for key, step in contract['steps'].items():
         specification = step.get('visual_parity')
         if specification is None:
@@ -155,7 +156,9 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                 raise DispatchError('visual baseline escape from its phase evidence directory')
             if work_started and visual_cutoff is None:
                 raise DispatchError('the original visual capture cutoff is missing after component work began')
-            phase_contract.verify_visual_baseline(contract, key, ref, before=visual_cutoff or cli.now())
+            proof = phase_contract.verify_visual_baseline(contract, key, ref, before=visual_cutoff or cli.now())
+            if 'build' in proof:
+                rebuilt_visual[key] = proof['image']
             record(key, visual_baseline=ref)
         except ERRORS as error:
             phases[key] = {'status': 'blocked', 'reason': str(error)[:1800]}
@@ -198,9 +201,11 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                     raise DispatchError('task exists without a retained pre-implementation benchmark')
                 stage.mkdir(mode=0o700, parents=True, exist_ok=True)
                 with sandbox_lane() if parallelism > 1 else nullcontext():
-                    perf = measure(contract, key, stage / f'trunk-{uuid.uuid4().hex}', timeout=remaining())
+                    perf = measure(contract, key, stage / f'trunk-{uuid.uuid4().hex}', timeout=remaining(),
+                                   **({'image': rebuilt_visual[key]} if key in rebuilt_visual else {}))
                 record(key, parent=parent, baseline_perf=perf)
-            phase_contract.verify_baseline(contract, key, perf)
+            phase_contract.verify_baseline(contract, key, perf,
+                                           **({'visual_baseline': visual} if key in rebuilt_visual else {}))
             if task.exists():
                 data = bound(task, key, parent)
                 retained = task.parent / 'autopilot.json'

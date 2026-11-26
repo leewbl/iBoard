@@ -1,5 +1,9 @@
 {
   "schema": 1,
+  "rebuild": {
+    "profile": "openclaw-control-ui-login",
+    "sha256": "ca05a69a4f7917e28401957ab5a547bdf1ead2417e70ce1eeb4068efde523b9c"
+  },
   "viewport": {
     "width": 960,
     "height": 430

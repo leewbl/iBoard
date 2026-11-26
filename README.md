@@ -170,7 +170,7 @@ claude plugin validate .
 
 指定的 CI 工作流失败时，工作台仅在运行、提交、PR 和基线可核对，且每个失败作业都有完整、大小受限的失败注释时，使用这些不可信数据尝试修复。修复占用一次迭代，并重新执行原有验证和独立审查；通过后才以旧提交为条件更新同一个 PR。失败信息不足、作业被取消、预算耗尽或远程状态变化时会暂停。镜像模式需要 `--build-source-image` 才能自动验证修复后的新提交。此 CI 修复路径目前仅经模拟测试，尚未完成真实端到端验证。
 
-也可用 `--build-source-image` 自动将每次候选提交的源码叠加到已核对的本地基线镜像；它不安装依赖，也不编译程序。项目需要重新安装依赖或重新编译时，应提供按该提交构建的候选镜像，不能认为源码文件一致就代表构建产物正确。新镜像会占用磁盘空间；自动生成的镜像暂不自动删除。真实 Docker 集成检查可通过 `WORKBENCH_DOCKER_TEST=1 python3 -m unittest discover -s tests -p test_source_image_integration.py -v` 运行，需要本地已有 `node:24-slim`。
+也可用 `--build-source-image` 将候选源码叠加到已核对的本地基线镜像。默认只更新源码。声明 [OpenClaw Control UI 重建配置](examples/openclaw-control-ui-parity/README.md)后，iBoard 会在断网环境用已有依赖生成每个提交的界面产物，再执行验收。其他需要构建的项目可提供按指定提交生成的候选镜像。真实 Docker 集成检查可用 `WORKBENCH_DOCKER_TEST=1 python3 -m unittest discover -s tests -p test_source_image_integration.py -v` 运行，需要本地已有 `node:24-slim`。
 
 ## 交付规则
 

@@ -1219,6 +1219,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             architecture = check_design(current, candidate)
             check_image = candidate_image or image
             parity_result = None
+            visual_build = None
             if parity is not None and phase and current.get('phase_result'):
                 try:
                     phase_contract.verify_completion(current, candidate, context=phase)
@@ -1230,9 +1231,14 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 try:
                     image_base = phase['contract']['plan']['baseline'] if phase else current['base_commit']
                     base_image = cli.read(Path(phase['baseline_perf']['path']))['images']['baseline'] if phase else image
-                    check_image = workflow.build_source_image(workspace, image_base, base_image,
-                                                              _remaining(cli.read(task)))
-                except workflow.WorkflowError as error:
+                    if parity is not None and 'rebuild' in visual_plan:
+                        visual_build = visual_parity.rebuild_image(workspace, image_base, base_image, candidate,
+                                                                   visual_plan, _remaining(cli.read(task)))
+                        check_image = visual_build['image']
+                    else:
+                        check_image = workflow.build_source_image(workspace, image_base, base_image,
+                                                                  _remaining(cli.read(task)))
+                except (workflow.WorkflowError, cli.WorkbenchError) as error:
                     raise AutopilotError(f'candidate image preparation failed: {error}') from error
             results = []
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests'), ('runtime-log', 'resolution')]:
@@ -1246,7 +1252,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 try:
                     parity_result, identical = visual_parity.compare_candidate(
                         workspace, visual_base, parity, candidate, check_image,
-                        task.parent / f'visual-parity-{uuid.uuid4().hex}', _remaining(cli.read(task)), memory_mb)
+                        task.parent / f'visual-parity-{uuid.uuid4().hex}', _remaining(cli.read(task)), memory_mb,
+                        **({'build': visual_build} if visual_build else {}))
                 except (OSError, ValueError, KeyError, cli.WorkbenchError, subprocess.SubprocessError) as error:
                     raise AutopilotError(f'visual parity could not capture equivalent states: {error}') from error
                 if not identical:

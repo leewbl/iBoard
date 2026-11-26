@@ -96,6 +96,38 @@ class WorkflowTests(unittest.TestCase):
         finally:
             log.unlink()
 
+    def test_visual_recipe_discards_inherited_assets_and_receives_exact_revision(self):
+        import json
+        import tarfile
+
+        base = cli.sha(self.repo, 'HEAD')
+        recipe = b'console.log("trusted recipe");\n'
+        image = 'sha256:' + 'a' * 64
+        real_run = subprocess.run
+
+        def run(command, **kwargs):
+            if command[:3] == ['docker', 'image', 'inspect']:
+                return subprocess.CompletedProcess(command, 0, json.dumps([{'Config': {}}]), '')
+            if command[:2] == ['docker', 'build']:
+                self.assertIn('--network=none', command)
+                self.assertIn('--pull=false', command)
+                with tarfile.open(fileobj=kwargs['stdin'], mode='r:') as archive:
+                    self.assertEqual(archive.extractfile('visual-build.mjs').read(), recipe)
+                    dockerfile = archive.extractfile('Dockerfile').read().decode()
+                    clear, compile_at, verify = [dockerfile.index(part) for part in (
+                        'rm -rf -- /app/dist/control-ui', f'GIT_COMMIT={base} node',
+                        'test -s /app/dist/control-ui/index.html')]
+                    self.assertLess(clear, compile_at)
+                    self.assertLess(compile_at, verify)
+                return subprocess.CompletedProcess(command, 0)
+            return real_run(command, **kwargs)
+
+        with patch.object(workflow, '_verified_image', return_value=image) as attest, \
+                patch.object(workflow.subprocess, 'run', side_effect=run):
+            self.assertEqual(workflow.build_source_image(self.repo, base, image, 30, revision=base,
+                                                        rebuild_ui=recipe), image)
+        self.assertEqual([call.kwargs['commit'] for call in attest.call_args_list], [base, base])
+
     def git(self, *args):
         subprocess.run(['git', '-C', str(self.repo), *args], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

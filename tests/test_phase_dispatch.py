@@ -91,7 +91,7 @@ class PhaseDispatchTests(unittest.TestCase):
         cli.write(path, {'schema': cli.SCHEMA, 'phase': phase_id, 'baseline': self.trunk})
         return self.ref(path)
 
-    def verify_baseline(self, contract, phase_id, reference):
+    def verify_baseline(self, contract, phase_id, reference, *, visual_baseline=None):
         path = Path(reference['path'])
         if self.ref(path) != reference or cli.read(path)['phase'] != phase_id:
             raise ValueError('baseline proof changed')
@@ -237,6 +237,29 @@ class PhaseDispatchTests(unittest.TestCase):
 
     def assert_parent(self, result, phase, expected):
         self.assertEqual(cli.sha(self.repo, result['phases'][phase]['commit'] + '^'), expected)
+
+    def test_visual_rebuild_image_is_the_trunk_benchmark_input(self):
+        step = self.contract['steps']['A']
+        step['visual_parity'] = {'path': str(self.root / 'states.json'), 'sha256': 'a' * 64,
+                                 'driver_sha256': 'b' * 64}
+        compiled = 'sha256:' + 'c' * 64
+        measure, calls = self.measure, []
+
+        def measure_built(contract, phase_id, out, *, timeout, image=None):
+            calls.append((phase_id, image))
+            return measure(contract, phase_id, out, timeout=timeout)
+
+        def capture(repo, base, image, manifest, out, seconds, memory):
+            self.assertEqual(image, step['image'])
+            report = out / 'baseline.json'
+            cli.write(report, {'schema': 1, 'image': compiled})
+            return self.ref(report)
+
+        self.measure = measure_built
+        with patch.object(phase_contract, 'verify_visual_baseline', return_value={'image': compiled, 'build': {}}):
+            result = self.dispatch(capture=capture)
+        self.assertEqual(result['status'], 'waiting')
+        self.assertEqual(calls, [('A', compiled), ('C', None)])
 
     def test_parallel_editors_use_separate_worktrees_and_one_verification_lane(self):
         self.contract['parallelism'] = 2

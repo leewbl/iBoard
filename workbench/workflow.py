@@ -167,12 +167,12 @@ def _verified_image(repo, image, timeout, *, commit=None):
     return image_id
 
 
-def build_source_image(repo, base_commit, base_image, timeout):
+def build_source_image(repo, base_commit, base_image, timeout, *, revision=None, rebuild_ui=None):
     """Overlay a clean committed tree on a verified local baseline image.
 
     Only changed tracked paths are overlaid on the fully verified baseline.
-    This does not install dependencies or compile the project. Actual checks
-    still decide whether the resulting image is usable.
+    A workbench-owned UI recipe can rebuild generated assets after the overlay.
+    Dependencies must already be available in the local image.
     """
     repo = Path(repo).resolve(strict=True)
     deadline = time.monotonic() + timeout
@@ -183,7 +183,8 @@ def build_source_image(repo, base_commit, base_image, timeout):
         return left
     if _git(repo, 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError('image build requires a clean worktree')
-    head = cli.sha(repo, 'HEAD')
+    checkout = cli.sha(repo, 'HEAD')
+    head = cli.sha(repo, revision) if revision is not None else checkout
     base = _git(repo, 'rev-parse', '--verify', f'{base_commit}^{{commit}}')
     if subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', base, head]).returncode:
         raise WorkflowError('candidate must descend from the verified baseline')
@@ -207,6 +208,11 @@ def build_source_image(repo, base_commit, base_image, timeout):
             recipe += 'RUN rm -f -- ' + ' '.join(shlex.quote('/app/' + p) for p in paths) + '\n'
         if overlays:
             recipe += 'COPY source/ /app/\n'
+        if rebuild_ui is not None:
+            recipe += ('COPY visual-build.mjs /tmp/iboard-visual-build.mjs\n'
+                       'RUN cd /app && rm -rf -- /app/dist/control-ui '
+                       f'&& GIT_COMMIT={head} node --import /app/scripts/tsx.mjs /tmp/iboard-visual-build.mjs '
+                       '&& test -s /app/dist/control-ui/index.html && rm /tmp/iboard-visual-build.mjs\n')
         tag = 'workbench-candidate:' + uuid.uuid4().hex
         with tempfile.TemporaryFile() as archive_file, tempfile.NamedTemporaryFile(
                 prefix='iboard-image-build-', suffix='.log', delete=False) as log:
@@ -222,6 +228,10 @@ def build_source_image(repo, base_commit, base_image, timeout):
                     pass
             archive_file.seek(0)
             with tarfile.open(fileobj=archive_file, mode='a') as archive:
+                if rebuild_ui is not None:
+                    info = tarfile.TarInfo('visual-build.mjs')
+                    info.size = len(rebuild_ui)
+                    archive.addfile(info, io.BytesIO(rebuild_ui))
                 content = recipe.encode()
                 info = tarfile.TarInfo('Dockerfile')
                 info.size = len(content)
@@ -232,9 +242,9 @@ def build_source_image(repo, base_commit, base_image, timeout):
             env.pop('BUILDKIT_HOST', None)
             subprocess.run(['docker', 'build', '--network=none', '--pull=false', '--tag', tag, '-'],
                            stdin=archive_file, stdout=log, stderr=log, timeout=remaining(), check=True, env=env)
-        if cli.sha(repo, 'HEAD') != head or _git(repo, 'status', '--porcelain', '--untracked-files=all'):
+        if cli.sha(repo, 'HEAD') != checkout or _git(repo, 'status', '--porcelain', '--untracked-files=all'):
             raise WorkflowError('candidate changed during image build')
-        result = _verified_image(repo, tag, min(remaining(), 300))
+        result = _verified_image(repo, tag, min(remaining(), 300), commit=head)
         log_path.unlink()
         return result
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, tarfile.TarError, ValueError) as error:

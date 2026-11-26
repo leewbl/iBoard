@@ -15,6 +15,8 @@ from workbench import cli, visual_pixels, workflow
 
 
 DRIVER = Path(__file__).resolve().parents[1] / 'skills' / 'visual-parity' / 'capture.mjs'
+OPENCLAW_RECIPE = DRIVER.parents[2] / 'examples' / 'openclaw-control-ui-parity' / 'build-login-ui.mjs'
+OPENCLAW_PROFILE = 'openclaw-control-ui-login'
 ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}')
 SHA = re.compile(r'[0-9a-f]{64}')
 IMAGE = re.compile(r'sha256:[0-9a-f]{64}')
@@ -39,7 +41,7 @@ def _text(value, limit, *, empty=False):
 
 def manifest(value):
     if (not isinstance(value, dict) or value.get('schema') != 1
-            or set(value) - {'schema', 'viewport', 'states', 'server'}):
+            or set(value) - {'schema', 'viewport', 'states', 'server', 'rebuild'}):
         raise ParityError('invalid visual state manifest')
     viewport, states = value.get('viewport'), value.get('states')
     if (not isinstance(viewport, dict) or set(viewport) != {'width', 'height'} or
@@ -56,6 +58,11 @@ def manifest(value):
             raise ParityError('invalid loopback test server')
         _relative(server['entry'])
         _route(server['ready'])
+    if 'rebuild' in value:
+        spec = value['rebuild']
+        if (server is None or not isinstance(spec, dict) or set(spec) != {'profile', 'sha256'}
+                or spec['profile'] != OPENCLAW_PROFILE or not SHA.fullmatch(str(spec['sha256']))):
+            raise ParityError('visual rebuild requires the approved OpenClaw build recipe and a loopback server')
     ids = set()
     for state in states:
         if (not isinstance(state, dict) or set(state) != {'id', 'path', 'steps'}
@@ -241,13 +248,47 @@ def _inspect(root, plan, records, revision, image, *, check_repeat, memory_mb=No
     return fingerprint, images, containers
 
 
+def rebuild_image(repo, base, input_image, revision, plan, timeout):
+    started = time.monotonic()
+    spec = plan['rebuild']
+    recipe = _read(OPENCLAW_RECIPE, 80_000)
+    if _digest(recipe) != spec['sha256']:
+        raise ParityError('approved visual build recipe digest changed')
+    changed = cli.git(repo, 'diff', '--name-only', '--no-renames', '-z', base, revision, '--',
+                      timeout=min(15, _bounded_time(started, timeout)))
+    dependencies = {'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', '.pnpmfile.cjs', 'pnpmfile.cjs'}
+    if any(Path(path).name in dependencies or path.startswith('patches/') for path in changed.split('\0') if path):
+        raise ParityError('OpenClaw visual rebuild requires the frozen preinstalled dependencies')
+    image = workflow.build_source_image(repo, base, input_image, _bounded_time(started, timeout),
+                                        revision=revision, rebuild_ui=recipe)
+    return {**spec, 'input_image': input_image, 'revision': revision, 'image': image}
+
+
+def _validate_rebuild(plan, build, revision, image, *, input_image=None):
+    spec = plan.get('rebuild')
+    if spec is None and build is None:
+        return
+    if (spec is None or not isinstance(build, dict) or not IMAGE.fullmatch(str(build.get('input_image')))
+            or build.get('input_image') == image or (input_image and build.get('input_image') != input_image)
+            or build != {**spec, 'input_image': build['input_image'], 'revision': revision, 'image': image}
+            or cli.digest(OPENCLAW_RECIPE) != spec['sha256']):
+        raise ParityError('visual image is missing the frozen rebuild evidence for this source')
+
+
 def capture_baseline(repo, revision, image, manifest_path, out, timeout, memory_mb):
+    if out.exists() or out.is_symlink():
+        raise ParityError('visual evidence output already exists')
     started = time.monotonic()
     raw = _read(Path(manifest_path), 80_000)
     plan = manifest(json.loads(raw))
     revision = cli.sha(repo, revision, timeout=15)
     _source_paths(repo, revision, plan)
     image = workflow._verified_image(repo, image, min(timeout, 300), commit=revision)
+    build = None
+    if 'rebuild' in plan:
+        build = rebuild_image(repo, revision, image, revision, plan, _bounded_time(started, timeout))
+        image = build['image']
+        _validate_rebuild(plan, build, revision, image)
     out.mkdir(parents=True, mode=0o700)
     plan_path = out / 'manifest.json'
     plan_path.write_bytes(raw)
@@ -255,8 +296,11 @@ def capture_baseline(repo, revision, image, manifest_path, out, timeout, memory_
     records = _run(out, plan, driver, revision, image, _bounded_time(started, timeout), memory_mb)
     _inspect(out, plan, records, revision, image, check_repeat=True)
     path = out / 'baseline.json'
-    cli.write(path, {'schema': 1, 'revision': revision, 'image': image, 'driver_sha256': _digest(driver),
-                     'manifest_sha256': _digest(raw), 'states': records})
+    proof = {'schema': 1, 'revision': revision, 'image': image, 'driver_sha256': _digest(driver),
+             'manifest_sha256': _digest(raw), 'states': records}
+    if build is not None:
+        proof['build'] = build
+    cli.write(path, proof)
     return _reference(path)
 
 
@@ -269,13 +313,14 @@ def read_baseline(ref, expected_base):
     proof = json.loads(raw)
     if (not isinstance(proof, dict) or _digest(raw) != ref['sha256']
             or proof.get('schema') != 1 or proof.get('revision') != expected_base
-            or set(proof) != {'schema', 'revision', 'image', 'driver_sha256', 'manifest_sha256', 'states'}
+            or set(proof) - {'build'} != {'schema', 'revision', 'image', 'driver_sha256', 'manifest_sha256', 'states'}
             or not IMAGE.fullmatch(str(proof.get('image'))) or proof.get('driver_sha256') != cli.digest(DRIVER)):
         raise ParityError('visual baseline digest, Git revision, or trusted driver changed')
     payload = _read(path.with_name('manifest.json'), 80_000)
     if _digest(payload) != proof.get('manifest_sha256'):
         raise ParityError('frozen visual state manifest changed')
     plan = manifest(json.loads(payload))
+    _validate_rebuild(plan, proof.get('build'), expected_base, proof['image'])
     return path, proof, plan
 
 
@@ -306,7 +351,9 @@ def _measure(root, plan, old, live, *, masks=False):
     return results
 
 
-def compare_candidate(repo, base, ref, revision, image, out, timeout, memory_mb):
+def compare_candidate(repo, base, ref, revision, image, out, timeout, memory_mb, *, build=None):
+    if out.exists() or out.is_symlink():
+        raise ParityError('visual evidence output already exists')
     started = time.monotonic()
     path, proof, plan = read_baseline(ref, base)
     before, pixels, containers = _inspect(path.parent, plan, proof['states'], base, proof['image'], check_repeat=True)
@@ -314,6 +361,12 @@ def compare_candidate(repo, base, ref, revision, image, out, timeout, memory_mb)
     if subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', base, revision], timeout=15).returncode:
         raise ParityError('visual candidate must descend from its frozen baseline')
     _source_paths(repo, revision, plan)
+    if 'rebuild' in plan and build is None:
+        if image != proof['image']:
+            raise ParityError('select the frozen baseline image when rebuilding a visual candidate')
+        build = rebuild_image(repo, base, image, revision, plan, _bounded_time(started, timeout))
+        image = build['image']
+    _validate_rebuild(plan, build, revision, image, input_image=proof['image'])
     image = workflow._verified_image(repo, image, min(_bounded_time(started, timeout), 300), commit=revision)
     _same_runtime(proof['image'], image, _bounded_time(started, timeout))
     driver = _read(DRIVER, 100_000)
@@ -327,8 +380,11 @@ def compare_candidate(repo, base, ref, revision, image, out, timeout, memory_mb)
     states = _measure(out, plan, pixels, images, masks=True)
     equal = all(check['equal'] for state in states.values() for check in state.values())
     result = out / 'result.json'
-    cli.write(result, {'schema': 1, 'baseline': ref, 'candidate': revision, 'image': image, 'states': states,
-                       'captures': captures, 'equal': equal})
+    record = {'schema': 1, 'baseline': ref, 'candidate': revision, 'image': image, 'states': states,
+              'captures': captures, 'equal': equal}
+    if build is not None:
+        record['build'] = build
+    cli.write(result, record)
     return _reference(result), equal
 
 
@@ -345,7 +401,7 @@ def require(data, head, *, phase=None):
     result = json.loads(payload)
     if (not isinstance(result, dict) or data['surface'] != 'ui'
             or _digest(payload) != ref['sha256'] or result.get('schema') != 1
-            or set(result) != {'schema', 'baseline', 'candidate', 'image', 'states', 'captures', 'equal'}
+            or set(result) - {'build'} != {'schema', 'baseline', 'candidate', 'image', 'states', 'captures', 'equal'}
             or result.get('candidate') != head or result.get('baseline') != binding or result.get('equal') is not True
             or not IMAGE.fullmatch(str(result.get('image')))):
         raise ParityError('visual parity evidence differs from the required candidate')
@@ -356,6 +412,7 @@ def require(data, head, *, phase=None):
     base = phase['contract']['plan']['baseline'] if phase else data['base_commit']
     memory = phase['contract']['memory_mb'] if phase else None
     base_path, proof, plan = read_baseline(binding, base)
+    _validate_rebuild(plan, result.get('build'), head, result['image'], input_image=proof['image'])
     before, old, containers = _inspect(base_path.parent, plan, proof['states'], base, proof['image'],
                                        check_repeat=True, memory_mb=memory)
     current, new, used = _inspect(path.parent, plan, result['captures'], head, result['image'],

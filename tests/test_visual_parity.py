@@ -116,6 +116,52 @@ class VisualParityTests(unittest.TestCase):
                                                self.root/'baseline', 60, 1024)
         self.assertFalse((self.root/'baseline'/'baseline.json').exists())
 
+    def test_rebuilds_both_revisions_and_rejects_unrebuilt_candidates(self):
+        recipe = visual_parity.OPENCLAW_RECIPE.read_bytes()
+        self.plan['rebuild'] = {'profile': visual_parity.OPENCLAW_PROFILE,
+                                'sha256': cli.digest(visual_parity.OPENCLAW_RECIPE)}
+        self.plan['server'] = {'entry': 'index.html', 'args': [], 'port': 5173, 'ready': '/'}
+        for state in self.plan['states']:
+            state['path'] = '/'
+        self.plan_path.write_text(json.dumps(self.plan))
+        raw, original, changed = ('sha256:' + char * 64 for char in 'abc')
+        with patch.object(visual_parity.workflow, '_verified_image', side_effect=lambda repo, image, *a, **kw: image), \
+                patch.object(visual_parity.workflow, 'build_source_image', side_effect=[original, changed]) as build, \
+                patch.object(visual_parity, '_same_runtime'), patch.object(visual_parity, 'run_sandbox', self.capture):
+            baseline = visual_parity.capture_baseline(self.repo, self.base, raw, self.plan_path,
+                                                      self.root/'baseline', 60, 1024)
+            proof = cli.read(baseline['path'])
+            self.assertEqual(proof['build']['input_image'], raw)
+            self.assertEqual(proof['image'], original)
+            (self.repo/'index.html').write_text('<main>candidate</main>')
+            cli.git(self.repo, 'commit', '-qam', 'candidate')
+            head = cli.sha(self.repo, 'HEAD')
+            with self.assertRaisesRegex(visual_parity.ParityError, 'select the frozen baseline image'):
+                visual_parity.compare_candidate(self.repo, self.base, baseline, head, changed,
+                                               self.root/'unrebuilt', 60, 1024)
+            comparison, equal = visual_parity.compare_candidate(self.repo, self.base, baseline, head, original,
+                                                                 self.root/'rebuilt', 60, 1024)
+            self.assertTrue(equal)
+            self.assertEqual([(call.args[2], call.kwargs['revision'], call.kwargs['rebuild_ui'])
+                              for call in build.call_args_list], [(raw, self.base, recipe), (original, head, recipe)])
+            data = {'visual_baseline': baseline, 'visual_parity_result': comparison, 'surface': 'ui', 'base_commit': self.base}
+            self.assertEqual(visual_parity.require(data, head), comparison)
+            result = Path(comparison['path'])
+            contents = cli.read(result)
+            del contents['build']
+            cli.write(result, contents)
+            data['visual_parity_result'] = {'path': str(result), 'sha256': cli.digest(result)}
+            with self.assertRaisesRegex(visual_parity.ParityError, 'missing the frozen rebuild evidence'):
+                visual_parity.require(data, head)
+
+            (self.repo/'package.json').write_text('{"dependencies":{"changed":"2.0.0"}}\n')
+            cli.git(self.repo, 'add', 'package.json')
+            cli.git(self.repo, 'commit', '-qm', 'updated dependency')
+            with self.assertRaisesRegex(visual_parity.ParityError, 'frozen preinstalled dependencies'):
+                visual_parity.compare_candidate(self.repo, self.base, baseline, cli.sha(self.repo, 'HEAD'), original,
+                                               self.root/'new-dependencies', 60, 1024)
+            self.assertEqual(build.call_count, 2)
+
     def test_capturing_preserves_a_sandbox_failure_without_accepting_baseline(self):
         with patch.object(visual_parity.workflow, '_verified_image', return_value='sha256:' + 'a'*64), \
                 patch.object(visual_parity, 'run_sandbox', side_effect=visual_parity.SandboxError('Docker stopped')):

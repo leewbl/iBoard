@@ -93,7 +93,7 @@ def _baseline_result(result_path, spec, step, memory, trunk, probe):
     return ref, images['baseline']
 
 
-def baseline(contract, phase_id, out, *, timeout, runner=benchmark.run):
+def baseline(contract, phase_id, out, *, timeout, image=None, runner=benchmark.run):
     """Measure the plan's original trunk before the phase has an implementation."""
     output = Path(out).expanduser().resolve()
     path = output / 'result.json'
@@ -105,12 +105,13 @@ def baseline(contract, phase_id, out, *, timeout, runner=benchmark.run):
         phase = next(entry for entry in contract['plan']['phases'] if entry['id'] == phase_id)
         probe = phase['verify']['perf']['probe']
         step, memory = contract['steps'][phase_id], contract['memory_mb']
+        image = image or step['image']
         with TemporaryDirectory(prefix='iboard-phase-benchmark-') as scratch:
             manifest, helpers, spec = _capture_inputs(step, probe, Path(scratch))
-            runner(repo=contract['repo'], base=trunk, revision=trunk, image=step['image'], manifest=manifest,
+            runner(repo=contract['repo'], base=trunk, revision=trunk, image=image, manifest=manifest,
                    helpers=helpers, out=output, timeout=remaining(), memory_mb=memory)
         ref, pinned = _baseline_result(path, spec, step, memory, trunk, probe)
-        if step['image'].startswith('sha256:') and pinned != step['image']:
+        if image.startswith('sha256:') and pinned != image:
             raise PhaseRuntimeError('trunk control did not use the approved immutable image')
         remaining()
         return ref
