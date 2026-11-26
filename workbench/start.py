@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from workbench import autopilot, cli, workflow
+from workbench import autopilot, cli, feature_context, workflow
 from workbench.task_lock import task_lock, TaskBusy
 from model import glm_vision
 
@@ -108,6 +108,7 @@ def _resume_locked(task_path, *, run, vision):
         if cli.enforce_budget(data):
             raise StartError('task budget exceeded; an explicitly authorized increase is required')
         stage = _read_input_stage(task)
+        feature_context.read(data)
         data['status'] = 'running'
         data['events'].append({'at': cli.now(), 'type': 'resume', 'reason': 'resume retained task'})
         cli.write(task, data)
@@ -166,7 +167,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           source_mode='workspace', candidate_image=None, build_source_image=False, memory_mb=2048,
           log_files=(), screenshot_files=(), required_ci_workflows=None, ci_skip_policy=None, ci_skip_reason=None,
           publish_only=False, verification_target=None, criteria=(), retained_contract=None,
-          local_verification=None, implementer='glm-implementer',
+          local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
@@ -185,6 +186,17 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('existing PR verification requires frozen criteria, repository, and a completed request')
     if verification_target is None and (retained_contract or local_verification):
         raise StartError('retained verification settings require an existing PR target')
+    if bool(feature_manifest) != bool(feature_sha256):
+        raise StartError('feature handoff requires its manifest and expected SHA-256')
+    handoff = None
+    if feature_manifest:
+        if kind != 'feature' or verification_target is not None or criteria:
+            raise StartError('feature handoff requires a new feature task with its own frozen criteria')
+        try:
+            handoff = feature_context.load_input(feature_manifest, feature_sha256, repo)
+        except (OSError, ValueError, cli.WorkbenchError) as error:
+            raise StartError(str(error)) from error
+        criteria = handoff['criteria']
     try:
         required_ci_workflows = workflow.validate_required_ci_workflows(
             required_ci_workflows, required=bool(pr_repo) and not publish_only and verification_target is None)
@@ -254,6 +266,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
     if inspected.returncode:
         raise StartError('Docker image must already exist locally')
     baseline = {'base_commit':verification_target['base']} if verification_target is not None else {}
+    if handoff is not None:
+        baseline['base_commit'] = handoff['baseline']
     info = prepare(task_id=task_id, repo=repo, tasks_root=tasks_root, workspaces_root=workspaces_root,
                    source=origin, kind=kind, surface=surface, iterations=iterations,
                    seconds=seconds, implementer=implementer, started_at=began.isoformat(),
@@ -272,6 +286,10 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 cli.write(task, data)
                 if criteria:
                     autopilot._add_criteria(task, criteria)
+                if handoff is not None:
+                    data = cli.read(task)
+                    feature_context.freeze(task, data, handoff)
+                    cli.write(task, data)
                 if retained_contract:
                     data = cli.read(task)
                     prior = retained_contract['criteria']
@@ -370,6 +388,8 @@ def main(argv=None):
     parser.add_argument('--candidate-image')
     parser.add_argument('--build-source-image', action='store_true')
     parser.add_argument('--memory-mb', type=int, default=2048)
+    parser.add_argument('--feature-manifest', help='authorized Feature handoff manifest for a new feature task')
+    parser.add_argument('--feature-sha256', help='expected SHA-256 of the authorized Feature handoff manifest')
     args = parser.parse_args(argv)
     result = start(task_id=args.id, repo=args.repo, issue_file=args.issue_file, issue_url=args.issue_url,
                    source=args.source, kind=args.kind, surface=args.surface, iterations=args.iterations,
@@ -378,7 +398,8 @@ def main(argv=None):
                    candidate_image=args.candidate_image, build_source_image=args.build_source_image,
                    memory_mb=args.memory_mb, log_files=args.log_file, screenshot_files=args.screenshot,
                    required_ci_workflows=args.required_ci_workflows, publish_only=args.publish_only,
-                   ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason)
+                   ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason,
+                   feature_manifest=args.feature_manifest, feature_sha256=args.feature_sha256)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

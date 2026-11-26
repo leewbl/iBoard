@@ -358,8 +358,36 @@ def validate_impact_review(data, target, impact, reports, actor):
             raise DeliveryError('impact evidence is stale or not an independent candidate run')
 
 
+def feature_resolution_labels(data, target, reports, actor):
+    paths = set()
+    for evidence in data['evidence']:
+        if evidence.get('superseded') or not _valid_run(evidence, actor, 'resolution', target, data['repo']):
+            continue
+        path = evidence['path']
+        try:
+            if cli.digest(path) == evidence['sha256']:
+                paths.add((path, evidence['sha256']))
+        except cli.WorkbenchError:
+            continue
+    return {label for label, report in reports.items() if isinstance(report, dict)
+            and isinstance(report.get('path'), str) and isinstance(report.get('sha256'), str)
+            and (report['path'], report['sha256']) in paths}
+
+
+def validate_feature_resolution(ids, assessments, labels):
+    missing = [item['id'] for item in assessments if item['id'] in ids
+               and not labels.intersection(item['evidence'])]
+    if missing:
+        raise DeliveryError('feature runtime criteria lack independent resolution citations: ' + ', '.join(missing))
+
+
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
+    from workbench import feature_context
+    try:
+        feature = feature_context.read(data)
+    except (OSError, ValueError, cli.WorkbenchError) as error:
+        raise DeliveryError(str(error)) from error
     desired_ids = {criterion['id'] for criterion in data['criteria']}
     for item in data['evidence']:
         if (item.get('superseded') or item['kind'] != 'independent-review' or item['commit'] != target
@@ -367,8 +395,10 @@ def _independent_verification(data, target, *, destination=None):
                 or item['criteria_digest'] != cli.criteria_digest(data)):
             continue
         try:
+            if feature and cli.digest(item['path']) != item['sha256']:
+                continue
             report = json.loads(Path(item['path']).read_text())
-        except (OSError, ValueError):
+        except (OSError, ValueError, cli.WorkbenchError):
             continue
         if (report.get('verdict') != 'PASS' or report.get('candidate_commit') != target
                 or report.get('baseline_commit') != data['base_commit']
@@ -426,6 +456,15 @@ def _independent_verification(data, target, *, destination=None):
         required = [('test-result', target)]
         if data['kind'] == 'bug' or 'verification_target' in data:
             required += [('reproduction', data['base_commit']), ('resolution', target)]
+        elif feature:
+            required.append(('resolution', target))
+        if feature:
+            try:
+                feature_context.verify_review(data, target, report.get('architecture'))
+                labels = feature_resolution_labels(data, target, reports, actor)
+                validate_feature_resolution(feature_context.runtime_criteria(feature), assessments, labels)
+            except (OSError, ValueError, cli.WorkbenchError, DeliveryError):
+                continue
         if all(any(_valid_run(evidence, actor, kind, commit, data['repo']) for evidence in data['evidence'])
                for kind, commit in required):
             if data.get('surface') == 'ui':

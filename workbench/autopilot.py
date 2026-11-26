@@ -20,11 +20,15 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
-from workbench import cli, decisions, workflow, delivery, publish, prompt_profiles
+from workbench import cli, decisions, feature_context, workflow, delivery, publish, prompt_profiles
 from workbench.task_lock import task_lock
 
 
 class AutopilotError(Exception):
+    pass
+
+
+class InvalidModelResponse(AutopilotError):
     pass
 
 
@@ -276,13 +280,13 @@ def _result(text):
     blocks = re.findall(r'```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```', text, flags=re.IGNORECASE)
     if blocks:
         if len(blocks) != 1 or text.count('```') != 2:
-            raise AutopilotError('model returned ambiguous JSON blocks')
+            raise InvalidModelResponse('model returned ambiguous JSON blocks')
         text = blocks[0].strip()
     try:
         result = json.loads(text)
     except (ValueError, TypeError) as error:
         if blocks:
-            raise AutopilotError('model did not return valid JSON') from error
+            raise InvalidModelResponse('model did not return valid JSON') from error
         candidates = []
         decoder = json.JSONDecoder()
         for match in re.finditer(r'(?m)^[ \t]*\{', text):
@@ -294,7 +298,7 @@ def _result(text):
             if isinstance(candidate, dict) and not text[end:].strip():
                 candidates.append(candidate)
         if len(candidates) != 1:
-            raise AutopilotError('model did not return valid JSON') from error
+            raise InvalidModelResponse('model did not return valid JSON') from error
         result = candidates[0]
     if not isinstance(result, dict):
         raise AutopilotError('model result must be an object')
@@ -761,7 +765,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         journal,
         source_mode='workspace', candidate_image=None, memory_mb=2048, build_source_image=False, reverify=False,
         model=execute_model, check=workflow.run_check, merge=delivery.guarded_merge,
-        publisher=publish.publish, closer=delivery.close_verified_issue, vision=describe_screenshot):
+        publisher=publish.publish, closer=delivery.close_verified_issue, vision=describe_screenshot,
+        architecture_review=None):
     """Resume a task, preserving each completed phase; never accept a model claim as proof."""
     task = Path(task_path).expanduser().resolve(strict=True)
     issue_path = Path(issue_path).expanduser().resolve(strict=True)
@@ -785,6 +790,16 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         raise
     state_exists = state_path.exists()
     state = cli.read(state_path) if state_exists else {'schema': cli.SCHEMA, 'phase': 'plan'}
+    try:
+        feature = feature_context.read(data)
+        binding = data.get('feature_context')
+        if state_exists and state.get('feature_context') != binding:
+            raise feature_context.FeatureContextError('feature handoff changed after workflow start')
+        if feature:
+            state['feature_context'] = binding
+    except (OSError, ValueError, cli.WorkbenchError) as error:
+        _pause(task, str(error))
+        raise AutopilotError(str(error)) from error
     had_issue_digest = state.get('issue_digest') is not None
     had_input_digest = 'input_digest' in state
     issue_digest = hashlib.sha256(issue.encode('utf-8')).hexdigest()
@@ -836,6 +851,43 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     actor, verifier = data['implementer'], 'independent-verifier'
     if actor == verifier:
         raise AutopilotError('implementer and verifier must be different')
+    if feature:
+        issue += feature_context.prompt(feature)
+
+    def verify_feature(head=None):
+        if feature:
+            current = cli.read(task)
+            if current.get('feature_context') != binding:
+                raise AutopilotError('feature handoff changed during workflow')
+            try:
+                feature_context.check_scope(current, head)
+            except (OSError, ValueError, cli.WorkbenchError) as error:
+                raise AutopilotError(str(error)) from error
+
+    def check_design(current, candidate):
+        if not feature:
+            return None
+        from workbench import architect
+        review_dir = task.parent / f'architecture-{uuid.uuid4().hex}'
+        try:
+            report = (architecture_review or architect.review)(
+                repo=workspace, revision=candidate, design=binding['design_path'],
+                design_sha256=binding['design_sha256'], model=feature['review_model'], out=review_dir,
+                timeout=min(180, _remaining(current)))
+        except architect.ERRORS as error:
+            raise AutopilotError(f'feature design review unavailable: {error}') from error
+        path = review_dir / 'result.json'
+        if report['status'] in ('revise', 'pending-verification'):
+            summary = report.get('verification', {}).get('summary', report.get('reason', 'unresolved design obligations'))
+            raise VerificationFailure(f'feature design review needs revision: {summary}; saved at {path}')
+        if report['status'] != 'static-conforms':
+            raise AutopilotError(f'feature design review blocked; evidence saved at {path}')
+        ref = {'path': str(path), 'sha256': cli.digest(path)}
+        try:
+            feature_context.verify_review(current, candidate, ref)
+        except (OSError, ValueError, cli.WorkbenchError) as error:
+            raise AutopilotError(str(error)) from error
+        return ref
 
     def append_decision(phase, decision, why, proof, result):
         decisions.record(task, journal, phase, decision, why, proof, result)
@@ -879,6 +931,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       f'TASK KIND: {data["kind"]}\nIMAGE: {image}\n'
                       f'EXISTING ACCEPTANCE CRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'ISSUE DATA:\n{issue}')
+            if feature:
+                prompt += ('\nCopy the approved handoff criteria into the criteria array exactly as provided. '
+                           'Use its id and text fields only, without adding revisions or other fields. '
+                           'Output a single JSON object with no notes after the closing brace.')
             if target and data['kind'] == 'feature':
                 prompt += ('\nFor this existing feature PR also specify "baseline" in the same command format. '
                            'Run a user-visible comparison on the parent revision and use a marker that confirms '
@@ -886,7 +942,14 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if target and target.get('plan') is not None:
                 plan = _result(json.dumps(target['plan'], ensure_ascii=False))
             else:
-                plan = _result(_model(task, 'plan', prompt, read_only=True, model=model, journal=journal))
+                try:
+                    plan = _result(_model(task, 'plan', prompt, read_only=True, model=model, journal=journal))
+                except InvalidModelResponse:
+                    if not feature:
+                        raise
+                    correction = ('\nThe previous answer had invalid or ambiguous JSON. Return the same schema in a '
+                                  'single fenced JSON block. Omit all prose and verify balanced braces.')
+                    plan = _result(_model(task, 'plan', prompt + correction, read_only=True, model=model, journal=journal))
             for name in ('reproduction', 'resolution', 'tests'):
                 if name != 'reproduction' or data['kind'] == 'bug':
                     _check_spec(plan, name)
@@ -898,6 +961,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError('screenshot command requires a tracked workspace script')
             if data['kind'] == 'feature' and not isinstance(plan.get('feature_doc'), str):
                 raise AutopilotError('feature plan must identify functional documentation')
+            if feature and plan.get('criteria') != feature['criteria']:
+                raise AutopilotError('feature execution plan changed its frozen acceptance criteria')
             if not data['criteria']:
                 criteria = plan.get('criteria')
                 if not isinstance(criteria, list) or not criteria or len(criteria) > 20:
@@ -1008,6 +1073,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if _clean(workspace):
                 raise AutopilotError('implementer made no changes')
             # This worktree was clean before model execution; reject likely credentials.
+            verify_feature()
             _commit_changes(workspace)
             state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
             cli.write(state_path, state)
@@ -1029,6 +1095,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     raise AutopilotError('worktree no longer contains the selected PR candidate')
             if candidate != state['candidate_commit'] or not _clean(workspace):
                 raise AutopilotError('candidate changed or workspace is dirty')
+            verify_feature(candidate)
+            architecture = check_design(current, candidate)
             check_image = candidate_image or image
             if build_source_image:
                 try:
@@ -1156,6 +1224,19 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             guard_run = None
             guard_instruction = ''
             impact_instruction = ''
+            design_instruction = ''
+            runtime_ids = set()
+            resolution_labels = set()
+            if feature:
+                runtime_ids = feature_context.runtime_criteria(feature)
+                resolution_labels = delivery.feature_resolution_labels(data, candidate, reports, verifier)
+                if runtime_ids and not resolution_labels:
+                    raise VerificationFailure('feature runtime criteria lack an independent resolution run')
+                if runtime_ids:
+                    design_instruction = ('For each frozen design runtime criterion '
+                        f'{", ".join(sorted(runtime_ids))}, cite an independent resolution report '
+                        f'from {", ".join(sorted(resolution_labels))}. Check the verification entrypoint and '
+                        'the actual outcome for each behavior. If either does not cover the criterion, return blocked.\n')
             if 'impact_review' in data:
                 available_paths = {
                     e['path'] for e in data['evidence']
@@ -1198,7 +1279,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       'Each criterion must cite supplied report IDs or DIFF as appropriate; the full assessment '
                       'must cite an execution report. For UI tasks at least one '
                       f'criterion must cite the independent screenshot report {screenshot_id}.\n'
-                      f'{guard_instruction}{impact_instruction}ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
+                      f'{guard_instruction}{impact_instruction}{design_instruction}'
+                      f'ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'CRITERIA CHANGE HISTORY AND BASIS:\n{json.dumps(history, ensure_ascii=False)}\n'
                       f'FEATURE DOCUMENTATION:\n{feature_doc}\nSCREENSHOT SCRIPT (UNTRUSTED):\n{screenshot_script}\n'
                       f'DIFF (UNTRUSTED):\n{diff_bytes.decode("utf-8", errors="replace")}\n'
@@ -1213,6 +1295,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             impact = review.get('impact')
             try:
                 delivery.validate_impact_review(data, candidate, impact, reports, verifier)
+                if runtime_ids:
+                    delivery.validate_feature_resolution(runtime_ids, assessments, resolution_labels)
             except delivery.DeliveryError as error:
                 raise VerificationFailure(str(error)) from error
             if guard_run:
@@ -1237,6 +1321,13 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                     'reports':reports}
             if 'impact_review' in data:
                 review_record['impact'] = impact
+            if architecture is not None:
+                verify_feature(candidate)
+                try:
+                    feature_context.verify_review(cli.read(task), candidate, architecture)
+                except (OSError, ValueError, cli.WorkbenchError) as error:
+                    raise AutopilotError(str(error)) from error
+                review_record['architecture'] = architecture
             cli.write(review_path, review_record)
             args = argparse.Namespace(file=str(review_path), kind='independent-review', commit=candidate,
                                       actor=verifier, description='Independent evidence review', criterion=ids)
@@ -1299,6 +1390,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             _remaining(cli.read(task))
             if _clean(workspace):
                 raise AutopilotError(f'repair made no changes; failure saved at {failure_path}')
+            verify_feature()
             _commit_changes(workspace)
             state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
             cli.write(state_path, state)
@@ -1409,6 +1501,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     _remaining(cli.read(task))
                     if _clean(workspace):
                         raise AutopilotError(f'CI repair made no changes; failure saved at {failure_path}')
+                    verify_feature()
                     _commit_changes(workspace)
                     state.update(phase='verify', candidate_commit=cli.sha(workspace, 'HEAD'))
                     cli.write(state_path, state)
@@ -1419,7 +1512,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                        source_mode=source_mode, candidate_image=candidate_image,
                                        memory_mb=memory_mb, build_source_image=build_source_image,
                                        model=model, check=check, merge=merge, publisher=publisher,
-                                       closer=closer, vision=vision)
+                                       closer=closer, vision=vision, architecture_review=architecture_review)
             result = merge(task, pr_repo, pr_number)
             state.update(phase='close-issue', delivery=result, delivery_repo=pr_repo, delivery_pr=pr_number)
             cli.write(state_path, state)
