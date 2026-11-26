@@ -8,7 +8,7 @@
 
 | 源码 | 触发情形 | 产物和证据 | 宿主依赖 | iBoard 状态和接入条件 |
 | --- | --- | --- | --- | --- |
-| [`architect`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/architect/SKILL.md) | 跨函数或模块的复杂设计 | 比较至少两套类型、签名及模块边界，说明状态所有者和选型 | 代码读取；争议设计调用 Arena | 待接入。设计选择及取舍应先写入计划，再授权实现。 |
+| [`architect`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/architect/SKILL.md) | 跨函数或模块的复杂设计 | 比较至少两套类型、签名及模块边界，说明状态所有者和选型 | 代码读取；争议设计调用 Arena | 原生入口基于固定提交生成两套备选并独立比较，明确接口、状态所有者和检查项。可按选定设计审阅候选 diff，运行验收仍需实测。自动将争议方案送入 Arena 和任务阶段接入仍待完成。 |
 | [`arena`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/arena/SKILL.md) | 同一复杂任务有多个合理方案 | 隔离候选、逐项评分、独立跨供应商评审和综合后验证 | Cursor Task 或 Claude Agent，角色模型、工件目录和工作树 | 已有代码补丁入口。候选从同一基线并发生成，盲评、综合、断网验证和独立终审后导出。任意产物和评审供应商不可用时的降级待接入。 |
 | [`automate-me`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/automate-me/SKILL.md) | 将个人工作习惯整理为模式技能 | 工作区内重复信号及证据、用户确认后的模式技能 | Cursor 会话、Task、AskQuestion、create-skill；Claude 需适配会话和创作入口 | 待接入。历史范围只限当前工作区；将可证实的偏好与一次性反馈分开。 |
 | [`benchmark-checklist`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/benchmark-checklist/SKILL.md) | 发布性能数据、比较实现或检验优化 | 正确性、实际工作量、瓶颈、参数、交替复测与中位数/范围；证据不足判未确定 | 可观测环境、同构样本、分析器或既有基准工具 | 原生入口核对固定负载、输出、错误和速率界限，交替测量并报告中位数和范围。声明方向性差异时要求调优、独立剖析证据和适用的端到端数据。 |

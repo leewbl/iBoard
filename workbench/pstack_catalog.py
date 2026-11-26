@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from workbench.arena import PSTACK_SOURCE as ARENA_SOURCE
+from workbench.architect import PSTACK_SOURCE as ARCHITECT_SOURCE
 from workbench.benchmark import PSTACK_SOURCE as BENCHMARK_SOURCE
 from workbench.decisions import PSTACK_SOURCE as DECISION_SOURCE
 from workbench.hillclimb import PSTACK_SOURCE as HILLCLIMB_SOURCE
@@ -62,6 +63,8 @@ def main():
                                  if source == STACK_SHIPPING_SOURCE else []) +
                                 (['python3 -m workbench.stack_autopilot'] if source == STACK_AUTOPILOT_SOURCE else []) +
                                 (['python3 -m workbench.arena'] if source == ARENA_SOURCE else []) +
+                                (['python3 -m workbench.architect plan', 'python3 -m workbench.architect review']
+                                 if source == ARCHITECT_SOURCE else []) +
                                 (['python3 -m workbench.benchmark'] if source == BENCHMARK_SOURCE else []) +
                                 (['python3 -m workbench.hillclimb'] if source == HILLCLIMB_SOURCE else []) +
                                 ([f'python3 -m workbench.project_verify {PROJECT_VERIFICATION_COMMANDS[source]}']
