@@ -58,11 +58,15 @@ python3 -m workbench.phase_dispatch run --manifest "$DISPATCH" \
 
 Each eligible phase gets a distinct task and worktree at its declared Git parent. All listed prerequisites must have accepted local evidence. The dispatcher measures the original trunk before the model edits. After the change, it validates the candidate unit and live runs and measures performance on the same pinned candidate image. The independent review must cite both executions. The final source diff must stay inside the phase scope. Independent phases can proceed as their own prerequisites clear. Call the same command with the same evidence directory to continue within the original deadline. Completed phases are audited again before dependent work starts.
 
+For OpenClaw, a step can declare `local_gate` with `files` listing the approved tracked `src/**/*.test.ts` suites covered by the Gateway Vitest configuration. Use `reason` to record their purpose. The dispatcher freezes this policy before implementation and requires both native local test runs in addition to the planned acceptance evidence.
+
 A change to an interaction needs explicit approval of its exact commit and evidence, using `python3 -m workbench.phase_dispatch approve --task "$PHASE_TASK" --candidate "$CANDIDATE" --result-sha256 "$PHASE_RESULT_SHA256" --approved-by "$OPERATOR" --reason "$REVIEW_REASON"`. Run the dispatcher again to release dependent local tasks.
 
 ## Land the approved phases
 
 To authorize GitHub delivery, include `destination` as the personal fork's exact `owner/repo` in the original dispatch manifest. Run the separate shipping command with the required workflow names. Shipping shares the dispatch deadline and records its remote write intents.
+
+For phases using an approved local gate, `--ci-workflow` can be omitted. The fork must have Actions disabled. Branch rules, unresolved review threads, and required review can still block delivery.
 
 ```sh
 python3 -m workbench.phase_ship --manifest "$DISPATCH" --sha256 "$APPROVED_DISPATCH_SHA256" \

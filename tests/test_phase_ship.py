@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, delivery, phase_dispatch, phase_ship, publish
+from workbench import cli, delivery, phase_dispatch, phase_ship, publish, stack_ship
 
 
 REPO = 'alice/project'
@@ -237,6 +237,20 @@ class PhaseShipTests(unittest.TestCase):
         self.assertEqual(self.fork.writes, [('publish', 1), ('merge', 1), ('publish', 2), ('merge', 2)])
         self.assertEqual(self.replays, [])
         self.assertEqual(cli.read(self.tasks['Label'])['status'], 'paused')
+
+    def test_local_delivery_uses_actions_setting_and_review_gates_without_ci_status(self):
+        member = {'number': 1, 'head': self.first, 'base': self.trunk, 'head_branch': 'workbench/example'}
+        observed = {'status': 'threads-clear', 'base_branch': 'main', 'head_branch': member['head_branch'],
+                    'draft': False, 'cross_repository': False, 'mergeability': 'MERGEABLE',
+                    'merge_state': 'UNSTABLE', 'review_decision': None, 'reason': 'no-unresolved-review-threads'}
+        with patch.object(delivery, 'require_actions_disabled') as actions, \
+                patch('workbench.pr_watch.snapshot', return_value=observed) as snapshot:
+            phase_ship._ready_for_delivery(self.fork, REPO, member, {'local_gate': {'files': ['example']}})
+            actions.assert_called_once_with(self.fork, REPO)
+            snapshot.assert_called_once_with(self.fork, REPO, 1, 'threads-only', self.first, self.trunk)
+            observed['review_decision'] = 'REVIEW_REQUIRED'
+            with self.assertRaisesRegex(stack_ship.ShippingError, 'not ready'):
+                phase_ship._ready_for_delivery(self.fork, REPO, member, {'local_gate': {'files': ['example']}})
 
     def test_squashed_landing_replays_child_and_requires_fresh_approval(self):
         self.fork.squash = True

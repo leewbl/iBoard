@@ -108,6 +108,18 @@ def _landing(github, repo, member, observed):
     return observed
 
 
+def _ready_for_delivery(github, repo, member, data):
+    if not data.get('local_gate'):
+        return stack_ship._ready(github, repo, member)
+    delivery.require_actions_disabled(github, repo)
+    report = pr_watch.snapshot(github, repo, member['number'], 'threads-only', member['head'], member['base'])
+    if (report['status'] != 'threads-clear' or report['base_branch'] != 'main'
+            or report['head_branch'] != member['head_branch'] or report['draft'] or report['cross_repository']
+            or report['mergeability'] != 'MERGEABLE' or report['merge_state'] not in ('CLEAN', 'UNSTABLE')
+            or report['review_decision'] in ('REVIEW_REQUIRED', 'CHANGES_REQUESTED')):
+        raise stack_ship.ShippingError('local phase publication is not ready: ' + report['reason'])
+
+
 def _default_replay(task, base, output, *, seconds):
     from workbench import phase_reverify
 
@@ -316,7 +328,7 @@ def _run(root, contract, workflows, github, replay, publisher, merger):
                     if step['state'] != 'published':
                         save(ident, 'published', number=number)
                     try:
-                        stack_ship._ready(github, repo, pinned)
+                        _ready_for_delivery(github, repo, pinned, data)
                     except stack_ship.ShippingError as error:
                         return finish('awaiting-gates', ident, str(error))
 

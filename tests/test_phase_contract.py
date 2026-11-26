@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, multiphase, phase_contract, phase_reverify, workflow
+from workbench import cli, local_gate, multiphase, phase_contract, phase_reverify, workflow
 
 
 class PhaseContractTests(unittest.TestCase):
@@ -22,6 +22,10 @@ class PhaseContractTests(unittest.TestCase):
         for name, body in {'app.mjs': 'export default 1;\n', 'unit.mjs': 'console.log("UNIT_PASS");\n',
                            'live.mjs': 'console.log("LIVE_PASS");\n', 'DOC.md': 'Run the application.\n'}.items():
             (self.repo / name).write_text(body)
+        for name in ('test/vitest/vitest.gateway.config.ts', 'src/gateway/health.test.ts'):
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('// tracked OpenClaw-shaped fixture\n')
         cli.git(self.repo, 'add', '.')
         cli.git(self.repo, 'commit', '-qm', 'pin existing files')
         self.baseline = cli.sha(self.repo, 'HEAD')
@@ -115,6 +119,8 @@ class PhaseContractTests(unittest.TestCase):
             cli.criterion_add(argparse.Namespace(**criterion, reason='frozen intake'), data)
         issue = task.parent / 'issue.txt'
         issue.write_text(phase_contract.request(contract, self.id))
+        if 'local_gate' in self.step:
+            local_gate._select(data, self.baseline, **self.step['local_gate'])
         phase_contract.bind(task, data, contract, self.id, self.baseline, issue, measure)
         cli.write(task, data)
         return task, data, measure
@@ -212,6 +218,23 @@ class PhaseContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'helper changed'):
             phase_contract.record_completion(task, data, proof)
         self.assertNotIn('phase_result', data)
+
+    def test_approved_local_gate_is_checked_against_bound_policy_and_completed_proof(self):
+        wanted = {'files': ['src/gateway/health.test.ts'], 'reason': 'Run the approved suite locally.'}
+        self.step['local_gate'] = {**wanted, 'files': ['src/gateway/missing.test.ts']}
+        with self.assertRaisesRegex(phase_contract.PhaseContractError, 'tracked guard source unavailable'):
+            self.load()
+        self.step['local_gate'] = wanted
+        task, data, before = self.bind()
+        self.assertEqual(phase_contract.read(data)['step']['local_gate'], wanted)
+        candidate = self.candidate(data)
+        phase_contract.record_completion(task, data, self.record(task, data, candidate, before))
+        cli.write(task, data)
+        with self.assertRaisesRegex(phase_contract.PhaseContractError, 'lacks a completed local gate run'):
+            phase_contract.require_delivery(data, candidate)
+        data['local_gate']['reason'] = 'Substituted approval.'
+        with self.assertRaisesRegex(phase_contract.PhaseContractError, 'missing or invalid'):
+            phase_contract.read(data)
 
     def test_replay_binds_fresh_evidence_without_inheriting_operator_approval(self):
         original, data, before = self.bind()

@@ -122,7 +122,7 @@ def _benchmark_spec(reference):
 
 def _step(repo, baseline, scope, directory, entry, step):
     fields = {'image', 'unit', 'live', 'feature_doc', 'benchmark', 'helpers'}
-    _require(isinstance(step, dict) and fields <= step.keys() <= fields | {'screenshot'},
+    _require(isinstance(step, dict) and fields <= step.keys() <= fields | {'screenshot', 'local_gate'},
              'each phase requires an image, unit and live commands, feature documentation and benchmark inputs')
     project_triage._image_reference(step['image'])
     scripts = {name: _script(repo, baseline, step[name], entry['verify'][name]['marker'], 0,
@@ -148,6 +148,19 @@ def _step(repo, baseline, scope, directory, entry, step):
         path = Path(reference['path'])
         frozen = project_verify._helper(path.parent, path.name)
         _require(hashlib.sha256(frozen).hexdigest() == reference['sha256'], 'phase benchmark helper digest changed')
+    if 'local_gate' in step:
+        from workbench import local_vitest
+
+        policy = step['local_gate']
+        _require(isinstance(policy, dict) and set(policy) == {'files', 'reason'},
+                 'phase local gate requires files and reason')
+        reason = multiphase._field(policy['reason'], 'phase local gate reason').strip()
+        files = policy['files']
+        try:
+            local_vitest.command(repo, baseline, baseline, files)
+        except local_vitest.GuardError as error:
+            raise PhaseContractError(f'invalid planned local test files: {error}') from error
+        step = {**step, 'local_gate': {'files': files, 'reason': reason}}
     return {**step, 'benchmark': ref, 'helpers': helpers, 'scripts': scripts,
             'surface': 'ui' if 'screenshot' in step else 'non-ui'}
 
@@ -200,6 +213,8 @@ def request(contract, phase_id):
     payload = {key: entry[key] for key in ('id', 'base', 'depends_on', 'files', 'change', 'observed_result', 'verify')}
     payload['functional_documentation'] = step['feature_doc']
     payload['checks'] = {name: step[name] for name in ('unit', 'live')}
+    if 'local_gate' in step:
+        payload['local_gate'] = step['local_gate']
     if 'screenshot' in step:
         payload['screenshot'] = step['screenshot']
     return ('Implement this authorized phase only. Other planned phases are context. '
@@ -293,6 +308,15 @@ def _workspace_settings(data, contract, entry, parent, *, replay=False):
                  'phase verification entrypoint changed from trunk')
     if step['feature_doc'] not in entry['files']:
         _entrypoint(repo, parent, step['feature_doc'])
+    if step.get('local_gate'):
+        from workbench import local_gate
+
+        try:
+            policy = local_gate.validate_configuration(data, parent)
+        except local_gate.LocalGateError as error:
+            raise PhaseContractError('planned phase local test policy is missing or invalid') from error
+        _require(all(policy[key] == value for key, value in step['local_gate'].items()),
+                 'phase local test policy differs from the approved manifest')
 
 
 def _save(path, data, value, field, event_type):
@@ -522,6 +546,13 @@ def require_delivery(data, candidate, *, destination=None):
     if destination is not None:
         _require(context['contract']['destination'] == destination, 'phase was not authorized for this GitHub destination')
         _require(interaction_approved(data, candidate, context=context), 'phase interaction awaits operator review')
+    if context['step'].get('local_gate'):
+        from workbench import local_gate
+
+        try:
+            local_gate.validate(data, candidate)
+        except local_gate.LocalGateError as error:
+            raise PhaseContractError(f'approved local phase tests did not clear: {error}') from error
     return result
 
 

@@ -145,6 +145,13 @@ def _run(root, contract, launch, resume, measure, execute):
 
                 def drive(task_path, request_path, image, **options):
                     data = cli.read(task_path)
+                    if step.get('local_gate'):
+                        from workbench import local_gate
+
+                        try:
+                            local_gate._select(data, parent, **step['local_gate'])
+                        except local_gate.LocalGateError as error:
+                            raise DispatchError(str(error)) from error
                     phase_contract.bind(task_path, data, contract, key, parent, request_path, perf)
                     cli.write(task_path, data)
                     return execute(task_path, request_path, image, **options)

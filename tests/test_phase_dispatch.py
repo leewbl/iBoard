@@ -242,6 +242,30 @@ class PhaseDispatchTests(unittest.TestCase):
         self.assertEqual(self.resumed, [])
         self.assertGreaterEqual(self.audited.count('A'), 2)
 
+    def test_dispatch_selects_approved_local_gate_before_binding_and_execution(self):
+        policy = {'files': ['src/gateway/channel-health-policy.test.ts'], 'reason': 'Check Gateway health policy.'}
+        self.contract['steps']['A']['local_gate'] = policy
+        seen = []
+
+        def select(data, head, *, files, reason):
+            seen.append(head)
+            data['local_gate'] = {'files': files, 'reason': reason}
+
+        execute = self.execute
+
+        def check(task, issue, image, **options):
+            data = cli.read(task)
+            if self.read(data)['entry']['id'] == 'A':
+                self.assertEqual(data['local_gate'], policy)
+                self.assertEqual(seen, [self.trunk])
+            return execute(task, issue, image, **options)
+
+        self.execute = check
+        with patch('workbench.local_gate._select', side_effect=select):
+            result = self.dispatch()
+        self.assertEqual(result['phases']['A']['status'], 'awaiting-operator-review', result)
+        self.assertEqual(seen, [self.trunk])
+
     def test_rechecks_prior_independent_review_before_dispatching_dependents(self):
         first = self.dispatch()
         self.approved.add(first['phases']['A']['commit'])
