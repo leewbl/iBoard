@@ -304,6 +304,58 @@ def _valid_screenshot(evidence, actor, commit, repo):
     return _valid_run({**evidence, 'path': report_path}, actor, 'screenshot', commit, repo)
 
 
+def validate_impact_review(data, target, impact, reports, actor):
+    """Bind the reviewer's regression claim to source and independent candidate runs."""
+    if 'impact_review' not in data:
+        return
+    if (data['impact_review'] != 'runtime-v1' or actor == data['implementer']
+            or not isinstance(impact, dict)):
+        raise DeliveryError('independent impact review is required')
+    for key in ('surface', 'invariant', 'observed'):
+        value = impact.get(key)
+        if not isinstance(value, str) or not value.strip() or len(value) > 1000 or '\0' in value:
+            raise DeliveryError(f'impact review needs a bounded {key}')
+    path, line = impact.get('path'), impact.get('line')
+    if (not isinstance(path, str) or len(path) > 500 or
+            any(part in ('', '.', '..') for part in path.split('/')) or
+            any(ord(char) < 32 for char in path) or type(line) is not int or line < 1):
+        raise DeliveryError('impact review needs a candidate source location')
+    try:
+        blob = f'{target}:{path}'
+        if cli.git(data['repo'], 'cat-file', '-t', blob, timeout=10) != 'blob':
+            raise DeliveryError('impact source location is not a committed file')
+        if int(cli.git(data['repo'], 'cat-file', '-s', blob, timeout=10)) > 512_000:
+            raise DeliveryError('impact source location exceeds the review bound')
+        source = subprocess.run(['git', '-C', str(data['repo']), 'cat-file', 'blob', blob],
+                                capture_output=True, timeout=10, check=True).stdout
+        line_count = source.count(b'\n') + bool(source and not source.endswith(b'\n'))
+        if b'\0' in source or line > line_count:
+            raise DeliveryError('impact source line is absent from the candidate text')
+    except (OSError, ValueError, subprocess.SubprocessError, cli.WorkbenchError) as error:
+        raise DeliveryError('impact source location cannot be verified') from error
+
+    refs = impact.get('evidence')
+    if (not isinstance(refs, list) or not 1 <= len(refs) <= 3 or
+            any(not isinstance(ref, str) or ref not in reports for ref in refs)):
+        raise DeliveryError('impact review must cite independent candidate execution reports')
+    for ref in refs:
+        recorded = reports[ref]
+        if not isinstance(recorded, dict) or not isinstance(recorded.get('path'), str):
+            raise DeliveryError('impact evidence must be a sandbox execution report')
+        try:
+            digest = cli.digest(recorded['path'])
+        except cli.WorkbenchError as error:
+            raise DeliveryError('impact evidence is unreadable') from error
+        if digest != recorded.get('sha256'):
+            raise DeliveryError('impact evidence bytes changed after review')
+        if not any(not e.get('superseded') and e.get('path') == recorded['path']
+                   and e.get('sha256') == digest
+                   and e.get('kind') in ('resolution', 'test-result')
+                   and _valid_run(e, actor, e['kind'], target, data['repo'])
+                   for e in data['evidence']):
+            raise DeliveryError('impact evidence is stale or not an independent candidate run')
+
+
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
     desired_ids = {criterion['id'] for criterion in data['criteria']}
@@ -365,6 +417,10 @@ def _independent_verification(data, target, *, destination=None):
         if not valid_assessments or seen != desired_ids or not any(ref != 'DIFF' for ref in cited):
             continue
         actor = item['actor']
+        try:
+            validate_impact_review(data, target, report.get('impact'), reports, actor)
+        except DeliveryError:
+            continue
         required = [('test-result', target)]
         if data['kind'] == 'bug':
             required += [('reproduction', data['base_commit']), ('resolution', target)]

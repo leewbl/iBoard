@@ -237,10 +237,11 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
     try:
         with task_lock(task):
             try:
+                data = cli.read(task)
+                data['impact_review'] = 'runtime-v1'
                 if publish_only:
-                    data = cli.read(task)
                     data['publish_only'] = True
-                    cli.write(task, data)
+                cli.write(task, data)
                 request.write_text(issue_with_logs, encoding='utf-8')
                 request.chmod(0o600)
                 if logs or screenshots:

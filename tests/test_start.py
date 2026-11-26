@@ -53,6 +53,7 @@ class StartTests(unittest.TestCase):
             start.start(**self.kwargs, memory_mb=7168, prepare=self.prepare, run=fail)
         task = self.root / 'tasks/case/task.json'
         self.assertEqual(cli.read(task.parent / 'input-stage.json')['run_settings']['memory_mb'], 7168)
+        self.assertEqual(cli.read(task)['impact_review'], 'runtime-v1')
         start.resume_task(task, run=self.drive)
         self.assertEqual(self.called[-1][3]['memory_mb'], 7168)
 

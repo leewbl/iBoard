@@ -50,6 +50,20 @@ class ReviewScopeTests(unittest.TestCase):
         self.assertIn('fixed small source', direct.call_args.args[0])
         self.assertIn('no tools', direct.call_args.args[0])
 
+    def test_impact_review_can_inspect_unchanged_callers_even_for_small_changes(self):
+        self.commit('fixed small source')
+        data = autopilot.cli.read(self.f.task)
+        data['impact_review'] = 'runtime-v1'
+        autopilot.cli.write(self.f.task, data)
+        with patch.object(autopilot, 'execute_model', return_value={
+                'exit_code': 0, 'timed_out': False, 'stdout': '{}', 'stderr': ''}) as adapter, \
+                patch.object(autopilot, 'direct_review') as direct:
+            autopilot._model(self.f.task, 'final-review', 'REPORT', read_only=True, model=adapter)
+        direct.assert_not_called()
+        self.assertIn('callers', adapter.call_args.args[1])
+        self.assertTrue(adapter.call_args.kwargs['read_only'])
+        self.assertTrue(adapter.call_args.kwargs['file_tools_only'])
+
     def test_oversized_original_evidence_never_falls_back_or_calls_any_model(self):
         with patch.object(autopilot, 'execute_model') as cli, patch.object(autopilot, 'direct_review') as direct:
             with self.assertRaisesRegex(autopilot.AutopilotError, '100000'):

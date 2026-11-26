@@ -408,6 +408,56 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
         self.assertEqual(cli.read(self.task)['status'], 'paused')
 
+    def test_new_task_review_binds_impact_to_candidate_source_and_independent_runtime(self):
+        data = cli.read(self.task)
+        data['impact_review'] = 'runtime-v1'
+        cli.write(self.task, data)
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if self.calls[-1] == 'final-review':
+                self.assertIn('selected from ["R4", "R5"]', prompt)
+                review = json.loads(result['stdout'])
+                review['impact'] = {'surface': 'caller', 'invariant': 'compatible response',
+                                    'path': 'code.txt', 'line': 1, 'observed': 'independent check saw FIXED',
+                                    'evidence': ['R4']}
+                result['stdout'] = json.dumps(review)
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):
+            autopilot.run(self.task, self.issue, 'image', model=model, check=self.check)
+        data = cli.read(self.task)
+        candidate = cli.sha(self.workspace, 'HEAD')
+        item = next(e for e in data['evidence'] if e['kind'] == 'independent-review')
+        record = json.loads(Path(item['path']).read_text())
+        self.assertEqual(record['impact']['evidence'], ['R4'])
+        delivery._independent_verification(data, candidate)
+
+        for label in ('DIFF', 'B2', 'R1'):
+            with self.subTest(evidence=label):
+                record['impact']['evidence'] = [label]
+                with self.assertRaises(delivery.DeliveryError):
+                    delivery.validate_impact_review(data, candidate, record['impact'], record['reports'],
+                                                   'independent-verifier')
+        record['impact']['evidence'] = ['R4']
+        record['impact']['line'] = 2
+        with self.assertRaisesRegex(delivery.DeliveryError, 'source line is absent'):
+            delivery.validate_impact_review(data, candidate, record['impact'], record['reports'],
+                                           'independent-verifier')
+        record['impact']['line'] = 1
+        proof = Path(record['reports']['R4']['path'])
+        original = proof.read_bytes()
+        proof.write_bytes(original + b'\n')
+        with self.assertRaisesRegex(delivery.DeliveryError, 'bytes changed'):
+            delivery.validate_impact_review(data, candidate, record['impact'], record['reports'],
+                                           'independent-verifier')
+        proof.write_bytes(original)
+        record.pop('impact')
+        cli.write(Path(item['path']), record)
+        item['sha256'] = cli.digest(item['path'])
+        with self.assertRaisesRegex(delivery.DeliveryError, 'independent PASS'):
+            delivery._independent_verification(data, candidate)
+
     def prepare_adoption(self):
         base = cli.sha(self.workspace, 'HEAD')
         (self.workspace / 'code.txt').write_text('adopted fix')

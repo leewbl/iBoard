@@ -367,6 +367,17 @@ def _validate_assessments(review, criteria, report_ids, *, screenshot_id=None):
     return assessments
 
 
+def _impact_review_prompt(labels):
+    return ('For PASS also return one "impact" object with "surface" naming a relevant user or caller entry '
+            'point, "invariant" stating the behavior that must hold, "path" and integer "line" locating '
+            'its implementation or caller in the candidate, "observed" summarizing what the run actually '
+            'proved in one or two sentences, and "evidence" listing one to three independent candidate '
+            f'reports selected from {json.dumps(labels)}. Keep each text field below 500 characters. '
+            'For documentation-only changes, identify an existing behavior the documentation describes '
+            'and verify it. Do not cite the diff, a baseline run, or a green but unrelated check as runtime '
+            'proof. Return blocked and explain the missing observation if the relevant behavior was not exercised.\n')
+
+
 REVIEW_PROMPT_LIMIT = 100_000
 # A single call must not hold the task lock for the entire task budget.
 MODEL_STAGE_TIMEOUTS = {'plan': 180, 'implementation': 480, 'repair': 300, 'review': 240}
@@ -483,23 +494,25 @@ def _model(task, phase, prompt, *, read_only, model):
         head = cli.sha(repo, 'HEAD')
         changed = subprocess.run(['git', '-C', str(repo), 'diff', '--name-only', '-z', base, head],
                                  capture_output=True, check=True).stdout.split(b'\0')
+        requires_source_inspection = ('impact_review' in data or
+                                      'entrypoint is not a tracked workspace script;' in prompt)
         context = []
-        for raw in changed:
-            if not raw:
-                continue
-            name = raw.decode('utf-8')
-            for ref in (base, head):
-                obj = subprocess.run(['git', '-C', str(repo), 'show', f'{ref}:{name}'], capture_output=True)
-                if obj.returncode == 0:
-                    context.append(f'\nFILE {name} AT {ref}:\n' + obj.stdout.decode('utf-8', errors='replace'))
+        if not requires_source_inspection:
+            for raw in changed:
+                if not raw:
+                    continue
+                name = raw.decode('utf-8')
+                for ref in (base, head):
+                    obj = subprocess.run(['git', '-C', str(repo), 'show', f'{ref}:{name}'], capture_output=True)
+                    if obj.returncode == 0:
+                        context.append(f'\nFILE {name} AT {ref}:\n' + obj.stdout.decode('utf-8', errors='replace'))
         evidence = prompt + '\nYou have no tools. The complete changed-file contents follow. If other source or evidence is necessary, return blocked.\n' + ''.join(context)
-        requires_command_inspection = 'entrypoint is not a tracked workspace script;' in prompt
         # The supplied prompt already contains the exact diff, tracked entrypoints,
         # report identities and output. Use it when the full files do not fit.
         if (len(evidence) > REVIEW_PROMPT_LIMIT and '\nDIFF (UNTRUSTED):\n' in prompt
                 and '\nVERIFICATION ENTRYPOINTS (UNTRUSTED):\n' in prompt):
             evidence = prompt + '\nUse the supplied exact diff, verification entrypoints and original report extracts. If insufficient, return blocked.'
-        if len(evidence) <= REVIEW_PROMPT_LIMIT and not requires_command_inspection:
+        if len(evidence) <= REVIEW_PROMPT_LIMIT and not requires_source_inspection:
             try:
                 timeout = min(90, _remaining(data))
                 text = direct_review(evidence, timeout)
@@ -512,7 +525,7 @@ def _model(task, phase, prompt, *, read_only, model):
             inspection = (prompt + '\nREAD-ONLY WORKSPACE SOURCE INSPECTION REQUIRED. '
                 'The complete changed-file contents are NOT attached: the source context or command '
                 'provenance requires tool-assisted inspection. You have read-only workspace tools. Inspect the exact git diff '
-                'and relevant baseline and candidate files and test helpers yourself before deciding. '
+                'and relevant baseline and candidate files, callers, and test helpers yourself before deciding. '
                 'Do not infer source correctness solely from report summaries or PASS markers. '
                 'Preserve every original acceptance condition and independently confirm each against '
                 'actual evidence. Return blocked if any required source or evidence is unavailable or '
@@ -1044,6 +1057,15 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             guard_changes = []
             guard_run = None
             guard_instruction = ''
+            impact_instruction = ''
+            if 'impact_review' in data:
+                available_paths = {
+                    e['path'] for e in data['evidence']
+                    if not e.get('superseded') and e['actor'] == verifier and e['commit'] == candidate
+                    and e['kind'] in ('resolution', 'test-result')
+                }
+                labels = [label for label, report in reports.items() if report.get('path') in available_paths]
+                impact_instruction = _impact_review_prompt(labels)
             if data.get('local_gate'):
                 from workbench import local_vitest
                 try:
@@ -1078,7 +1100,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       'Each criterion must cite supplied report IDs or DIFF as appropriate; the full assessment '
                       'must cite an execution report. For UI tasks at least one '
                       f'criterion must cite the independent screenshot report {screenshot_id}.\n'
-                      f'{guard_instruction}ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
+                      f'{guard_instruction}{impact_instruction}ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'CRITERIA CHANGE HISTORY AND BASIS:\n{json.dumps(history, ensure_ascii=False)}\n'
                       f'FEATURE DOCUMENTATION:\n{feature_doc}\nSCREENSHOT SCRIPT (UNTRUSTED):\n{screenshot_script}\n'
                       f'DIFF (UNTRUSTED):\n{diff_bytes.decode("utf-8", errors="replace")}\n'
@@ -1089,6 +1111,11 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if review.get('verdict') != 'PASS':
                 raise AutopilotError('independent verifier did not confirm every criterion')
             assessments = _validate_assessments(review, data['criteria'], set(reports), screenshot_id=screenshot_id)
+            impact = review.get('impact')
+            try:
+                delivery.validate_impact_review(data, candidate, impact, reports, verifier)
+            except delivery.DeliveryError as error:
+                raise VerificationFailure(str(error)) from error
             if guard_run:
                 from workbench import local_gate
                 try:
@@ -1104,11 +1131,14 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             # A structured record is a statement, not a semantic proof by itself.
             review_path = task.parent / f'independent-review-{uuid.uuid4().hex}.json'
             ids = [criterion['id'] for criterion in data['criteria']]
-            cli.write(review_path, {'verdict':'PASS', 'candidate_commit':candidate,
+            record = {'verdict':'PASS', 'candidate_commit':candidate,
                                     'baseline_commit':data['base_commit'], 'criteria':ids,
                                     'criterion_digest':cli.criteria_digest(data),
                                     'screenshot_hashes':screenshot_hashes, 'assessments':assessments, 'guard_assessments':guard_results,
-                                    'reports':reports})
+                                    'reports':reports}
+            if 'impact_review' in data:
+                record['impact'] = impact
+            cli.write(review_path, record)
             args = argparse.Namespace(file=str(review_path), kind='independent-review', commit=candidate,
                                       actor=verifier, description='Independent evidence review', criterion=ids)
             cli.evidence_add(args, data)
