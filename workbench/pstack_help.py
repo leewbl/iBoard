@@ -52,6 +52,10 @@ SCENARIOS = {
         'Use the same regression test before and after a fix', 'skills/tdd/SKILL.md',
         'skills/tdd/SKILL.md', 'start --kind bug', 'Two baseline failures at the expected assertion and two isolated candidate passes',
         'Ask for a focused deterministic regression in the bug request. There is no --tdd switch.'),
+    'refactor': Scenario(
+        'Change code structure while preserving observed behavior', 'skills/poteto-mode/playbooks/refactoring.md',
+        'skills/refactor/SKILL.md', 'refactor freeze', 'A frozen baseline and byte-for-byte receipts from each commit',
+        'Freeze the probes before editing. Use the independent comparison report when preparing delivery.'),
     'build-feature': Scenario(
         'Deliver a feature using an approved design', 'skills/poteto-mode/playbooks/feature.md',
         'skills/feature-handoff/SKILL.md', 'start --kind feature',

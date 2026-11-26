@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import struct
@@ -7,7 +8,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from runner.sandbox import MAX_CREATE_OUTPUT, SandboxError, _copy_screenshot, _time_ns, _validated_png, run_sandbox
+from runner.sandbox import MAX_CREATE_OUTPUT, MAX_OUTPUT, SandboxError, _copy_screenshot, _time_ns, _validated_png, run_sandbox
 
 
 def tiny_png():
@@ -61,6 +62,8 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(report["source_root"], "/workspace")
         self.assertEqual(report["container_workdir"], "/workspace")
         self.assertEqual(report["stdout"], "hello\n")
+        self.assertEqual(report["stdout_sha256"], hashlib.sha256(b"hello\n").hexdigest())
+        self.assertEqual(report["stderr_sha256"], hashlib.sha256(b"").hexdigest())
         self.assertEqual(report["exit_code"], 0)
         self.assertEqual(report["tmpfs_mb"], 1024)
         self.assertTrue(report["cleanup_confirmed"])
@@ -180,6 +183,43 @@ class SandboxTests(unittest.TestCase):
         self.assertFalse(report['create_stderr_truncated'])
         self.assertTrue(report['cleanup_confirmed'])
 
+    def test_output_hashes_distinguish_bytes_with_the_same_decoded_output(self):
+        reports = []
+        for value in (b'\xff', b'\xfe'):
+            def invoke(args, **kwargs):
+                if args[1] == 'start':
+                    kwargs['stdout'].write(value + b'\n')
+                    kwargs['stderr'].write(b'error: ' + value)
+                    return subprocess.CompletedProcess(args, 2)
+                return self.fake(args, **kwargs)
+
+            report = self.run_it(invoke)
+            self.assertEqual(report['exit_code'], 2)
+            self.assertEqual(report['stdout_sha256'], hashlib.sha256(value + b'\n').hexdigest())
+            self.assertEqual(report['stderr_sha256'], hashlib.sha256(b'error: ' + value).hexdigest())
+            reports.append(report)
+        for stream in ('stdout', 'stderr'):
+            self.assertEqual(reports[0][stream], reports[1][stream])
+            self.assertNotEqual(reports[0][stream + '_sha256'], reports[1][stream + '_sha256'])
+
+    def test_only_the_truncated_stream_loses_its_output_hash(self):
+        complete = b'x' * MAX_OUTPUT
+        for truncated, bounded in (('stdout', 'stderr'), ('stderr', 'stdout')):
+            with self.subTest(truncated=truncated):
+                def invoke(args, **kwargs):
+                    if args[1] == 'start':
+                        kwargs[truncated].write(complete + b'!')
+                        kwargs[bounded].write(complete)
+                        return subprocess.CompletedProcess(args, 0)
+                    return self.fake(args, **kwargs)
+
+                report = self.run_it(invoke)
+                self.assertEqual(report[truncated], 'x' * MAX_OUTPUT)
+                self.assertTrue(report[truncated + '_truncated'])
+                self.assertNotIn(truncated + '_sha256', report)
+                self.assertFalse(report[bounded + '_truncated'])
+                self.assertEqual(report[bounded + '_sha256'], hashlib.sha256(complete).hexdigest())
+
     def test_creation_failure_retains_bounded_diagnostics_without_starting(self):
         diagnostic = b'x' * (MAX_CREATE_OUTPUT + 1)
         def failed_create(args, **kwargs):
@@ -195,6 +235,8 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(report['create_exit_code'], 125)
         self.assertEqual(report['stdout'], '')
         self.assertEqual(report['stderr'], '')
+        self.assertNotIn('stdout_sha256', report)
+        self.assertNotIn('stderr_sha256', report)
         for stream in ('create_stdout', 'create_stderr'):
             self.assertEqual(report[stream], 'x' * MAX_CREATE_OUTPUT)
             self.assertTrue(report[stream + '_truncated'])
@@ -243,10 +285,15 @@ class SandboxTests(unittest.TestCase):
         def timeout(args, **kwargs):
             if args[1] == "start":
                 self.calls.append((args, kwargs))
+                kwargs['stdout'].write(b'partial output\n')
                 raise subprocess.TimeoutExpired(args, kwargs["timeout"])
             return self.fake(args, **kwargs)
         report = self.run_it(timeout)
         self.assertTrue(report["timed_out"])
+        self.assertEqual(report['stdout'], 'partial output\n')
+        self.assertFalse(report['stdout_truncated'])
+        self.assertNotIn('stdout_sha256', report)
+        self.assertNotIn('stderr_sha256', report)
         self.assertEqual(report['runtime_diagnostics']['classification'], 'command-timeout')
         self.assertEqual(report['runtime_diagnostics']['unavailable'], ['container-id', 'state', 'oom-events'])
         self.assertTrue(report["cleanup_confirmed"])

@@ -18,6 +18,8 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/
 
 [`/agent-workbench:poteto-help`](../skills/poteto-help/SKILL.md) 或 `python3 -m workbench.pstack_help` 可查询场景、技能和工作流程。查询结果给出本地命令、指南、所需证据和适用条件。只纳入阶段提示词的条目标成 `guidance-only`，缺少经核对的本地入口时显示 `catalog-only`。
 
+[`workbench.refactor`](../skills/refactor/SKILL.md) 在重构前冻结源提交、预期行为、驱动和允许改动的路径。它在断网 Docker 中使用同一份驱动，逐提交比较退出码和 stdout、stderr 原始字节。证据不完整或同一版本两次运行不一致时，结果记为未确定。自动实施与 PR 发布仍走各自流程，发布门禁尚未消费这份对照报告。
+
 只读调研可用 [`workbench.investigate`](../skills/investigate/SKILL.md) 或 Claude Code 的 `/agent-workbench:investigate` 启动。指定提交和文件即可运行 `how`、`why`、`teach` 或 `investigation`。合成模式分别向源码与历史阶段提供证据，再汇总为统一说明，保留两边的未知项。报告记录实际引用的源码行和提交、模型调用时间及提示词哈希。历史阶段可用 `--pr` 纳入用户明确选定、能与所选 Git 历史关联的 PR 正文和有界讨论摘录。
 
 接续或查看已留存任务时，使用 [`workbench.pickup`](../skills/pickup/SKILL.md) 或 `workbench.resume --inspect`。工具观察现有任务锁，核对工作树、输入和证据哈希，区分已记录的发布与合并结果。可用 `--since` 查看指定时间后的事件，用 `--check-pr` 查询对应 PR 的当前提交和检查状态。该入口提供接续判断，执行仍经过原有恢复和交付门禁。

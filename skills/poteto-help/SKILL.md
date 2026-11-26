@@ -17,6 +17,7 @@ Pick the scenario that matches the user's actual goal.
 | Load the local plugin | `setup` |
 | Understand code, its design history, or both | `how`, `why` or `teach` |
 | Reproduce and fix a bug, optionally test-first | `fix-bug` or `test-first` |
+| Change code structure while keeping existing behavior | `refactor` |
 | Build an agreed feature or choose between designs | `build-feature`, `plan-design`, `prototype` or `compare-patches` |
 | Check why a PR is blocked, rerun its evidence, or plan a verified stack's delivery | `pr-status`, `verify-pr` or `ship-stack` |
 | Find out where a saved task stopped or what changed since a timestamp | `inspect-task` or `catch-up` |

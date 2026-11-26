@@ -35,11 +35,15 @@ class SandboxError(Exception):
     pass
 
 
-def _read_limited(stream, limit=MAX_OUTPUT):
+def _read_limited_bytes(stream, limit):
     stream.seek(0)
     content = stream.read(limit + 1)
-    truncated = len(content) > limit
-    return content[:limit].decode("utf-8", errors="replace"), truncated
+    return content[:limit], len(content) > limit
+
+
+def _read_limited(stream, limit=MAX_OUTPUT):
+    content, truncated = _read_limited_bytes(stream, limit)
+    return content.decode("utf-8", errors="replace"), truncated
 
 
 def _validated_png(data):
@@ -190,6 +194,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     ``source_root`` selects the mounted workspace or the verified image source;
     relative workdirs must still exist inside the host workspace. Set
     workspace_read_only when the command must not modify the mounted files.
+    After the attached command returns, each untruncated output stream includes
+    a SHA-256 digest of the original bytes, before UTF-8 decoding.
     Profile collection uses a scoped helper and copies its artifact out of a
     disposable container mount.
     ``invoke`` and ``find_executable`` permit unit testing without a Docker daemon.
@@ -365,8 +371,13 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                     report["cleanup_error"] = str(exc)
             report["create_stdout"], report["create_stdout_truncated"] = _read_limited(create_stdout, MAX_CREATE_OUTPUT)
             report["create_stderr"], report["create_stderr_truncated"] = _read_limited(create_stderr, MAX_CREATE_OUTPUT)
-            report["stdout"], report["stdout_truncated"] = _read_limited(stdout)
-            report["stderr"], report["stderr_truncated"] = _read_limited(stderr)
+            capture_complete = created and report["exit_code"] is not None and not report["timed_out"]
+            for name, stream in (("stdout", stdout), ("stderr", stderr)):
+                content, truncated = _read_limited_bytes(stream, MAX_OUTPUT)
+                report[name] = content.decode("utf-8", errors="replace")
+                report[name + "_truncated"] = truncated
+                if capture_complete and not truncated:
+                    report[name + "_sha256"] = hashlib.sha256(content).hexdigest()
             report["elapsed_seconds"] = round(time.monotonic() - started, 3)
             report["container_created"] = created
     return report
