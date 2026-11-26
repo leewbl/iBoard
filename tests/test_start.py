@@ -44,6 +44,20 @@ class StartTests(unittest.TestCase):
                     start.start(**self.kwargs, memory_mb=memory, prepare=self.prepare, run=self.drive)
                 self.assertEqual(self.called, [])
 
+    @patch('workbench.feature_arena.resolve', return_value={'status': 'blocked'})
+    @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
+    @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
+    def test_feature_comparison_blocks_before_creating_a_task_and_uses_its_budget(self, process, which, resolve):
+        options = {**self.kwargs, 'kind': 'feature'}
+        with self.assertRaisesRegex(start.StartError, 'Arena comparison blocked'):
+            start.start(**options, feature_manifest='manifest.json', feature_sha256='f' * 64,
+                        feature_arena_out=self.root / 'comparison', prepare=self.prepare, run=self.drive)
+        self.assertEqual(self.called, [])
+        args, kwargs = resolve.call_args
+        self.assertEqual(args, ('manifest.json', 'f' * 64, options['repo'], self.issue, self.root / 'comparison'))
+        self.assertGreater(kwargs['seconds_limit'], 0)
+        self.assertLessEqual(kwargs['seconds_limit'], options['seconds'])
+
     @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
     @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
     def test_explicit_seven_gib_is_retained_for_resume(self, process, which):

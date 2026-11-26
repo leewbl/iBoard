@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Deliver an approved feature
 
-Trace the affected entry points, callers, and state owners. Select a design with [Architect](../architect/SKILL.md). If a user-facing decision needs an observed result, run [Prototype](../prototype/SKILL.md) on the same Git baseline and review its recommendation. Use [Arena](../arena/SKILL.md) when competing implementations need comparison.
+Trace the affected entry points, callers, and state owners. Select a design with [Architect](../architect/SKILL.md). If a user-facing decision needs an observed result, run [Prototype](../prototype/SKILL.md) on the same Git baseline and review its recommendation. Route competing architectures through the comparison below.
 
 Prepare one JSON manifest after the design and acceptance criteria have been approved. Relative artifact paths resolve next to the manifest. Use the actual SHA-256 of each referenced artifact.
 
@@ -37,3 +37,13 @@ python3 -m workbench.start --id "$TASK_ID" --repo "$TARGET_REPO" \
 iBoard starts a new worktree at the approved baseline. It retains the handoff and uses the frozen criteria for planning, implementation, repair, and review. The implementation must stay within the selected design's file list. The selected model checks the exact candidate diff for static design requirements. The independent verifier must cite the candidate's offline Docker resolution run for each frozen runtime criterion. The evidence gate rechecks the attached receipts and candidate before accepting delivery. Keep the functional documentation in the approved edit scope. UI tasks also require an independent screenshot.
 
 For authorized GitHub delivery, provide the usual `--pr-repo` and CI policy options, or `--publish-only`. Review the task record and retained architecture and runtime evidence for failures. A revised requirement or a broader edit scope needs a new approved handoff.
+
+## Compare two viable designs
+
+Set `design` to the approved Architect comparison containing both `A` and `B`. Include all run-time expectations from both designs in the frozen `criteria`. Add an `arena` object containing the [Arena settings](../arena/SKILL.md) for the image, two runners, judge model, rubric, and immutable check. The first runner implements A and the second implements B. iBoard derives the revision, paths, alternatives and exact request. Use the same image and source mode for the final Feature run. Put all approved text material into the specified request file before comparison.
+
+Append `--feature-arena-out "$COMPARISON_EVIDENCE"` to the start command. Arena creates a worktree per design, runs the same disconnected Docker check and sends anonymized patches to both judges. It then reruns the frozen check on a separate checkout of the exact winning commit. `workbench.start` takes that commit into formal Feature verification when its evidence checks pass. If a later check fails, the workbench records the failure and holds that commit for review. A new comparison is needed for a revised implementation.
+
+For publication after a contested design, include the [Interrogate configuration](../interrogate/SKILL.md) as an `interrogate` object. The approved probes run from two clean checkouts of the selected commit, with reviews by GLM and OpenAI. A mismatch, missing evidence or a withheld verdict blocks publication. Time spent comparing and challenging the designs counts against the task's total limit when started together.
+
+Use `python3 -m workbench.feature_arena --repo "$TARGET_REPO" --manifest "$HANDOFF" --sha256 "$HANDOFF_SHA256" --issue-file "$REQUEST" --out "$COMPARISON_EVIDENCE"` to resolve the comparison separately. To continue, pass its generated `handoff.json` and SHA-256 to `workbench.start`. Retain the approval and comparison directories for delivery and resume revalidation.

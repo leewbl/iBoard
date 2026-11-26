@@ -675,6 +675,18 @@ def _pause(task, reason):
         cli.write(task, data)
 
 
+def _reject_credential_artifact(relative, contents=b''):
+    path = Path(relative)
+    name = path.name.lower()
+    if (any(part.lower() in ('.ssh', '.aws', '.gnupg') for part in path.parts)
+            or name in ('glm.ini', 'credentials', 'credentials.json', 'id_rsa', 'id_ed25519')
+            or (name.startswith('.env') and name not in ('.env.example', '.env.sample'))
+            or name.endswith(('.pem', '.key', '.p12', '.pfx'))):
+        raise AutopilotError(f'refusing to commit possible credential artifact: {relative}')
+    if b'-----BEGIN ' in contents and b'PRIVATE KEY-----' in contents:
+        raise AutopilotError(f'refusing to commit private-key material: {relative}')
+
+
 def _commit_changes(workspace):
     """Commit only the task worktree, rejecting common credential artifacts."""
     staged = subprocess.run(['git', '-C', str(workspace), 'diff', '--cached', '--quiet'])
@@ -696,19 +708,10 @@ def _commit_changes(workspace):
             paths.append(entries[i].decode('utf-8', 'surrogateescape'))
         i += 1
     for relative in paths:
-        p = Path(relative)
-        parts = [part.lower() for part in p.parts]
-        name = p.name.lower()
-        if (any(x in ('.ssh', '.aws', '.gnupg') for x in parts)
-                or name in ('glm.ini', 'credentials', 'credentials.json', 'id_rsa', 'id_ed25519')
-                or (name.startswith('.env') and name not in ('.env.example', '.env.sample'))
-                or name.endswith(('.pem', '.key', '.p12', '.pfx'))):
-            raise AutopilotError(f'refusing to commit possible credential artifact: {relative}')
-        full = workspace / p
-        if full.is_file() and not full.is_symlink() and full.stat().st_size <= 1_000_000:
-            contents = full.read_bytes()
-            if b'-----BEGIN ' in contents and b'PRIVATE KEY-----' in contents:
-                raise AutopilotError(f'refusing to commit private-key material: {relative}')
+        full = workspace / relative
+        contents = full.read_bytes() if (full.is_file() and not full.is_symlink()
+                                        and full.stat().st_size <= 1_000_000) else b''
+        _reject_credential_artifact(relative, contents)
     workflow._git(workspace, 'add', '-A')
     msg = ('Resolve the reported task with a verifiable change\n\n'
            'The task has dedicated acceptance criteria and independent verification.\n\n'
@@ -792,6 +795,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     state = cli.read(state_path) if state_exists else {'schema': cli.SCHEMA, 'phase': 'plan'}
     try:
         feature = feature_context.read(data)
+        arena = feature.get('arena') if feature else None
+        if arena:
+            feature_context.verify_arena_request(feature, issue_path)
+            feature_context.verify_arena_runtime(arena, image, source_mode)
         binding = data.get('feature_context')
         if state_exists and state.get('feature_context') != binding:
             raise feature_context.FeatureContextError('feature handoff changed after workflow start')
@@ -1002,7 +1009,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                    'Two baseline runs and an independent assessment confirmed the original behavior.',
                    decisions.artifact(task, second['report']), 'Independent baseline review passed.')
 
-        if state['phase'] in ('implement', 'adopting') and (data.get('adoption') or target):
+        if state['phase'] in ('implement', 'adopting') and (data.get('adoption') or target or arena):
             # Baseline checks append evidence to the persisted task. Re-read it
             # before recording adoption, or this earlier snapshot would erase it.
             data = cli.read(task)
@@ -1013,6 +1020,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if target:
                 _validate_verification_target(data, target, issue_digest, settings, pr_number)
                 candidate = target['head']
+            elif arena:
+                candidate = arena['candidate']
+                verify_feature(candidate)
             elif isinstance(adoption, dict) and (
                     isinstance(adoption.get('candidate_commit'), str)
                     and re.fullmatch(r'[0-9a-f]{40}', adoption['candidate_commit'])
@@ -1030,6 +1040,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if state['phase'] == 'implement':
                 if head != data['base_commit']:
                     raise AutopilotError('adoption must begin at the baseline')
+                if arena and cli.iteration_limit_reached(data):
+                    raise AutopilotError('iteration limit reached before adopting the Arena candidate')
                 state['phase'] = 'adopting'
                 cli.write(state_path, state)
             if head == data['base_commit']:
@@ -1043,13 +1055,18 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 raise AutopilotError('adoption workspace changed; inspect before resuming')
             if not any(event.get('type') == 'candidate-adopted' and event.get('commit') == candidate
                        for event in data['events'] if isinstance(event, dict)):
-                data['events'].append({'at': cli.now(), 'type': 'candidate-adopted', 'commit': candidate,
-                                       'base_commit': data['base_commit']})
+                event = {'at': cli.now(), 'type': 'candidate-adopted', 'commit': candidate,
+                         'base_commit': data['base_commit']}
+                if arena:
+                    data['iterations'] += 1
+                    event.update(source='feature-arena', selection=arena['reference'], iteration=data['iterations'])
+                data['events'].append(event)
                 cli.write(task, data)
             state.update(phase='verify', candidate_commit=candidate)
             cli.write(state_path, state)
+            proof = decisions.artifact(task, binding['path']) if arena else 'commit:' + candidate
             append_decision('implement', 'Selected the adopted candidate.', 'Its baseline and adoption contract were checked.',
-                   'commit:' + candidate, 'Ready for candidate verification.')
+                   proof, 'Ready for candidate verification.')
 
         if state['phase'] == 'implement':
             data = cli.read(task)
@@ -1365,6 +1382,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                    decisions.artifact(task, failure_path), 'Failed verification retained.')
             if target:
                 raise AutopilotError(f'existing PR verification failed; evidence saved at {failure_path}')
+            if arena:
+                raise AutopilotError(f'Arena selection failed Feature verification; evidence saved at {failure_path}')
             if failure.get('execution_blocked'):
                 raise AutopilotError(f'verification environment unavailable; failure saved at {failure_path}')
             if cli.iteration_limit_reached(data):
@@ -1417,6 +1436,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                build_source_image, memory_mb)
             if not pr_repo:
                 raise AutopilotError('PR must exist or specify a personal fork for publishing')
+            if arena:
+                delivery.require_feature_arena_delivery(cli.read(task), feature, state['candidate_commit'], pr_repo)
             pending_update = state.get('ci_republish')
             if pending_update:
                 if (not isinstance(pending_update, dict) or pending_update.get('repo') != pr_repo or
@@ -1467,6 +1488,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     append_decision('delivery', 'Withheld merge after a required CI failure.',
                            'The failing CI run belongs to the published candidate.',
                            decisions.artifact(task, failure_path), 'Failed CI run retained.')
+                    if arena:
+                        raise AutopilotError(f'Arena selection failed required CI; evidence saved at {failure_path}') from error
                     if cli.iteration_limit_reached(data):
                         raise AutopilotError(f'iteration limit reached after CI failure; evidence saved at {failure_path}') from error
                     if source_mode == 'image' and not build_source_image:

@@ -89,6 +89,22 @@ def _criteria(items, *, persisted=False):
     return [{'id': item['id'], 'text': item['text'].strip()} for item in validate(items)]
 
 
+def _arena_binding(reference, directory, repo, context, design, approved_sha256):
+    if reference is None and 'arena_resolution' not in design:
+        return None
+    from workbench import feature_arena
+
+    path, receipt = _reference(directory, reference)
+    proof = feature_arena.validate_receipt(path, receipt, repo=repo, baseline=context['baseline'],
+                                          design=design, design_sha256=approved_sha256)
+    for key in ('criteria', 'checkpoint', 'review_model', 'prototypes'):
+        if proof[key] != context[key]:
+            raise FeatureContextError(f'feature Arena changed the approved {key}')
+    return {'reference': {'path': str(path.resolve()), 'sha256': reference['sha256']},
+            **{key: proof[key] for key in ('candidate', 'request_sha256', 'selected_design', 'source_status',
+                                           'image', 'source_mode', 'interrogation')}}
+
+
 def load_input(manifest, expected_sha256, repo):
     """Read the approved Feature manifest before creating a task or branch."""
     from workbench import architect, prototype
@@ -97,7 +113,7 @@ def load_input(manifest, expected_sha256, repo):
         manifest = Path(manifest).expanduser()
         value = _json(manifest, expected_sha256, limit=110_000)
         required = {'design', 'review_model', 'criteria', 'checkpoint'}
-        if required - value.keys() or value.keys() - required - {'prototypes'}:
+        if required - value.keys() or value.keys() - required - {'prototypes', 'arena'}:
             raise FeatureContextError('feature handoff has missing or unknown fields')
         baseline = _git(repo, 'rev-parse', '--verify', 'HEAD^{commit}').decode('ascii').strip()
         _, design = _reference(manifest.parent, value['design'])
@@ -116,10 +132,15 @@ def load_input(manifest, expected_sha256, repo):
                                        conclusion=recommendation['conclusion'])
             prototypes.append({'question': receipt['question'], 'choice': recommendation['choice'],
                                'conclusion': recommendation['conclusion'], 'sha256': reference['sha256']})
-        return {'schema': cli.SCHEMA, 'baseline': baseline, 'scope': scope, 'criteria': criteria,
-                'checkpoint': value['checkpoint'], 'prototypes': prototypes, 'review_model': value['review_model'],
-                'design': design, 'approved_design_sha256': value['design']['sha256'],
-                'handoff_sha256': expected_sha256}
+        context = {'schema': cli.SCHEMA, 'baseline': baseline, 'scope': scope, 'criteria': criteria,
+                   'checkpoint': value['checkpoint'], 'prototypes': prototypes, 'review_model': value['review_model'],
+                   'design': design, 'approved_design_sha256': value['design']['sha256'],
+                   'handoff_sha256': expected_sha256}
+        binding = _arena_binding(value.get('arena'), manifest.parent, repo, context, design,
+                                 context['approved_design_sha256'])
+        if binding:
+            context['arena'] = binding
+        return context
     except FeatureContextError:
         raise
     except architect.ERRORS as error:
@@ -175,6 +196,10 @@ def read(data):
         if (value.get('schema') != cli.SCHEMA or value.get('baseline') != data.get('base_commit')
                 or value.get('criteria') != criteria or value.get('scope') != _design(design, data['base_commit'], criteria)):
             raise FeatureContextError('feature handoff baseline, scope or criteria changed')
+        arena = value.get('arena')
+        if arena != _arena_binding(arena['reference'] if arena else None, path.parent, data['repo'],
+                                   value, design, value['approved_design_sha256']):
+            raise FeatureContextError('feature Arena selection changed')
         return {**value, 'design': design}
     except FeatureContextError:
         raise
@@ -201,6 +226,17 @@ def runtime_criteria(context):
     return {item['id'] for item in context['criteria'] if item['text'] in expectations}
 
 
+def verify_arena_request(context, request):
+    arena = context.get('arena')
+    if arena and cli.digest(request) != arena['request_sha256']:
+        raise FeatureContextError('feature request differs from the Arena comparison')
+
+
+def verify_arena_runtime(arena, image, source_mode):
+    if arena and (arena['image'] != image or arena['source_mode'] != source_mode):
+        raise FeatureContextError('Feature runtime differs from the approved Arena image or source mode')
+
+
 def check_scope(data, head=None):
     context = read(data)
     if context is None:
@@ -216,6 +252,8 @@ def check_scope(data, head=None):
         else:
             if not isinstance(head, str) or not re.fullmatch(r'[0-9a-f]{40}', head):
                 raise FeatureContextError('feature review requires an exact candidate commit')
+            if context.get('arena') and head != context['arena']['candidate']:
+                raise FeatureContextError('feature candidate differs from the Arena selection')
             _git(repo, 'merge-base', '--is-ancestor', context['baseline'], head)
             commands = [('diff', '--name-only', '--no-renames', '-z', context['baseline'], head, '--')]
         changes = {name.decode('utf-8') for command in commands for name in _git(repo, *command).split(b'\0') if name}

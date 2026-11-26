@@ -381,6 +381,21 @@ def validate_feature_resolution(ids, assessments, labels):
         raise DeliveryError('feature runtime criteria lack independent resolution citations: ' + ', '.join(missing))
 
 
+def require_feature_arena_delivery(data, feature, target, destination):
+    if not feature or not feature.get('arena'):
+        return
+    from workbench import feature_context
+    selection = feature['arena']
+    if selection['candidate'] != target:
+        raise DeliveryError('candidate differs from the verified Arena selection')
+    try:
+        feature_context.verify_arena_request(feature, Path(data['feature_context']['path']).parent / 'issue.txt')
+    except (OSError, ValueError, cli.WorkbenchError) as error:
+        raise DeliveryError(str(error)) from error
+    if destination is not None and selection['source_status'] == 'contested' and not selection['interrogation']:
+        raise DeliveryError('contested feature design requires Interrogate evidence before publication')
+
+
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
     from workbench import feature_context
@@ -388,6 +403,7 @@ def _independent_verification(data, target, *, destination=None):
         feature = feature_context.read(data)
     except (OSError, ValueError, cli.WorkbenchError) as error:
         raise DeliveryError(str(error)) from error
+    require_feature_arena_delivery(data, feature, target, destination)
     desired_ids = {criterion['id'] for criterion in data['criteria']}
     for item in data['evidence']:
         if (item.get('superseded') or item['kind'] != 'independent-review' or item['commit'] != target

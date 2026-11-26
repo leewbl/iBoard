@@ -168,6 +168,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           log_files=(), screenshot_files=(), required_ci_workflows=None, ci_skip_policy=None, ci_skip_reason=None,
           publish_only=False, verification_target=None, criteria=(), retained_contract=None,
           local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
+          feature_arena_out=None,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
@@ -188,15 +189,21 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('retained verification settings require an existing PR target')
     if bool(feature_manifest) != bool(feature_sha256):
         raise StartError('feature handoff requires its manifest and expected SHA-256')
+    if feature_arena_out and not feature_manifest:
+        raise StartError('feature Arena requires an approved comparison manifest')
     handoff = None
     if feature_manifest:
         if kind != 'feature' or verification_target is not None or criteria:
             raise StartError('feature handoff requires a new feature task with its own frozen criteria')
-        try:
-            handoff = feature_context.load_input(feature_manifest, feature_sha256, repo)
-        except (OSError, ValueError, cli.WorkbenchError) as error:
-            raise StartError(str(error)) from error
-        criteria = handoff['criteria']
+        if not feature_arena_out:
+            try:
+                handoff = feature_context.load_input(feature_manifest, feature_sha256, repo)
+            except (OSError, ValueError, cli.WorkbenchError) as error:
+                raise StartError(str(error)) from error
+    arena_enabled = feature_arena_out or (handoff and handoff.get('arena'))
+    if arena_enabled:
+        if not issue_file or log_files or screenshot_files:
+            raise StartError('feature Arena requires the exact request file approved for comparison')
     try:
         required_ci_workflows = workflow.validate_required_ci_workflows(
             required_ci_workflows, required=bool(pr_repo) and not publish_only and verification_target is None)
@@ -216,7 +223,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
     else:
         if not source or not source.strip():
             raise StartError('a source description is required for an issue file')
-        issue, origin = Path(issue_file).expanduser().read_text(encoding='utf-8'), source.strip()
+        issue_path = Path(issue_file).expanduser()
+        issue = issue_path.read_bytes().decode('utf-8') if arena_enabled else issue_path.read_text(encoding='utf-8')
+        origin = source.strip()
     if len(log_files) > 8:
         raise StartError('at most eight log files may be supplied')
     if len(screenshot_files) > 4:
@@ -265,9 +274,26 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('cannot inspect the local Docker image') from error
     if inspected.returncode:
         raise StartError('Docker image must already exist locally')
+    if feature_arena_out:
+        from workbench import feature_arena
+        try:
+            resolution = feature_arena.resolve(feature_manifest, feature_sha256, repo, issue_file,
+                                               feature_arena_out, seconds_limit=int(remaining()))
+            if resolution['status'] != 'resolved':
+                raise StartError(f'feature Arena comparison blocked; evidence retained at {feature_arena_out}')
+            handoff = feature_context.load_input(resolution['handoff'], resolution['handoff_sha256'], repo)
+        except (OSError, ValueError, cli.WorkbenchError) as error:
+            raise StartError(str(error)) from error
     baseline = {'base_commit':verification_target['base']} if verification_target is not None else {}
     if handoff is not None:
+        if handoff.get('arena') and hashlib.sha256(issue.encode()).hexdigest() != handoff['arena']['request_sha256']:
+            raise StartError('feature request differs from the Arena comparison')
+        try:
+            feature_context.verify_arena_runtime(handoff.get('arena'), image, source_mode)
+        except feature_context.FeatureContextError as error:
+            raise StartError(str(error)) from error
         baseline['base_commit'] = handoff['baseline']
+        criteria = handoff['criteria']
     info = prepare(task_id=task_id, repo=repo, tasks_root=tasks_root, workspaces_root=workspaces_root,
                    source=origin, kind=kind, surface=surface, iterations=iterations,
                    seconds=seconds, implementer=implementer, started_at=began.isoformat(),
@@ -298,7 +324,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                     data['criteria'] = prior
                     data['criterion_changes'] = retained_contract['changes']
                     cli.write(task, data)
-                request.write_text(issue_with_logs, encoding='utf-8')
+                request.write_bytes(issue_with_logs.encode('utf-8'))
                 request.chmod(0o600)
                 if logs or screenshots:
                     directory = task.parent / 'inputs'
@@ -390,6 +416,7 @@ def main(argv=None):
     parser.add_argument('--memory-mb', type=int, default=2048)
     parser.add_argument('--feature-manifest', help='authorized Feature handoff manifest for a new feature task')
     parser.add_argument('--feature-sha256', help='expected SHA-256 of the authorized Feature handoff manifest')
+    parser.add_argument('--feature-arena-out', help='run an approved two-design comparison before Feature verification')
     args = parser.parse_args(argv)
     result = start(task_id=args.id, repo=args.repo, issue_file=args.issue_file, issue_url=args.issue_url,
                    source=args.source, kind=args.kind, surface=args.surface, iterations=args.iterations,
@@ -399,7 +426,8 @@ def main(argv=None):
                    memory_mb=args.memory_mb, log_files=args.log_file, screenshot_files=args.screenshot,
                    required_ci_workflows=args.required_ci_workflows, publish_only=args.publish_only,
                    ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason,
-                   feature_manifest=args.feature_manifest, feature_sha256=args.feature_sha256)
+                   feature_manifest=args.feature_manifest, feature_sha256=args.feature_sha256,
+                   feature_arena_out=args.feature_arena_out)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

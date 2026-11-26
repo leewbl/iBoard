@@ -4,6 +4,7 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from workbench import architect, autopilot, cli, delivery, feature_context, prototype, workflow
 from workbench.prompt_profiles import PSTACK_COMMIT
@@ -194,19 +195,40 @@ class FeatureContextTests(unittest.TestCase):
         with self.assertRaisesRegex(feature_context.FeatureContextError, 'pending runtime'):
             feature_context.verify_review(self.state, candidate, self.ref(path))
 
-    def test_autopilot_and_delivery_require_candidate_architecture_and_runtime_evidence(self):
+    def _run_autopilot_with_handoff(self, *, arena_candidate=False):
         task_info = workflow.prepare(task_id='feature-case', repo=self.repo, tasks_root=self.root / 'tasks',
                                      workspaces_root=self.root / 'workspaces', source='feature request',
                                      kind='feature', surface='non-ui', iterations=2, seconds=120,
                                      implementer='fixture')
         task = Path(task_info['task'])
         workspace = Path(task_info['workspace'])
+        issue = task.parent / 'issue.txt'
+        issue.write_text('Change the fixed driver input and preserve its interface.\n')
+        selected = None
+        if arena_candidate:
+            candidate_tree = self.root / 'arena-candidate'
+            cli.git(self.repo, 'worktree', 'add', '--detach', str(candidate_tree), self.baseline)
+            (candidate_tree / 'driver.py').write_text('def run(data):\n    return data + 1\n')
+            cli.git(candidate_tree, 'commit', '-qam', 'candidate from Arena')
+            selected = cli.sha(candidate_tree, 'HEAD')
+            self.approved['arena_resolution'] = {'selected': 'B', 'source_sha256': 'f' * 64}
+            cli.write(self.design, self.approved)
+            self.input['design'] = self.ref(self.design)
+            receipt = self.root / 'arena-resolution.json'
+            cli.write(receipt, {'schema': cli.SCHEMA, 'status': 'resolved'})
+            self.input['arena'] = self.ref(receipt)
+            binding = patch('workbench.feature_arena.validate_receipt', return_value={
+                'candidate': selected, 'request_sha256': cli.digest(issue), 'selected_design': 'B',
+                'source_status': 'contested', 'criteria': self.input['criteria'],
+                'checkpoint': self.input['checkpoint'], 'review_model': self.input['review_model'],
+                'prototypes': [], 'image': 'local-image', 'source_mode': 'workspace', 'interrogation': None,
+            })
+            binding.start()
+            self.addCleanup(binding.stop)
         data = cli.read(task)
         cli.criterion_add(argparse.Namespace(**self.criterion, reason='frozen handoff'), data)
         feature_context.freeze(task, data, self.load())
         cli.write(task, data)
-        issue = self.root / 'request.txt'
-        issue.write_text('Change the fixed driver input and preserve its interface.\n')
         spec = {'command': ['python3', '/workspace/driver.py'], 'marker': 'OBSERVED', 'exit_code': 0}
         planning = []
 
@@ -218,6 +240,7 @@ class FeatureContextTests(unittest.TestCase):
                         'tests': spec, 'feature_doc': 'driver.py'}
                 output = json.dumps(plan) + ('\nExtra note.' if len(planning) == 1 else '')
             elif not read_only:
+                self.assertFalse(arena_candidate, 'the retained Arena commit is already implemented')
                 (repo / 'driver.py').write_text('def run(data):\n    return data + 1\n')
                 output = 'implemented'
             else:
@@ -255,6 +278,17 @@ class FeatureContextTests(unittest.TestCase):
         data = cli.read(task)
         candidate = cli.sha(workspace, 'HEAD')
         delivery._independent_verification(data, candidate)
+        if arena_candidate:
+            adopted = [event for event in data['events'] if event['type'] == 'candidate-adopted']
+            self.assertEqual(candidate, selected)
+            self.assertEqual([(event['commit'], event['source']) for event in adopted], [(selected, 'feature-arena')])
+            self.assertEqual(data['iterations'], 1)
+            with self.assertRaisesRegex(delivery.DeliveryError, 'Interrogate evidence'):
+                delivery._independent_verification(data, candidate, destination='user/fork')
+            issue.write_text('Different request.\n')
+            with self.assertRaisesRegex(delivery.DeliveryError, 'request differs'):
+                delivery._independent_verification(data, candidate)
+            return
 
         retained = next(item for item in data['evidence'] if item['kind'] == 'independent-review')
         path = Path(retained['path'])
@@ -265,3 +299,9 @@ class FeatureContextTests(unittest.TestCase):
                 retained['sha256'] = cli.digest(path)
                 with self.assertRaisesRegex(delivery.DeliveryError, 'independent PASS'):
                     delivery._independent_verification(data, candidate)
+
+    def test_autopilot_and_delivery_require_candidate_architecture_and_runtime_evidence(self):
+        self._run_autopilot_with_handoff()
+
+    def test_arena_winner_moves_into_feature_verification_without_a_new_candidate(self):
+        self._run_autopilot_with_handoff(arena_candidate=True)
