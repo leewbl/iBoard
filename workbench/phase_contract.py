@@ -266,7 +266,7 @@ def _event_ref(data, field, event_type, filename):
     return path, value['sha256']
 
 
-def _workspace_settings(data, contract, entry, parent):
+def _workspace_settings(data, contract, entry, parent, *, replay=False):
     step = contract['steps'][entry['id']]
     repo = Path(data['repo'])
     _require(data.get('kind') == 'feature' and data.get('surface') == step['surface']
@@ -281,7 +281,9 @@ def _workspace_settings(data, contract, entry, parent):
              'phase task worktree is outside the approved repository')
     _commit(repo, parent)
     baseline = contract['plan']['baseline']
-    if entry['base'] == 'trunk':
+    if replay:
+        _git(repo, 'merge-base', '--is-ancestor', baseline, parent)
+    elif entry['base'] == 'trunk':
         _require(parent == baseline, 'phase must start at its declared trunk baseline')
     else:
         _require(parent != baseline, 'phase must start at the declared predecessor candidate')
@@ -304,12 +306,59 @@ def _save(path, data, value, field, event_type):
     return reference
 
 
-def bind(task_path, data, contract, phase_id, parent, request_path, baseline_perf):
+def _replayed_candidate(data, contract, entry, parent, replay, baseline_perf):
+    from workbench import delivery, phase_replay
+
+    _require(isinstance(replay, dict) and set(replay) == {'source_task', 'source_result', 'source_review', 'proof'},
+             'invalid phase replay binding')
+    origin = Path(replay['source_task'])
+    _require(origin.is_absolute() and origin.name == 'task.json' and origin.resolve(strict=True) == origin,
+             'phase replay needs its exact original task path')
+    original = cli.read(origin)
+    # Reject replay-of-replay before following the source, including cycles.
+    original_ref = _event_ref(original, 'phase_binding', 'phase-bound', BINDING_FILE)
+    _require(original_ref is not None and 'replay' not in _json(*original_ref),
+             'phase replay must use an original verified phase')
+    context = read(original)
+    _require(context['task_path'] == origin and context['phase'] == entry['id']
+             and context['contract']['manifest_sha256'] == contract['manifest_sha256']
+             and context['baseline_perf'] == baseline_perf
+             and original.get('phase_result') == replay['source_result'],
+             'original phase scope or evidence changed before replay')
+    state = cli.read(origin.with_name('autopilot.json'))
+    head = state['candidate_commit']
+    _, issues = cli.evidence_gate(original, head)
+    _require(state['phase'] in ('delivery', 'complete') and not issues,
+             'phase replay requires the unchanged original verified candidate')
+    try:
+        proof = delivery._independent_verification(original, head)
+    except delivery.DeliveryError as error:
+        raise PhaseContractError('original independent phase review no longer passes') from error
+    _require({'path': proof['path'], 'sha256': proof['sha256']} == replay['source_review'],
+             'original independent phase review changed before replay')
+    report = phase_replay.validate(replay['proof'], repo=data['repo'], trunk=contract['plan']['baseline'],
+                                   old_base=context['parent'], old_head=head, new_base=parent, files=entry['files'])
+    old_local, new_local = original.get('local_gate'), data.get('local_gate')
+    if old_local is not None:
+        from workbench import local_gate
+
+        _require(isinstance(new_local, dict), 'phase replay must retain the original local test policy')
+        try:
+            local_gate.validate(original, head)
+            local_gate.validate_configuration(data, report['candidate'])
+        except local_gate.LocalGateError as error:
+            raise PhaseContractError('phase replay must retain the original local test policy') from error
+        _require(all(old_local[key] == new_local[key] for key in ('mode', 'files', 'reason')),
+                 'phase replay changed the authorized local test policy')
+    return report['candidate']
+
+
+def bind(task_path, data, contract, phase_id, parent, request_path, baseline_perf, *, replay=None):
     """Freeze phase identity, exact request, and pre-edit performance evidence."""
     task_path = Path(task_path).resolve(strict=True)
     parent_dir = task_path.parent
     entry = _entry(contract, phase_id)
-    _workspace_settings(data, contract, entry, parent)
+    _workspace_settings(data, contract, entry, parent, replay=replay is not None)
     before = verify_baseline(contract, phase_id, baseline_perf, before=data['started_at'])
     source = Path(request_path)
     _require(source == parent_dir / 'issue.txt' and not source.is_symlink(), 'phase task request must be its retained issue.txt')
@@ -320,6 +369,9 @@ def bind(task_path, data, contract, phase_id, parent, request_path, baseline_per
              'limits': data['limits'], 'started_at': data['started_at'],
              'manifest': {'path': contract['manifest_path'], 'sha256': contract['manifest_sha256']},
              'baseline_perf': before}
+    if replay is not None:
+        value['replay'] = replay
+        value['replayed_candidate'] = _replayed_candidate(data, contract, entry, parent, replay, before)
     return _save(parent_dir / BINDING_FILE, data, value, 'phase_binding', 'phase-bound')
 
 
@@ -339,13 +391,19 @@ def read(data):
                  'phase task identity, budgets or criteria changed')
         contract = load(value['manifest']['path'], value['manifest']['sha256'])
         entry = _entry(contract, value['phase'])
-        _workspace_settings(data, contract, entry, value['parent'])
+        _workspace_settings(data, contract, entry, value['parent'], replay='replay' in value)
         request_path = task_path.parent / 'issue.txt'
         expected = hashlib.sha256(request(contract, value['phase']).encode('utf-8')).hexdigest()
         _require(value['request_sha256'] == expected, 'phase approval no longer matches its original request')
         _bytes(request_path, 100_000, expected)
         _require(verify_baseline(contract, entry['id'], value['baseline_perf'], before=data['started_at']) == value['baseline_perf'],
                  'phase trunk baseline evidence changed')
+        if 'replay' in value:
+            _require(value.get('replayed_candidate') == _replayed_candidate(data, contract, entry, value['parent'],
+                                                                            value['replay'], value['baseline_perf']),
+                     'replayed phase candidate changed')
+        else:
+            _require('replayed_candidate' not in value, 'phase candidate has no verified replay')
         return {**value, 'contract': contract, 'entry': entry, 'step': contract['steps'][value['phase']],
                 'task_path': task_path}
     except PhaseContractError:
@@ -358,6 +416,8 @@ def _changed(repo, context, candidate):
     commands = [('diff', '--cached', '--name-only', '--no-renames', '-z', 'HEAD', '--'),
                 ('diff', '--name-only', '--no-renames', '-z', '--'), ('ls-files', '--others', '-z', '--')]
     if candidate is not None:
+        if 'replayed_candidate' in context:
+            _require(candidate == context['replayed_candidate'], 'candidate differs from the verified replay patch')
         _commit(repo, candidate)
         parent = context['parent']
         _require(candidate != parent, 'phase candidate must contain a change')

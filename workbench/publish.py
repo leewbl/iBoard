@@ -396,7 +396,7 @@ def _pr_body(data, head):
             raise PublishError('UI publication requires an accessible verified screenshot')
     sections = [('reproduction', data['base_commit']), ('resolution', head), ('test-result', head)]
     if data.get('kind') == 'feature':
-        sections = [('test-result', head)]
+        sections = [('resolution', head), ('test-result', head)] if data.get('phase_binding') else [('test-result', head)]
     body = ('This change was prepared by the engineering workbench.\n\n'
             f'Verified candidate: `{head}`\n')
     if data.get('surface') == 'ui':
@@ -405,6 +405,17 @@ def _pr_body(data, head):
                  f"[View screenshot provenance](https://github.com/{destination}/blob/{artifact['commit']}/manifest.json).\n")
     if data.get('kind') == 'feature':
         body += f'\n## Functional documentation\n\n[View documentation at the verified commit]({_feature_doc_link(data, head)})\n'
+    if data.get('phase_binding'):
+        from workbench import phase_contract
+
+        phase = phase_contract.read(data)
+        result = phase_contract.verify_completion(data, head, context=phase)
+        ceiling = phase['entry']['verify']['perf']['max_ms']
+        trunk = phase['contract']['plan']['baseline']
+        digest = data['phase_result']['sha256']
+        body += (f"\n## Phase acceptance\n\nPhase `{phase['phase']}` used original trunk `{trunk}` as its benchmark. "
+                 f"The verified candidate median was {result['median_ms']:.3f} ms against a {ceiling:g} ms limit. "
+                 f"Phase evidence SHA-256 `{digest}`.\n")
     for kind, commit in sections:
         matching = [item for item in data['evidence'] if not item.get('superseded') and
                     item.get('kind') == kind and item.get('commit') == commit and

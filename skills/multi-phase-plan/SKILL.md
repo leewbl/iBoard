@@ -58,7 +58,18 @@ python3 -m workbench.phase_dispatch run --manifest "$DISPATCH" \
 
 Each eligible phase gets a distinct task and worktree at its declared Git parent. All listed prerequisites must have accepted local evidence. The dispatcher measures the original trunk before the model edits. After the change, it validates the candidate unit and live runs and measures performance on the same pinned candidate image. The independent review must cite both executions. The final source diff must stay inside the phase scope. Independent phases can proceed as their own prerequisites clear. Call the same command with the same evidence directory to continue within the original deadline. Completed phases are audited again before dependent work starts.
 
-A change to an interaction needs explicit approval of its exact commit and evidence, using `python3 -m workbench.phase_dispatch approve --task "$PHASE_TASK" --candidate "$CANDIDATE" --result-sha256 "$PHASE_RESULT_SHA256" --approved-by "$OPERATOR" --reason "$REVIEW_REASON"`. Run the dispatcher again to release dependent local tasks. This command prepares accepted commits locally. A frozen optional `destination` permits the corresponding task to pass the separate GitHub gate after its required review. Orchestrating remote landings, rebase and reverification of a changed remote base remains separate.
+A change to an interaction needs explicit approval of its exact commit and evidence, using `python3 -m workbench.phase_dispatch approve --task "$PHASE_TASK" --candidate "$CANDIDATE" --result-sha256 "$PHASE_RESULT_SHA256" --approved-by "$OPERATOR" --reason "$REVIEW_REASON"`. Run the dispatcher again to release dependent local tasks.
+
+## Land the approved phases
+
+To authorize GitHub delivery, include `destination` as the personal fork's exact `owner/repo` in the original dispatch manifest. Run the separate shipping command with the required workflow names. Shipping shares the dispatch deadline and records its remote write intents.
+
+```sh
+python3 -m workbench.phase_ship --manifest "$DISPATCH" --sha256 "$APPROVED_DISPATCH_SHA256" \
+  --dispatch-root "$DISPATCH_EVIDENCE" --ci-workflow "$REQUIRED_WORKFLOW"
+```
+
+Shipping checks the original proofs and each PR against current GitHub state before each change. It advances after GitHub confirms the exact fast-forward, merge, or squash it recorded. When that landing changes the next phase's base, iBoard replays its exact linear patch history in a new worktree and reruns the unit, live, performance, and independent review gates. An existing approved OpenClaw local test policy is carried forward and rerun. A new interaction candidate needs its own approval. A conflict, unexpected main change, or unconfirmed write pauses shipping and preserves its journal. Keep the original task and replay evidence available across resumes. To test a phase on a different exact local commit without publishing, use `workbench.phase_reverify`.
 
 ## Audit a planned phase
 

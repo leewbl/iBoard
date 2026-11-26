@@ -88,6 +88,8 @@ def _retained(repo, member):
         if lock == 'held' or stack_verify._proof_locked(repo, member, task) != member['proof']:
             raise RebaseError('the child needs its original, unchanged independent proof')
         data = cli.read(task)
+        if 'phase_binding' in data or any(event.get('type') == 'phase-bound' for event in data.get('events', [])):
+            raise RebaseError('planned phases require phase_reverify to preserve performance and interaction review')
         stage = start._read_input_stage(task)
         state = cli.read(task.with_name('autopilot.json'))
         request = (task.parent / 'issue.txt').read_bytes()

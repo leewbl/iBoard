@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, multiphase, phase_contract, workflow
+from workbench import cli, multiphase, phase_contract, phase_reverify, workflow
 
 
 class PhaseContractTests(unittest.TestCase):
@@ -125,7 +125,7 @@ class PhaseContractTests(unittest.TestCase):
         cli.git(workspace, 'commit', '-qam', 'candidate')
         return cli.sha(workspace, 'HEAD')
 
-    def record(self, task, data, candidate, before):
+    def record(self, task, data, candidate, before, benchmark_dir='candidate-bench'):
         proofs = {}
         for name, kind in (('unit', 'test-result'), ('live', 'resolution')):
             proof = task.parent / (name + '.json')
@@ -141,7 +141,7 @@ class PhaseContractTests(unittest.TestCase):
                                                 actor='independent-verifier', description=name, criterion=[]), data)
             proofs[name] = self.reference(proof)
         return {'commit': candidate, 'baseline_perf': before,
-                'perf': self.benchmark('candidate-bench', candidate, offset=100, elapsed=120), **proofs}
+                'perf': self.benchmark(benchmark_dir, candidate, offset=100, elapsed=120), **proofs}
 
     def test_request_successful_proof_and_review_are_frozen_at_publish(self):
         task, data, before = self.bind()
@@ -212,3 +212,74 @@ class PhaseContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'helper changed'):
             phase_contract.record_completion(task, data, proof)
         self.assertNotIn('phase_result', data)
+
+    def test_replay_binds_fresh_evidence_without_inheriting_operator_approval(self):
+        original, data, before = self.bind()
+        old_head = self.candidate(data)
+        phase_contract.record_completion(original, data, self.record(original, data, old_head, before))
+        local_policy = {'mode': 'openclaw-vitest-json-v1', 'files': ['cli.test.ts'], 'reason': 'Run local tests.'}
+        data['local_gate'] = local_policy
+        cli.write(original, data)
+        cli.write(original.with_name('autopilot.json'), {'schema': cli.SCHEMA, 'phase': 'delivery',
+                                                         'candidate_commit': old_head})
+        old_tree = cli.git(self.repo, 'rev-parse', self.baseline + '^{tree}')
+        new_base = cli.git(self.repo, 'commit-tree', old_tree, '-p', self.baseline, '-m', 'land an equivalent tree')
+        receipt = self.root / 'replay'
+        observed = []
+
+        def launch(**options):
+            keys = ('task_id', 'repo', 'tasks_root', 'workspaces_root', 'source', 'kind', 'surface',
+                    'iterations', 'seconds')
+            prepared = options['prepare'](**{name: options[name] for name in keys}, implementer='fixture')
+            task = Path(prepared['task'])
+            current = cli.read(task)
+            for criterion in options['criteria']:
+                cli.criterion_add(argparse.Namespace(**criterion, reason='replayed intake'), current)
+            cli.write(task, current)
+            request = task.with_name('issue.txt')
+            request.write_bytes(Path(options['issue_file']).read_bytes())
+            return options['run'](task, request, options['image'])
+
+        def execute(task, request, image):
+            current = cli.read(task)
+            context = phase_contract.read(current)
+            candidate = context['replayed_candidate']
+            observed.append(candidate)
+            self.assertEqual(context['parent'], new_base)
+            self.assertEqual(context['baseline_perf'], before)
+            self.assertFalse(phase_contract.interaction_approved(current, candidate))
+            cli.git(current['repo'], 'merge', '--ff-only', candidate)
+            phase_contract.record_completion(task, current, self.record(task, current, candidate, before, 'replay-bench'))
+            cli.write(task, current)
+            cli.write(task.with_name('autopilot.json'), {'schema': cli.SCHEMA, 'phase': 'delivery',
+                                                         'candidate_commit': candidate})
+
+        def independent(data, candidate):
+            return data['phase_result']
+
+        def select(current, head, files, reason):
+            self.assertNotEqual(head, old_head)
+            self.assertEqual((files, reason), (local_policy['files'], local_policy['reason']))
+            current['local_gate'] = {**local_policy, 'base': current['base_commit']}
+
+        with patch.object(cli, 'evidence_gate', side_effect=lambda data, head: (head, [])), \
+                patch('workbench.delivery._independent_verification', side_effect=independent), \
+                patch('workbench.local_gate._select', side_effect=select), \
+                patch('workbench.local_gate.validate'), patch('workbench.local_gate.validate_configuration'):
+            phase_contract.approve_interaction(original, expected_candidate=old_head,
+                                                expected_result_sha256=data['phase_result']['sha256'],
+                                                approved_by='operator', reason='Reviewed original candidate.')
+            result = phase_reverify.run(original, new_base, receipt, seconds=180, launch=launch, execute=execute)
+            self.assertEqual(result['status'], 'awaiting-operator-review', result)
+            self.assertNotEqual(result['candidate'], old_head)
+            self.assertEqual(observed, [result['candidate']])
+            self.assertEqual(phase_reverify.run(original, new_base, receipt, seconds=180,
+                                                launch=launch, execute=execute), result)
+            self.assertEqual(observed, [result['candidate']])
+            replayed = cli.read(Path(result['task']))
+            self.assertEqual(replayed['local_gate'], {**local_policy, 'base': new_base})
+            with self.assertRaisesRegex(phase_contract.PhaseContractError, 'awaits operator'):
+                phase_contract.require_delivery(replayed, result['candidate'], destination='user/fork')
+            replayed.pop('local_gate')
+            with self.assertRaisesRegex(phase_contract.PhaseContractError, 'retain the original local test policy'):
+                phase_contract.read(replayed)

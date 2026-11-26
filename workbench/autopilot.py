@@ -796,6 +796,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     from workbench import phase_contract
     try:
         phase = phase_contract.read(data)
+        replay_candidate = phase.get('replayed_candidate') if phase else None
         phase_binding = data.get('phase_binding')
         if state_exists and state.get('phase_binding') != phase_binding:
             raise AutopilotError('multi-phase task binding changed after workflow start')
@@ -1028,7 +1029,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                    'Two baseline runs and an independent assessment confirmed the original behavior.',
                    decisions.artifact(task, second['report']), 'Independent baseline review passed.')
 
-        if state['phase'] in ('implement', 'adopting') and (data.get('adoption') or target or arena):
+        if state['phase'] in ('implement', 'adopting') and (data.get('adoption') or target or arena or replay_candidate):
             # Baseline checks append evidence to the persisted task. Re-read it
             # before recording adoption, or this earlier snapshot would erase it.
             data = cli.read(task)
@@ -1041,6 +1042,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 candidate = target['head']
             elif arena:
                 candidate = arena['candidate']
+                verify_candidate_scope(candidate)
+            elif replay_candidate:
+                candidate = replay_candidate
                 verify_candidate_scope(candidate)
             elif isinstance(adoption, dict) and (
                     isinstance(adoption.get('candidate_commit'), str)
@@ -1059,8 +1063,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if state['phase'] == 'implement':
                 if head != data['base_commit']:
                     raise AutopilotError('adoption must begin at the baseline')
-                if arena and cli.iteration_limit_reached(data):
-                    raise AutopilotError('iteration limit reached before adopting the Arena candidate')
+                if (arena or replay_candidate) and cli.iteration_limit_reached(data):
+                    raise AutopilotError('iteration limit reached before adopting the verified candidate')
                 state['phase'] = 'adopting'
                 cli.write(state_path, state)
             if head == data['base_commit']:
@@ -1079,11 +1083,15 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 if arena:
                     data['iterations'] += 1
                     event.update(source='feature-arena', selection=arena['reference'], iteration=data['iterations'])
+                elif replay_candidate:
+                    data['iterations'] += 1
+                    event.update(source='phase-replay', selection=phase['replay']['proof'], iteration=data['iterations'])
                 data['events'].append(event)
                 cli.write(task, data)
             state.update(phase='verify', candidate_commit=candidate)
             cli.write(state_path, state)
-            proof = decisions.artifact(task, binding['path']) if arena else 'commit:' + candidate
+            provenance = binding if arena else phase_binding if replay_candidate else None
+            proof = decisions.artifact(task, provenance['path']) if provenance else 'commit:' + candidate
             append_decision('implement', 'Selected the adopted candidate.', 'Its baseline and adoption contract were checked.',
                    proof, 'Ready for candidate verification.')
 
@@ -1173,7 +1181,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             data = cli.read(task)
             from workbench import verify_openclaw
             journey_results = []
-            if pr_repo and verify_openclaw.applies(data, pr_repo):
+            journey_repo = pr_repo or (phase['contract']['destination'] if phase else None)
+            if journey_repo and verify_openclaw.applies(data, journey_repo):
                 if source_mode != 'image':
                     raise AutopilotError('OpenClaw delivery requires a source-verified candidate image')
                 journey_results = verify_openclaw.collect(
@@ -1425,6 +1434,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 raise AutopilotError(f'existing PR verification failed; evidence saved at {failure_path}')
             if arena:
                 raise AutopilotError(f'Arena selection failed Feature verification; evidence saved at {failure_path}')
+            if replay_candidate:
+                raise AutopilotError(f'replayed phase failed fresh verification; evidence saved at {failure_path}')
             if failure.get('execution_blocked'):
                 raise AutopilotError(f'verification environment unavailable; failure saved at {failure_path}')
             if cli.iteration_limit_reached(data):
@@ -1536,6 +1547,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                            decisions.artifact(task, failure_path), 'Failed CI run retained.')
                     if arena:
                         raise AutopilotError(f'Arena selection failed required CI; evidence saved at {failure_path}') from error
+                    if replay_candidate:
+                        raise AutopilotError(f'replayed phase failed required CI; evidence saved at {failure_path}') from error
                     if cli.iteration_limit_reached(data):
                         raise AutopilotError(f'iteration limit reached after CI failure; evidence saved at {failure_path}') from error
                     if source_mode == 'image' and not build_source_image:
