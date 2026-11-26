@@ -10,6 +10,7 @@ from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
 from workbench.pr_watch import PSTACK_SOURCE as PR_WATCH_SOURCE
 from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
 from workbench.stack_verify import PSTACK_SOURCES as STACK_VERIFICATION_SOURCES
+from workbench.stack_ship import PSTACK_SOURCE as STACK_SHIPPING_SOURCE
 
 
 CATALOG = Path(__file__).resolve().parents[1] / 'docs' / 'pstack' / 'catalog.json'
@@ -52,6 +53,7 @@ def main():
                                 (['python3 -m workbench.pr_watch'] if source == PR_WATCH_SOURCE else []) +
                                 (['python3 -m workbench.verify_pr', 'python3 -m workbench.stack_verify']
                                  if source in STACK_VERIFICATION_SOURCES else []) +
+                                (['python3 -m workbench.stack_ship'] if source == STACK_SHIPPING_SOURCE else []) +
                                 ([PICKUP_SOURCES[source]] if source in PICKUP_SOURCES else [])),
         }
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -17,40 +17,44 @@ def _proof(repo, member, task_path):
     with observe_task_lock(task) as lock:
         if lock == 'held':
             return {'status':'unproven', 'reason':'task-operation-in-progress'}
-        data = cli.read(task)
-        state = cli.read(task.with_name('autopilot.json'))
-        head, base, number = member['head'], member['base'], member['number']
-        if data['base_commit'] != base or state.get('candidate_commit') != head:
-            return {'status':'stale', 'reason':'local-evidence-does-not-match-the-current-pair'}
-        stage = start._read_input_stage(task)
-        if (stage['phase'] != 'ready' or state.get('issue_digest') != stage.get('request_digest')
-                or state.get('input_digest') != stage.get('input_digest')):
-            return {'status':'unproven', 'reason':'original-input-binding-unavailable'}
-        verification = state.get('verification')
-        target = data.get('verification_target')
-        if target is not None:
-            autopilot._validate_verification_target(data, target, stage['request_digest'], stage['run_settings'], number)
-            if (target['repo'] != repo or state.get('verification_target') != target or state.get('phase') != 'complete'
-                    or not isinstance(verification, dict) or verification.get('verdict') != 'PASS'
-                    or (verification.get('repo'), verification.get('pr'), verification.get('head'),
-                        verification.get('base'), verification.get('criterion_digest'))
-                    != (repo, number, head, base, cli.criteria_digest(data))):
-                return {'status':'unproven', 'reason':'existing-pr-verification-receipt-unavailable'}
-        else:
-            published = state.get('published_pr') or {}
-            if ((published.get('repo'), published.get('pr'), published.get('head')) != (repo, number, head)
-                    or member['head_branch'] != f"workbench/{data['id']}"
-                    or stage['run_settings'].get('pr_repo') != repo):
-                return {'status':'unproven', 'reason':'retained-task-does-not-identify-the-selected-pr'}
-        _, issues = cli.evidence_gate(data, head)
-        if issues:
-            return {'status':'unproven', 'reason':'local-evidence-gate-failed', 'details':issues}
-        verdict = delivery._independent_verification(data, head, destination=repo)
-        if target is not None and (verification.get('review'), verification.get('review_sha256'),
-                                   verification.get('verifier')) != (verdict['path'], verdict['sha256'], verdict['actor']):
-            return {'status':'unproven', 'reason':'independent-review-receipt-does-not-match'}
-        return {'status':'verified', 'review':verdict['path'], 'review_sha256':verdict['sha256'],
-                'verifier':verdict['actor'], 'criterion_digest':cli.criteria_digest(data)}
+        return _proof_locked(repo, member, task)
+
+
+def _proof_locked(repo, member, task):
+    data = cli.read(task)
+    state = cli.read(task.with_name('autopilot.json'))
+    head, base, number = member['head'], member['base'], member['number']
+    if data['base_commit'] != base or state.get('candidate_commit') != head:
+        return {'status':'stale', 'reason':'local-evidence-does-not-match-the-current-pair'}
+    stage = start._read_input_stage(task)
+    if (stage['phase'] != 'ready' or state.get('issue_digest') != stage.get('request_digest')
+            or state.get('input_digest') != stage.get('input_digest')):
+        return {'status':'unproven', 'reason':'original-input-binding-unavailable'}
+    verification = state.get('verification')
+    target = data.get('verification_target')
+    if target is not None:
+        autopilot._validate_verification_target(data, target, stage['request_digest'], stage['run_settings'], number)
+        if (target['repo'] != repo or state.get('verification_target') != target or state.get('phase') != 'complete'
+                or not isinstance(verification, dict) or verification.get('verdict') != 'PASS'
+                or (verification.get('repo'), verification.get('pr'), verification.get('head'),
+                    verification.get('base'), verification.get('criterion_digest'))
+                != (repo, number, head, base, cli.criteria_digest(data))):
+            return {'status':'unproven', 'reason':'existing-pr-verification-receipt-unavailable'}
+    else:
+        published = state.get('published_pr') or {}
+        if ((published.get('repo'), published.get('pr'), published.get('head')) != (repo, number, head)
+                or member['head_branch'] != f"workbench/{data['id']}"
+                or stage['run_settings'].get('pr_repo') != repo):
+            return {'status':'unproven', 'reason':'retained-task-does-not-identify-the-selected-pr'}
+    _, issues = cli.evidence_gate(data, head)
+    if issues:
+        return {'status':'unproven', 'reason':'local-evidence-gate-failed', 'details':issues}
+    verdict = delivery._independent_verification(data, head, destination=repo)
+    if target is not None and (verification.get('review'), verification.get('review_sha256'),
+                               verification.get('verifier')) != (verdict['path'], verdict['sha256'], verdict['actor']):
+        return {'status':'unproven', 'reason':'independent-review-receipt-does-not-match'}
+    return {'status':'verified', 'review':verdict['path'], 'review_sha256':verdict['sha256'],
+            'verifier':verdict['actor'], 'criterion_digest':cli.criteria_digest(data)}
 
 
 def _prefix(members, trunk):
@@ -125,6 +129,17 @@ def audit(repo, numbers, tasks, *, discover=False, timeout=90, reader=None):
             'status':'verified' if stop is None else 'verification-gap'}
 
 
+def load_tasks(path):
+    manifest = Path(path).expanduser().resolve(strict=True)
+    raw = verify_pr._bounded_json(manifest, 64_000)
+    if (not isinstance(raw, dict) or len(raw) > 15
+            or any(not key.isascii() or not key.isdecimal() or len(key) > 10
+                   or key != str(int(key)) or not 1 <= int(key) <= 2_147_483_647
+                   or not isinstance(value, str) or not value.strip() for key, value in raw.items())):
+        raise verify_pr.VerifyError('task manifest requires at most 15 canonical PR numbers and file paths')
+    return {int(key):manifest.parent / Path(value).expanduser() for key, value in raw.items()}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', required=True)
@@ -133,15 +148,8 @@ def main(argv=None):
     parser.add_argument('--tasks', help='JSON object mapping PR numbers to task.json files')
     parser.add_argument('--timeout', type=int, default=90)
     args = parser.parse_args(argv)
-    tasks = {}
     try:
-        if args.tasks:
-            manifest = Path(args.tasks).expanduser().resolve(strict=True)
-            raw = verify_pr._bounded_json(manifest, 64_000)
-            if (not isinstance(raw, dict) or any(not key.isdecimal() or key != str(int(key)) or int(key) < 1
-                    or not isinstance(value, str) or not value.strip() for key, value in raw.items())):
-                raise verify_pr.VerifyError('task manifest requires positive PR keys and file paths')
-            tasks = {int(key):manifest.parent / Path(value).expanduser() for key, value in raw.items()}
+        tasks = load_tasks(args.tasks) if args.tasks else {}
         report = audit(args.repo, args.pr, tasks, discover=args.discover_stack, timeout=args.timeout)
     except (OSError, ValueError, verify_pr.VerifyError, pr_watch.WatchError, delivery.DeliveryError) as error:
         parser.error(str(error))

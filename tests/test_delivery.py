@@ -216,6 +216,27 @@ class DeliveryTests(unittest.TestCase):
         result = delivery.guarded_merge(self.task, 'alice/project', 1, self.github)
         self.assertTrue(result['merged'])
 
+    def test_stack_binding_uses_existing_gates_and_rechecks_before_the_write(self):
+        data = cli.read(self.task)
+        data['verification_target'] = {'head':self.head}
+        cli.write(self.task, data)
+        with self.assertRaisesRegex(delivery.DeliveryError, 'verification-only'):
+            delivery.guarded_merge(self.task, 'alice/project', 1, self.github)
+        binding = {'head':self.head, 'base':data['base_commit'], 'head_branch':'workbench/issue-1',
+                   'ci_workflows':['CI']}
+
+        def changed():
+            self.assertFalse(self.github.merged)
+            raise delivery.DeliveryError('proof changed during shipping')
+
+        with self.assertRaisesRegex(delivery.DeliveryError, 'proof changed'):
+            delivery._guarded_merge(self.task, 'alice/project', 1, self.github,
+                                    stack_binding=binding, revalidate=changed)
+        self.assertFalse(self.github.merged)
+        result = delivery._guarded_merge(self.task, 'alice/project', 1, self.github,
+                                         stack_binding=binding, revalidate=lambda: None)
+        self.assertTrue(result['merged'])
+
     def test_protected_branch_without_strict_checks_fails_closed(self):
         self.github.strict = False
         with self.assertRaises(delivery.DeliveryError):

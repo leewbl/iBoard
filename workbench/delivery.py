@@ -769,20 +769,40 @@ def _required_workflows_pass(github, repo, number, pull, data, head, required):
 
 @locked_task('task_path')
 def guarded_merge(task_path, repo, number, github=None):
+    return _guarded_merge(task_path, repo, number, github)
+
+
+def _merge_workflows(data, selected):
+    stored = data.get('required_ci_workflows')
+    if stored and selected and stored != selected:
+        raise DeliveryError('stack CI policy cannot replace the task policy')
+    try:
+        return workflow.validate_required_ci_workflows(
+            selected if stored is None else stored, required=not data.get('local_gate'))
+    except workflow.WorkflowError as error:
+        raise DeliveryError(str(error)) from error
+
+
+def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, revalidate=None, deadline=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or int(number) < 1:
         raise DeliveryError('invalid repository or pull request number')
     github = github or GitHub()
     data = cli.read(Path(task_path))
-    if 'verification_target' in data:
+    if 'verification_target' in data and stack_binding is None:
         raise DeliveryError('verification-only task does not authorize merging')
+    if stack_binding is not None and (not isinstance(stack_binding, dict) or not callable(revalidate)
+                                      or not {'head', 'base', 'head_branch'} <= stack_binding.keys()):
+        raise DeliveryError('a stack write requires a pinned member and an evidence recheck')
+    stored_workflows = data.get('required_ci_workflows')
+    selected_workflows = stack_binding.get('ci_workflows') if stack_binding else None
+    head_branch = stack_binding['head_branch'] if stack_binding else f"workbench/{data['id']}"
     local_policy = data.get('local_gate')
-    try:
-        required_workflows = workflow.validate_required_ci_workflows(data.get('required_ci_workflows'), required=not local_policy)
-    except workflow.WorkflowError as error:
-        raise DeliveryError(str(error)) from error
+    required_workflows = _merge_workflows(data, selected_workflows)
     head, issues = cli.gate(data, 'HEAD')
     if issues:
         raise DeliveryError('local evidence gate failed: ' + '; '.join(issues))
+    if stack_binding and (stack_binding['head'] != head or stack_binding['base'] != data['base_commit']):
+        raise DeliveryError('task does not match the exact stack revision')
     _independent_verification(data, head, destination=repo)
     from workbench import verify_openclaw
     try:
@@ -797,6 +817,8 @@ def guarded_merge(task_path, repo, number, github=None):
             raise DeliveryError(str(error)) from error
     if isinstance(github, GitHub):
         github.set_task_deadline(data)
+        if deadline is not None:
+            github._deadline = min(github._deadline, deadline) if github._deadline is not None else deadline
     owner = repo.split('/')[0]
     if github.login().lower() != owner.lower():
         raise DeliveryError('only the signed-in personal account fork may be merged')
@@ -827,12 +849,12 @@ def guarded_merge(task_path, repo, number, github=None):
             require_actions_disabled(github, repo)
         pull = github.pull(repo, number)
         if (pull.get('state') != 'OPEN' or pull.get('isDraft') or pull.get('isCrossRepository')
-                or pull.get('headRefName') != f"workbench/{data['id']}"
+                or pull.get('headRefName') != head_branch
                 or pull.get('headRefOid') != head or pull.get('baseRefName') != branch
                 or pull.get('baseRefOid') != data['base_commit']
                 or github.branch(repo, branch) != data['base_commit']
                 or pull.get('mergeStateStatus') not in (('CLEAN', 'UNSTABLE') if local_policy else ('CLEAN',))
-                or cli.read(Path(task_path)).get('required_ci_workflows') != required_workflows
+                or cli.read(Path(task_path)).get('required_ci_workflows') != stored_workflows
                 or cli.read(Path(task_path)).get('ci_skip_policy') != data.get('ci_skip_policy')
                 or cli.read(Path(task_path)).get('local_gate') != local_policy
                 or (not local_policy and not (_checks_pass(pull) or _openclaw_checks_pass(github, repo, number, pull, data, head, required_workflows)))
@@ -855,6 +877,8 @@ def guarded_merge(task_path, repo, number, github=None):
         _, issues = cli.gate(cli.read(Path(task_path)), head)
         if issues:
             raise DeliveryError('evidence or budget changed before merge: ' + '; '.join(issues))
+        if revalidate:
+            revalidate()
         github.merge(repo, number, head)
     else:
         # Do not use an indirect merge if protection appeared while validating.
@@ -868,6 +892,8 @@ def guarded_merge(task_path, repo, number, github=None):
             raise DeliveryError('evidence or budget changed before push: ' + '; '.join(issues))
         if local_policy:
             require_local_write(task_path, data, head, github, repo)
+        if revalidate:
+            revalidate()
         github.fast_forward(data['repo'], repo, data['base_commit'], head)
     try:
         final = github.pull(repo, number)
