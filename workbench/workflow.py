@@ -367,12 +367,15 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     if cli.git(data['repo'], 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError('source worktree must be clean before the check')
     regression = None
+    native = False
     if kind in tdd.KINDS:
         regression = tdd.contract(data.get('regression_test'))
-        if (data['kind'] != 'bug' or command != tdd.COMMAND
+        if (data['kind'] != 'bug' or command != tdd.command(regression)
                 or (expect_exit, marker) != tdd.expected(regression, kind)
                 or (head == data['base_commit']) != (kind == 'tdd-red')):
             raise WorkflowError('focused regression command, outcome, or revision changed')
+        native = regression.get('adapter') == tdd.VITEST
+        tdd.require_native_context(data, regression, source_mode, head, kind)
         if kind == 'tdd-green':
             tdd.verify_test(data['repo'], regression, head)
     elif source_mode == 'workspace' or kind == 'screenshot':
@@ -399,7 +402,11 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' else None
     runner_options = {'source_root': '/app'} if source_mode == 'image' else {}
     if regression is not None:
-        runner_options.update(workspace_read_only=True, regression_source=regression['source'].encode())
+        runner_options['workspace_read_only'] = True
+        if native:
+            runner_options['regression_file'] = regression['path']
+        if not native or kind == 'tdd-red':
+            runner_options['regression_source'] = regression['source'].encode()
     if data.get('phase_binding'):
         runner_options['workspace_read_only'] = True
     if screenshot_path is not None:
@@ -410,6 +417,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         report = runner(data['repo'], selected_image, command, min(timeout, remaining), **runner_options)
     except (SandboxError, OSError, ValueError) as exc:
         report = {'error': str(exc), 'exit_code': None, 'cleanup_confirmed': False}
+    if native and kind == 'tdd-green' and report.get('regression_input') == 'verified-image':
+        report['regression_sha256'] = tdd.digest(regression)
     # Always save actual result, including failures, before enforcing any gate.
     report.update({'schema': cli.SCHEMA, 'kind': kind, 'commit': head, 'actor': actor, 'description': description,
                    'expected_exit': expect_exit, 'expected_marker': marker, 'source_mode': source_mode,

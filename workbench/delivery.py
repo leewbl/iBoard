@@ -300,6 +300,7 @@ def validate_regression(data, head, reports, assessments, verifier):
     spec = data.get('regression_test')
     try:
         tdd.verify_test(data['repo'], spec, head)
+        tdd.require_native_context(data, spec, 'image', head, 'tdd-green')
         tdd.validate_citations(assessments)
         seen = set()
         modes = set()

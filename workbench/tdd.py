@@ -1,13 +1,15 @@
 """Freeze a focused regression test before modifying the implementation."""
 import hashlib
+import json
 import re
 import subprocess
 from pathlib import Path
 
-from workbench import cli
+from workbench import cli, local_vitest
 
 
 COMMAND = ['node', '/workbench-regression/check.mjs']
+VITEST = 'openclaw-vitest'
 KINDS = ('tdd-red', 'tdd-green')
 REPORTS = {'TDD_RED': 'tdd-red', 'TDD_GREEN': 'tdd-green'}
 PLAN_INSTRUCTION = (
@@ -20,6 +22,16 @@ PLAN_INSTRUCTION = (
     'Keep the ordinary reproduction, resolution, and neighboring tests in the plan. '
     'Omit tdd if this focused test is impractical; an ordinary executable reproduction is still required.\n'
 )
+VITEST_INSTRUCTION = (
+    'For an OpenClaw change with an existing Vitest project, first consider a native test. Return '
+    '"tdd":{"adapter":"openclaw-vitest","project":"unit, unit-fast, gateway, or agents-core",'
+    '"path":"src/.../example.regression.test.ts","source":"complete Vitest source",'
+    '"red":"specific assertion message","test_name":"exact full test name"}. Include one focused Vitest '
+    'top-level test using an expectation message. Import the real code using the repository test conventions. '
+    'Choose the actual registered project for the new file; lightweight agent tests can belong to unit-fast. '
+    'Keep the native project configuration untouched. A standalone test is appropriate if the native '
+    'project cannot cover this scenario.\n'
+)
 
 
 class RegressionError(cli.WorkbenchError):
@@ -27,14 +39,21 @@ class RegressionError(cli.WorkbenchError):
 
 
 def contract(spec):
-    if not isinstance(spec, dict) or set(spec) != {'path', 'source', 'red', 'green'}:
-        raise RegressionError('focused regression requires a path, source, and red and green markers')
-    path, source, red, green = (spec[key] for key in ('path', 'source', 'red', 'green'))
-    if (not isinstance(path, str) or len(path) > 240 or not re.fullmatch(
-            r'(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.regression\.test\.mjs', path)):
-        raise RegressionError('invalid focused regression test path')
+    if not isinstance(spec, dict):
+        raise RegressionError('focused regression must be an object')
+    native = spec.get('adapter') == VITEST
+    required = {'adapter', 'project', 'path', 'source', 'red', 'test_name'} if native else {'path', 'source', 'red', 'green'}
+    if set(spec) != required:
+        raise RegressionError('focused regression fields do not match its test adapter')
+    path, source, red = (spec[key] for key in ('path', 'source', 'red'))
+    green = spec['test_name'] if native else spec['green']
+    if native:
+        command(spec)
+    elif not isinstance(path, str) or len(path) > 240 or not re.fullmatch(
+            r'(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.regression\.test\.mjs', path):
+        raise RegressionError('invalid standalone focused regression path')
     if not isinstance(source, str) or not source.strip() or '\0' in source or len(source.encode()) > 16_384:
-        raise RegressionError('focused regression must be bounded standalone JavaScript source')
+        raise RegressionError('focused regression must be bounded JavaScript or TypeScript source')
     if (any(not isinstance(s, str) or not s or s != s.strip() or len(s) > 160 or not s.isprintable()
             for s in (red, green))
             or red in green or green in red):
@@ -42,6 +61,32 @@ def contract(spec):
     if red not in source or green not in source:
         raise RegressionError('focused regression source must contain both markers')
     return spec
+
+
+def command(spec):
+    if spec.get('adapter') != VITEST:
+        return COMMAND
+    try:
+        return local_vitest.regression_command(spec['path'], spec['project'])
+    except local_vitest.GuardError as error:
+        raise RegressionError(str(error)) from error
+
+
+def require_native_context(data, spec, source_mode, revision, kind):
+    if spec.get('adapter') != VITEST:
+        return
+    repo = data['repo']
+    base = data['base_commit']
+    if source_mode != 'image' or json.loads(cli.git(repo, 'show', f'{base}:package.json')).get('name') != 'openclaw':
+        raise RegressionError('native focused regression requires a source-verified OpenClaw image')
+    path = destination(repo, spec)
+    baseline_entry = cli.git(repo, 'ls-tree', base, '--', spec['path'])
+    if baseline_entry or (kind == 'tdd-red' and (path.exists() or not path.parent.is_dir())):
+        raise RegressionError('native baseline may mount only a new test under an existing source directory')
+    if kind == 'tdd-green' and cli.git(
+            repo, 'diff', '--name-only', base, revision, '--', 'test/vitest', 'test/setup.ts', 'test/setup',
+            'package.json', 'pnpm-lock.yaml', 'tsconfig.json'):
+        raise RegressionError('native focused regression requires unchanged Vitest configuration and dependencies')
 
 
 def digest(spec):
@@ -97,7 +142,7 @@ def expected(spec, kind):
     if kind == 'tdd-red':
         return 1, spec['red']
     if kind == 'tdd-green':
-        return 0, spec['green']
+        return 0, spec['test_name'] if spec.get('adapter') == VITEST else spec['green']
     raise RegressionError('invalid focused regression evidence type')
 
 
@@ -105,12 +150,22 @@ def matches(report, spec, kind):
     code, marker = expected(spec, kind)
     stdout, stderr = report.get('stdout'), report.get('stderr')
     if (not isinstance(stdout, str) or not isinstance(stderr, str)
-            or report.get('command') != COMMAND or report.get('regression_sha256') != digest(spec)
+            or report.get('command') != command(spec) or report.get('regression_sha256') != digest(spec)
             or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(report.get('image', '')))
             or report.get('workspace_read_only') is not True or report.get('exit_code') != code
             or report.get('expected_exit') != code or report.get('expected_marker') != marker
             or report.get('stdout_truncated') or report.get('stderr_truncated')):
         return False
+    if spec.get('adapter') == VITEST:
+        if (report.get('source_mode') != 'image' or report.get('regression_file') != spec['path']
+                or report.get('regression_input') != ('isolated-input' if kind == 'tdd-red' else 'verified-image')):
+            return False
+        try:
+            local_vitest.validate_regression_json(stdout, spec['path'], spec['test_name'],
+                                                 red=marker if kind == 'tdd-red' else None, stderr=stderr)
+        except local_vitest.GuardError:
+            return False
+        return True
     if kind == 'tdd-red':
         headers = {f'AssertionError [ERR_ASSERTION]: {marker}', f'AssertionError: {marker}'}
         return bool(headers.intersection(stderr.splitlines())) and spec['green'] not in stdout.splitlines()

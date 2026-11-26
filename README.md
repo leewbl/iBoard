@@ -79,7 +79,7 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 [生成项目验证技能](skills/create-verification-skill/SKILL.md)可把已有的源码锚点和真实场景封装为项目自己的功能地图。[维护验证技能](skills/maintain-verification-skill/SKILL.md)对照选定的 Git 版本逐条重跑，所有场景通过后才导出地图修订。
 
-[TDD 回归验证](skills/tdd/SKILL.md)适用于能用独立 Node 测试复现的故障。选用后，同一份测试先在干净基线触发指定断言，再在候选上通过。工作台分别保留实施和独立复验的报告，交付前核对四份证据和候选中保留的测试源码。
+[TDD 回归验证](skills/tdd/SKILL.md)支持独立 Node 测试和 OpenClaw 原生 Vitest。选用后，同一份测试先在干净基线触发指定断言，再在候选上通过。原生 Vitest 在基线只读挂入新用例，在候选直接运行已提交文件。工作台保留四份证据，交付前核对报告、独立复验和测试源码。
 
 ### 工作台插件原型
 

@@ -971,6 +971,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                            'the prior behavior or absence of the feature. A missing test file is insufficient.')
             if data['kind'] == 'bug' and not (phase or target or data.get('adoption')):
                 prompt += '\n' + tdd.PLAN_INSTRUCTION
+                if source_mode == 'image':
+                    from workbench import verify_openclaw
+                    if verify_openclaw.applies(data):
+                        prompt += tdd.VITEST_INSTRUCTION
             if phase:
                 plan = phase_contract.task_plan(phase)
             elif target and target.get('plan') is not None:
@@ -1033,7 +1037,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             raw = _review_report(second['report'])
             if regression is not None:
                 code, marker = tdd.expected(regression, 'tdd-red')
-                regression_check = {'command': tdd.COMMAND, 'exit_code': code, 'marker': marker}
+                regression_check = {'command': tdd.command(regression), 'exit_code': code, 'marker': marker}
                 red = [_check(task, image, regression_check, 'tdd-red', runner_actor, check,
                               source_mode=source_mode, memory_mb=memory_mb)['report']
                        for runner_actor in (actor, verifier)]
@@ -1195,7 +1199,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 results.append(_check(task, check_image, state['plan'][spec], kind, verifier, check, source_mode=source_mode, memory_mb=memory_mb))
             if regression is not None:
                 code, marker = tdd.expected(regression, 'tdd-green')
-                regression_check = {'command': tdd.COMMAND, 'exit_code': code, 'marker': marker}
+                regression_check = {'command': tdd.command(regression), 'exit_code': code, 'marker': marker}
                 green = [_check(task, check_image, regression_check, 'tdd-green', runner_actor, check,
                                 source_mode=source_mode, memory_mb=memory_mb)['report']
                          for runner_actor in (actor, verifier)]

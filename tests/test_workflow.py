@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, workflow
+from workbench import cli, tdd, workflow
 from test_runner import tiny_png
 
 
@@ -118,6 +118,64 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(subprocess.check_output(['git', '-C', str(self.repo), 'status', '--porcelain']), b'')
         with self.assertRaises(workflow.WorkflowError):
             self.prepare()
+
+    def test_native_regression_runs_from_the_committed_candidate_and_freezes_test_config(self):
+        config = 'test/vitest/vitest.unit-fast.config.ts'
+        (self.repo / 'test').unlink()
+        for relative, body in [('package.json', '{"name":"openclaw"}'),
+                               ('src/behavior.ts', 'export const works = false;'),
+                               (config, 'export default {};')]:
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        self.git('add', '.')
+        self.git('commit', '-qm', 'OpenClaw fixture')
+        result = self.prepare()
+        task = Path(result['task'])
+        workspace = Path(result['workspace'])
+        self.criterion(task)
+        spec = {'adapter': tdd.VITEST, 'project': 'unit-fast', 'path': 'src/behavior.regression.test.ts',
+                'source': "it('preserves behavior', () => expect(works, 'BEHAVIOR_BROKE').toBe(true));\n",
+                'test_name': 'preserves behavior', 'red': 'BEHAVIOR_BROKE'}
+        data = cli.read(task)
+        data['regression_test'] = spec
+        cli.write(task, data)
+        runs = []
+
+        def runner(repo, image, command, timeout, **options):
+            runs.append(options)
+            red = 'regression_source' in options
+            return {'exit_code': 1 if red else 0, 'container_created': True, 'cleanup_confirmed': True,
+                    'stdout': spec['red'] if red else spec['test_name'], 'stderr': '',
+                    'regression_input': 'isolated-input' if red else 'verified-image'}
+
+        def check(kind, source_mode='image'):
+            code, marker = tdd.expected(spec, kind)
+            return workflow.run_check(task=task, kind=kind, image='image', command=tdd.command(spec), timeout=20,
+                                      expect_exit=code, marker=marker, actor='verifier', description='observed test',
+                                      runner=runner, source_mode=source_mode)
+
+        with patch.object(workflow, '_verified_image', return_value='sha256:' + 'a' * 64), \
+                patch.object(tdd, 'matches', return_value=True):
+            with self.assertRaisesRegex(tdd.RegressionError, 'source-verified OpenClaw image'):
+                check('tdd-red', source_mode='workspace')
+            check('tdd-red')
+            self.assertFalse((workspace / spec['path']).exists())
+            self.assertEqual(runs[0]['regression_source'], spec['source'].encode())
+            tdd.add_test(workspace, spec)
+            (workspace / 'src/behavior.ts').write_text('export const works = true;')
+            cli.git(workspace, 'add', '.')
+            cli.git(workspace, 'commit', '-qm', 'correct behavior')
+            green = check('tdd-green')
+            self.assertEqual(runs[1], {'source_root': '/app', 'regression_file': spec['path'],
+                                       'workspace_read_only': True})
+            self.assertEqual(cli.read(Path(green['report']))['regression_sha256'], tdd.digest(spec))
+            (workspace / config).write_text('export default {test: {exclude: []}};')
+            cli.git(workspace, 'add', config)
+            cli.git(workspace, 'commit', '-qm', 'change runner config')
+            with self.assertRaisesRegex(tdd.RegressionError, 'unchanged Vitest configuration'):
+                check('tdd-green')
+            self.assertEqual(len(runs), 2)
 
     def test_prepare_records_explicit_skip_policy_and_reason(self):
         result = workflow.prepare(task_id='policy', repo=self.repo,

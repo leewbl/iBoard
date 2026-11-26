@@ -93,6 +93,39 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(len(artifact_paths), 1)
         self.assertFalse(artifact_paths[0].exists())
 
+    def test_native_focused_regression_mounts_only_the_baseline_test(self):
+        path = 'src/agents/prompt.regression.test.ts'
+        command = ['node', '/app/node_modules/vitest/vitest.mjs', 'run', path]
+        test_source = b"it('keeps the prompt usable', () => {});\n"
+        image = 'sha256:' + 'a' * 64
+        for source, expected in ((test_source, 'isolated-input'), (None, 'verified-image')):
+            with self.subTest(source=expected):
+                observed = []
+
+                def invoke(args, **kwargs):
+                    if args[1:3] == ['image', 'inspect']:
+                        return subprocess.CompletedProcess(args, 0, stdout=image + '\nnull\n', stderr='')
+                    if args[1] == 'create':
+                        mounts = [arg for arg in args if 'dst=/app/' in arg]
+                        self.assertIn('--network=none', args)
+                        if source is not None:
+                            self.assertEqual(len(mounts), 1)
+                            host = Path(mounts[0].split(',')[1].removeprefix('src='))
+                            self.assertEqual(host.read_bytes(), source)
+                            self.assertTrue(mounts[0].endswith(f'dst=/app/{path},readonly'))
+                            observed.append(host)
+                        else:
+                            self.assertEqual(mounts, [])
+                    return self.fake(args, **kwargs)
+
+                report = run_sandbox(self.workspace, image, command, 10, invoke=invoke,
+                                     find_executable=lambda _: '/usr/bin/docker', source_root='/app',
+                                     workspace_read_only=True, regression_file=path, regression_source=source)
+                self.assertEqual(report['regression_input'], expected)
+                self.assertEqual(report['regression_file'], path)
+                self.assertTrue(report['cleanup_confirmed'])
+                self.assertFalse(any(host.exists() for host in observed))
+
     def test_image_source_root_uses_app_without_changing_workspace_mount(self):
         (self.workspace / 'packages').mkdir()
         report = self.run_it(source_root='/app', workdir='packages')

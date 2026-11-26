@@ -89,7 +89,7 @@ def _copy_screenshot(directory, output):
 
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
-                workspace_read_only=False, regression_source=None):
+                workspace_read_only=False, regression_source=None, regression_file=None):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -107,11 +107,22 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("invalid Docker image reference")
     if not command or not command[0] or command[0].startswith("-"):
         raise SandboxError("a command with a valid executable is required")
-    if regression_source is not None and (
-            not isinstance(regression_source, bytes) or not 0 < len(regression_source) <= 16_384
-            or command != ['node', '/workbench-regression/check.mjs']
-            or not workspace_read_only or screenshot_output is not None):
+    regression = regression_source is not None or regression_file is not None
+    if regression and (not workspace_read_only or screenshot_output is not None):
         raise SandboxError("invalid read-only focused regression input")
+    if regression_source is not None and (
+            not isinstance(regression_source, bytes) or not 0 < len(regression_source) <= 16_384):
+        raise SandboxError("invalid focused regression source")
+    if regression_file is not None:
+        if (not isinstance(regression_file, str) or len(regression_file) > 240
+                or not re.fullmatch(r'src/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.regression\.test\.ts', regression_file)
+                or 'node_modules' in regression_file.split('/')
+                or source_root != '/app' or workdir != '.'
+                or command[:3] != ['node', '/app/node_modules/vitest/vitest.mjs', 'run']
+                or command[-1] != regression_file):
+            raise SandboxError("invalid native focused regression mount or command")
+    elif regression and command != ['node', '/workbench-regression/check.mjs']:
+        raise SandboxError("invalid standalone focused regression command")
     if not 0 < timeout <= 86400:
         raise SandboxError("timeout must be in (0, 86400] seconds")
     if type(memory_mb) is not int or not 128 <= memory_mb <= 8192:
@@ -140,7 +151,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
 
     # An image's VOLUME directive could add unrequested mounts. Reject such images.
     image_format = "{{json .Config.Volumes}}"
-    if regression_source is not None:
+    if regression:
         image_format = '{{.Id}}{{println}}{{json (index .Config "Volumes")}}'
     try:
         inspected = invoke([docker, "image", "inspect", image, "--format", image_format],
@@ -151,7 +162,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("Docker daemon unavailable or image not present locally; no image was pulled")
     try:
         details = inspected.stdout.strip()
-        if regression_source is not None:
+        if regression:
             image, details = details.split("\n", 1)
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
                 raise ValueError("invalid resolved image ID")
@@ -178,6 +189,9 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
               "tmpfs_mb": TMPFS_MB,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
               "exit_code": None, "create_exit_code": None, "timed_out": False, "cleanup_confirmed": False}
+    if regression_file is not None:
+        report.update(regression_file=regression_file,
+                      regression_input='isolated-input' if regression_source is not None else 'verified-image')
     created = False
     with tempfile.TemporaryDirectory(prefix='workbench-artifact-') as artifact_dir, \
             tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr, \
@@ -188,9 +202,12 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                     '--mount', f'type=bind,src={artifact_dir},dst=/artifacts',
                     '--env', 'WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png']
             if regression_source is not None:
-                (Path(artifact_dir) / 'check.mjs').write_bytes(regression_source)
+                asset = Path(artifact_dir) / ('check.mjs' if regression_file is None else 'check.ts')
+                asset.write_bytes(regression_source)
+                mount = (f'type=bind,src={artifact_dir},dst=/workbench-regression,readonly'
+                         if regression_file is None else f'type=bind,src={asset},dst=/app/{regression_file},readonly')
                 create[create.index('--workdir'):create.index('--workdir')] = [
-                    '--mount', f'type=bind,src={artifact_dir},dst=/workbench-regression,readonly']
+                    '--mount', mount]
                 report['regression_sha256'] = hashlib.sha256(regression_source).hexdigest()
             # Docker create emits its container ID and daemon diagnostics, not application output.
             result = invoke(create, stdout=create_stdout, stderr=create_stderr, timeout=timeout, check=False)
