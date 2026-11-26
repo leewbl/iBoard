@@ -75,7 +75,9 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 功能对标范围与验收条件见 [iBoard 与 pstack 的功能对标](docs/pstack-parity.md)。
 
-[verify-openclaw](skills/verify-openclaw/SKILL.md) 在断网 Docker 中验证真实 Gateway 启动与健康检查。针对技能发现和技能 CLI 的改动，还会用真实命令验证技能能否找到、能否解释缺失的环境变量、以及补齐前置条件后能否使用。创建或更新 OpenClaw PR 前，每个必跑场景都需要有同一候选镜像的两份通过报告，并纳入同一次独立审查。启动交付任务时使用 `--source-mode image --build-source-image`。仅需要提交 PR 时加 `--publish-only`，自动合并继续走交付门禁。
+[verify-openclaw](skills/verify-openclaw/SKILL.md) 在断网 Docker 中验证 Gateway 启动与健康检查。涉及技能或配置的改动也会运行对应的 CLI 场景，核对技能资格、配置诊断和副作用。创建或更新 OpenClaw PR 前，每个必跑场景都需要有同一候选镜像的两份通过报告，并纳入同一次独立审查。启动交付任务时使用 `--source-mode image --build-source-image`。仅需要提交 PR 时加 `--publish-only`，自动合并继续走交付门禁。
+
+[生成项目验证技能](skills/create-verification-skill/SKILL.md)可把已有的源码锚点和真实场景封装为项目自己的功能地图。[维护验证技能](skills/maintain-verification-skill/SKILL.md)对照选定的 Git 版本逐条重跑，所有场景通过后才导出地图修订。
 
 ### 工作台插件原型
 

@@ -19,13 +19,15 @@ class GatewayGateTests(unittest.TestCase):
         self.changed_paths = changed_paths.start()
         self.addCleanup(changed_paths.stop)
 
-    def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None):
+    def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None, config_image=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
         journeys = {'gateway-health': gateway_image}
         if skills_image is not None:
             journeys['skills-check'] = skills_image
+        if config_image is not None:
+            journeys['config-validate'] = config_image
         for journey, image in journeys.items():
             helper, marker = verify_openclaw.JOURNEYS[journey]
             for actor in ('builder', 'independent-verifier'):
@@ -103,3 +105,13 @@ class GatewayGateTests(unittest.TestCase):
         self.assertFalse(report['passed'])
         self.assertIn('skills-check', report['registered'])
         run.assert_not_called()
+
+    def test_configuration_changes_need_config_receipts_on_the_shared_image(self):
+        self.changed_paths.return_value = 'src/config/zod-schema.gateway.ts\0'
+        for image in (None, 'sha256:' + 'e' * 64):
+            self.reports(config_image=image)
+            with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'config-validate'):
+                verify_openclaw.require(self.data, self.head, self.destination)
+        self.reports(config_image='sha256:' + 'f' * 64)
+        receipts = verify_openclaw.require(self.data, self.head, self.destination)
+        self.assertEqual(set(receipts), {'gateway-health', 'config-validate'})

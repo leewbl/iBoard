@@ -17,6 +17,7 @@ from workbench import cli, workflow
 JOURNEYS = {
     "gateway-health": ("gateway.mjs", "VERIFY_OPENCLAW_GATEWAY_HEALTH_PASS"),
     "skills-check": ("skills-check.mjs", "VERIFY_OPENCLAW_SKILLS_CHECK_PASS"),
+    "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
@@ -114,6 +115,8 @@ def required_journeys(data, head):
            or path.startswith(('src/skills/', 'src/cli/skills-cli.', 'src/cli/skills-cli/'))
            for path in paths):
         selected.append('skills-check')
+    if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
+        selected.append('config-validate')
     return selected
 
 

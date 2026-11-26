@@ -8,6 +8,7 @@ from workbench.arena import PSTACK_SOURCE as ARENA_SOURCE
 from workbench.decisions import PSTACK_SOURCE as DECISION_SOURCE
 from workbench.investigate import SOURCES as INVESTIGATION_SOURCES
 from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
+from workbench.project_verify import PSTACK_COMMANDS as PROJECT_VERIFICATION_COMMANDS
 from workbench.pr_watch import PSTACK_SOURCE as PR_WATCH_SOURCE
 from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
 from workbench.stack_verify import PSTACK_SOURCES as STACK_VERIFICATION_SOURCES
@@ -59,6 +60,8 @@ def main():
                                  if source == STACK_SHIPPING_SOURCE else []) +
                                 (['python3 -m workbench.stack_autopilot'] if source == STACK_AUTOPILOT_SOURCE else []) +
                                 (['python3 -m workbench.arena'] if source == ARENA_SOURCE else []) +
+                                ([f'python3 -m workbench.project_verify {PROJECT_VERIFICATION_COMMANDS[source]}']
+                                 if source in PROJECT_VERIFICATION_COMMANDS else []) +
                                 ([PICKUP_SOURCES[source]] if source in PICKUP_SOURCES else [])),
         }
     print(json.dumps(result, ensure_ascii=False, indent=2))

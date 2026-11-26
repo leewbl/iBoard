@@ -1,0 +1,48 @@
+{
+  "project": "openclaw",
+  "surface": "OpenClaw CLI and its local Gateway runtime.",
+  "launch": "The launch scripts use the CLI entry at /app/src/entry.ts with the image's tsx loader. The Gateway starts on loopback with an empty temporary state directory and requires both readiness and liveness before use.",
+  "cleanup": "Helpers remove their temporary state. Gateway shuts down only the child it launched and checks that its loopback endpoint is closed.",
+  "doctor": {
+    "id": "doctor",
+    "helper": "doctor.mjs",
+    "marker": "VERIFY_OPENCLAW_DOCTOR_PASS",
+    "reach": "Open a local OpenClaw terminal.",
+    "drive": "Run openclaw --version in an isolated home.",
+    "observe": "Require the CLI version to match package.json in the attested image.",
+    "gotchas": "Version checks verify CLI startup. Gateway readiness is checked again after the journey starts its own instance.",
+    "source": [{"path": "package.json", "contains": "\"name\": \"openclaw\""}, {"path": "src/entry.ts", "contains": "process.argv"}]
+  },
+  "features": [
+    {
+      "id": "gateway-health",
+      "helper": "gateway.mjs",
+      "marker": "VERIFY_OPENCLAW_GATEWAY_HEALTH_PASS",
+      "reach": "Start OpenClaw Gateway on loopback and ask the CLI for Gateway health.",
+      "drive": "Start a disposable Gateway, require both /readyz and /healthz and run openclaw gateway health --json.",
+      "observe": "The real CLI receives a successful health RPC from the instance it started. Cleanup stops the child and closes the port.",
+      "gotchas": "The helper disables bundled plugins and uses a synthetic local token. No existing OpenClaw instance is used.",
+      "source": [{"path": "src/gateway/gateway-http-route-contracts.ts", "contains": "\"/readyz\""}, {"path": "src/cli/gateway-cli/register.ts", "contains": ".command(\"health\")"}]
+    },
+    {
+      "id": "skills-check",
+      "helper": "skills-check.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_CHECK_PASS",
+      "reach": "Ask the CLI which skills are available to the main agent.",
+      "drive": "Run openclaw skills check --json in a temporary workspace, first without the configured prerequisite and then with it.",
+      "observe": "The ready skill is discovered. The conditional skill moves from missing its prerequisite to eligible. The fixture inputs are unchanged.",
+      "gotchas": "Bundled skills are disabled so the assertion exercises local discovery in the temporary workspace.",
+      "source": [{"path": "docs/cli/skills.md", "contains": "openclaw skills check --json"}, {"path": "src/cli/skills-cli.ts", "contains": ".command(\"check\")"}]
+    },
+    {
+      "id": "config-validate",
+      "helper": "config-validate.mjs",
+      "marker": "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS",
+      "reach": "Ask the CLI to validate the current OpenClaw configuration.",
+      "drive": "Run openclaw config validate --json once with a valid fixture and once with a string in gateway.port.",
+      "observe": "The first invocation exits zero. The second exits one and identifies gateway.port. Both fixture files are unchanged.",
+      "gotchas": "Use the isolated state directory. The validation command does not launch a Gateway.",
+      "source": [{"path": "docs/cli/config.md", "contains": "openclaw config validate --json"}, {"path": "src/cli/config-cli.ts", "contains": ".command(\"validate\")"}, {"path": "src/config/zod-schema.gateway.ts", "contains": "port: z.number().int()"}]
+    }
+  ]
+}

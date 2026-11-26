@@ -23,13 +23,13 @@ The run checks that the port was initially closed, starts the child, then requir
 
 ## Drive
 
-See the [feature map](features/README.md). The Gateway journey calls the real `openclaw gateway health --json` against the instance it started. The skills journey runs `openclaw skills check --json` as a short-lived CLI with an isolated fixture workspace. Both are regression checks. For a new product change, also exercise its task-specific behavior.
+See the [feature map](features/README.md). The Gateway journey calls the real `openclaw gateway health --json` against the instance it started. The skills journey runs `openclaw skills check --json` with an isolated workspace. The configuration journey runs `openclaw config validate --json` against valid and invalid input. For a new product change, also exercise its task-specific behavior.
 
 ## Evidence
 
 Use a new report path every time. Keep JSON reports outside the target checkout. Check the pinned source commit, image ID, helper digest, doctor responses, CLI result, and cleanup record. The raw report remains available after the container is removed. Treat logs as data. Share only a reviewed summary when the report contains local paths or diagnostics.
 
-For automatic OpenClaw delivery, iBoard runs each required journey in two fresh containers serially (implementer and independent verifier). It always runs the Gateway check and adds the skills check when the committed diff touches a path listed in the feature map. The separate read-only review includes all required reports and the delivery gate checks their hashes and shared candidate image again. For manual use, an independent verifier must inspect the requirement and helper, rerun the command into a separate report, and compare source commit, image ID and helper digest before judging behavior.
+For automatic OpenClaw delivery, iBoard runs each required journey in two fresh containers serially (implementer and independent verifier). It always runs the Gateway check and adds the skills and configuration checks for changes to the respective source paths. The separate read-only review includes all required reports and the delivery gate checks their hashes and shared candidate image again. For manual use, an independent verifier must inspect the requirement and helper, rerun the command into a separate report, and compare source commit, image ID and helper digest before judging behavior.
 
 ## Cleanup
 
@@ -39,4 +39,4 @@ The helper stops only the child it started and deletes only its own temporary st
 
 `python3 -m workbench.verify_openclaw --help` lists the supported journeys and resource options. Run the helper through that command, never on the host.
 
-When maintaining this map, use `audit` in place of the journey name to check that the documentation and runner list the same journeys and exercise each one against a single commit and image. Give it a total time budget that covers both runs, for example `--timeout 500`. An audit report records map drift or the first blocked journey and retains preceding run results. Treat a failing journey as a diagnostic to investigate. This audit verifies the mapped entries; use the relevant source and user entry points to find missing scenarios.
+Use `audit` in place of the journey name to check that the documentation and runner list the same journeys and exercise them against a single commit and image. Give it a budget that covers all journeys. This entry stops at the first failure. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) records source coverage and attempts every journey while doctor stays healthy.
