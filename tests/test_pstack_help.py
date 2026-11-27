@@ -22,6 +22,8 @@ class PstackHelpTests(unittest.TestCase):
             'in-your-own-words': 'intent_review collect --mode in-your-own-words',
             'reframe': 'intent_review collect --mode reframe',
             'sharpen': 'intent_review collect --mode sharpen',
+            'technical-writing': 'technical_writing collect --mode technical-writing',
+            'unslop': 'technical_writing collect --mode unslop',
             'pr-status': 'pr_watch --mode check',
             'verify-pr': 'verify_pr',
             'review-pr': 'interrogate',

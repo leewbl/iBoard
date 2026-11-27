@@ -52,6 +52,14 @@ SCENARIOS = {
         'Deepen a task brief within its original scope', 'skills/sharpen/SKILL.md',
         'skills/sharpen/SKILL.md', 'intent_review collect --mode sharpen',
         'Concrete source material, independent checks, proposed experiments and a revised task brief'),
+    'technical-writing': Scenario(
+        'Draft or review technical documentation, a PR brief or a commit message', 'skills/technical-writing/SKILL.md',
+        'skills/technical-writing/SKILL.md', 'technical_writing collect --mode technical-writing',
+        'A selected document structure, source-linked findings and an independently verified draft'),
+    'unslop': Scenario(
+        'Remove formulaic prose while keeping meaning and tone', 'skills/unslop/SKILL.md',
+        'skills/unslop/SKILL.md', 'technical_writing collect --mode unslop',
+        'Rule IDs, a proposed diff and independent fidelity checks'),
     'how': Scenario(
         'Explain how code works', 'skills/how/SKILL.md', 'skills/investigate/SKILL.md',
         'investigate how', 'A source-backed explanation for an exact repository revision'),
