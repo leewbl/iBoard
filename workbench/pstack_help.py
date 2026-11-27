@@ -208,6 +208,12 @@ SCENARIOS = {
         'automations/benny/skills/setup-benny/SKILL.md', 'skills/setup-benny/SKILL.md', 'benny freeze',
         'A source receipt with its root permalink and validated workspace and verdict',
         'Uses a private operator-supplied Slack credential. Live subscriptions and tracker actions are separate.'),
+    'triage-issue-reports': Scenario(
+        'Classify a selected Benny report and check for existing tracker items',
+        'automations/benny/skills/triage-issue-reports/SKILL.md',
+        'skills/triage-issue-reports/SKILL.md', 'benny_triage',
+        'An unchanged source thread, quoted facts, selected code and history, and a bounded tracker recommendation',
+        'Uses only the selected report and tracker searches. Produces a local verdict proposal without external writes.'),
     'benny-reproduce': Scenario(
         'Recheck the Slack report and verify the existing fix',
         'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',

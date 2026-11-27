@@ -224,7 +224,7 @@ def freeze(*, rules, slack, channel, message_ts, thread_ts=None, artifact=None, 
     return {**decision, 'receipt': str(path), 'sha256': cli.digest(path)}
 
 
-def verify(*, slack, receipt, sha256, out, run_fix=verify_existing_fix.verify, **inputs):
+def load_route(receipt, sha256):
     route_file = Path(receipt).expanduser().resolve(strict=True)
     with route_file.open('rb') as stream:
         content = stream.read(768_001)
@@ -236,8 +236,16 @@ def verify(*, slack, receipt, sha256, out, run_fix=verify_existing_fix.verify, *
     rules = _rules(record['rules'])
     snapshot = record['snapshot']
     location = snapshot['location']
-    if (_trigger(rules, location['channel'], location['message_ts'], location['root']) != location
-            or record['decision']['status'] != 'verify-existing'
+    if _trigger(rules, location['channel'], location['message_ts'], location['root']) != location:
+        raise ValueError('invalid frozen Benny source coordinates')
+    return route_file, record
+
+
+def verify(*, slack, receipt, sha256, out, run_fix=verify_existing_fix.verify, **inputs):
+    route_file, record = load_route(receipt, sha256)
+    rules, snapshot = record['rules'], record['snapshot']
+    location = snapshot['location']
+    if (record['decision']['status'] != 'verify-existing'
             or route(snapshot, rules, record['selected_artifact']) != record['decision']):
         raise ValueError('Benny route has not selected an existing fix')
     started = time.monotonic()

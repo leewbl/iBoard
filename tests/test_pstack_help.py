@@ -32,6 +32,7 @@ class PstackHelpTests(unittest.TestCase):
             'verify-pr': 'verify_pr',
             'verify-existing-fix': 'verify_existing_fix',
             'setup-benny': 'benny freeze',
+            'triage-issue-reports': 'benny_triage',
             'benny-reproduce': 'benny verify',
             'review-pr': 'interrogate',
             'ship-stack': 'stack_ship plan',
