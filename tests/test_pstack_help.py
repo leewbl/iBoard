@@ -18,6 +18,10 @@ class PstackHelpTests(unittest.TestCase):
     def test_named_scenarios_point_to_distinct_verification_lanes(self):
         expected = {
             'setup-models': 'model_profiles probe',
+            'bro': 'intent_review collect --mode bro',
+            'in-your-own-words': 'intent_review collect --mode in-your-own-words',
+            'reframe': 'intent_review collect --mode reframe',
+            'sharpen': 'intent_review collect --mode sharpen',
             'pr-status': 'pr_watch --mode check',
             'verify-pr': 'verify_pr',
             'review-pr': 'interrogate',
@@ -55,7 +59,7 @@ class PstackHelpTests(unittest.TestCase):
 
     def test_catalog_only_and_prompt_guidance_have_no_runnable_route(self):
         for name, expected_status in (
-            ('bro', 'catalog-only'),
+            ('ketchup-video', 'catalog-only'),
             ('principle-prove-it-works', 'guidance-only'),
         ):
             with self.subTest(name=name):

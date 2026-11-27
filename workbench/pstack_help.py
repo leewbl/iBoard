@@ -35,6 +35,23 @@ SCENARIOS = {
     'help': Scenario(
         'Find a workflow for a task', HELP_SOURCE, 'skills/poteto-help/SKILL.md',
         'pstack_help', 'The pinned source, local guide, available entry point and its evidence requirements'),
+    'in-your-own-words': Scenario(
+        'Confirm the goal, underlying problem, constraints and unknowns', 'skills/in-your-own-words/SKILL.md',
+        'skills/in-your-own-words/SKILL.md', 'intent_review collect --mode in-your-own-words',
+        'Restatement with exact original request line references'),
+    'bro': Scenario(
+        'Make the prior reply easier to understand', 'skills/bro/SKILL.md',
+        'skills/bro/SKILL.md', 'intent_review collect --mode bro',
+        'A plain-language restatement that retains the original numbers'),
+    'reframe': Scenario(
+        'Find useful technical language grounded in opened primary sources', 'skills/reframe/SKILL.md',
+        'skills/reframe/SKILL.md', 'intent_review collect --mode reframe',
+        'Verified quotes, their primary URLs, relevant analogies and a task brief',
+        'Select public primary references before collecting. Incomplete evidence withholds the brief.'),
+    'sharpen': Scenario(
+        'Deepen a task brief within its original scope', 'skills/sharpen/SKILL.md',
+        'skills/sharpen/SKILL.md', 'intent_review collect --mode sharpen',
+        'Concrete source material, independent checks, proposed experiments and a revised task brief'),
     'how': Scenario(
         'Explain how code works', 'skills/how/SKILL.md', 'skills/investigate/SKILL.md',
         'investigate how', 'A source-backed explanation for an exact repository revision'),

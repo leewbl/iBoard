@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import patch
 from test_runner import tiny_png
 
-from workbench import autopilot, cli, delivery, pickup, publish, run_control, stack_verify, tdd, visual_parity, workflow
+from workbench import (autopilot, cli, delivery, intent_review, pickup, publish, run_control, stack_verify,
+                       tdd, visual_parity, workflow)
 
 
 class CompletedCI:
@@ -1112,6 +1113,40 @@ class AutopilotTests(unittest.TestCase):
             autopilot.run(self.task, self.issue, 'image', model=self.model, check=self.check)
         self.assertEqual(self.calls, ['plan'])
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+
+    def test_approved_clarification_supplements_plan_and_implementation_without_changing_criteria(self):
+        request = self.task.with_name('issue.txt')
+        request.write_bytes(self.issue.read_bytes())
+        evidence = intent_review.collect(mode='in-your-own-words', request=request,
+                                         out=self.task.with_name('intent-evidence.json'))
+        claim = {'text': 'Check the same user-facing operation.', 'citations': ['U1']}
+        answer = {'goals': [claim], 'problem': [claim], 'constraints': [], 'unknowns': []}
+        report = intent_review.review(evidence=evidence['path'], sha256=evidence['sha256'],
+                                      model='gpt-test', out=self.task.with_name('intent-report.json'),
+                                      reviewer=lambda *_: answer)
+        intent_review.attach(self.task, report['path'], report['sha256'])
+        data = cli.read(self.task)
+        data['criteria'] = self.plan['criteria']
+        cli.write(self.task, data)
+        prompts = []
+
+        def model(workspace, prompt, timeout, *, read_only):
+            prompts.append(prompt)
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+
+        result = autopilot.run(self.task, request, 'image', model=model, check=self.check, local_handoff=True)
+        self.assertEqual(result['phase'], 'delivery')
+        supplemented = [prompt for prompt in prompts if 'Supplemental clarification data.' in prompt]
+        self.assertEqual(len(supplemented), 2)
+        self.assertTrue(all('real task description' in prompt and claim['text'] in prompt for prompt in supplemented))
+        self.assertEqual(cli.read(self.task)['criteria'], self.plan['criteria'])
+
+        data = cli.read(self.task)
+        del data['intent_review']
+        data['status'] = 'running'
+        cli.write(self.task, data)
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'clarification changed'):
+            autopilot.run(self.task, request, 'image', model=model, check=self.check)
 
     def test_publishes_verified_task_before_guarded_merge(self):
         events = []
