@@ -64,6 +64,8 @@ python3 -m workbench.benny_reproduce reproduce --token-file "$SLACK_KEY" \
 
 Hash the reproduction `result.json` and pass its path and SHA-256 to the next step. A healthy baseline, a crash without the exact symptom, incomplete evidence or a changed thread does not authorize repair. Keep the files for diagnosis.
 
+For an OpenClaw UI repair, declare `browser`, `screenshot` and `recording` on the primary journey. Supply `--baseline-visible` and `--candidate-visible` on `reproduce`, with two distinct conditions that name the precise location and distinguish the fault from the repaired state. Use the same browser driver for both revisions. On a declared fault, capture the PNG and recording before returning exit 1 with the exact failure marker. For each revision, two fresh media reviews confirm the relevant condition from sampled browser frames and the final PNG. An uncertain observation, missing recording or changed receipt blocks the repair or its delivery. The separate functional probe is still required.
+
 ```sh
 python3 -m workbench.benny_reproduce verify-candidate --receipt "$REPRO_RESULT" \
   --sha256 "$REPRO_SHA" --revision "$CANDIDATE_COMMIT" --out "$NEW_CANDIDATE_DIR"
@@ -71,7 +73,7 @@ python3 -m workbench.benny_reproduce verify-candidate --receipt "$REPRO_RESULT" 
 
 The candidate must descend from the approved baseline. The runner derives the candidate offline from the same baseline image, holds the drivers and settings fixed, and reruns both probes twice. All runs must pass in distinct containers. `verified` describes runtime evidence for the selected revision.
 
-For a non-UI report, the coordinator can prepare a paused causal repair task once the claim window has elapsed. Supply one to four precise searches for an existing GitHub fix. An open or merged matching PR, incomplete search or new thread activity stops intake.
+The coordinator can prepare a paused causal repair task once the claim window has elapsed. A UI repair requires the frozen recorded browser contract and two confirmed baseline media reviews. Supply one to four precise searches for an existing GitHub fix. An open or merged matching PR, incomplete search or new thread activity stops intake.
 
 ```sh
 python3 -m workbench.benny_reproduce prepare-repair --token-file "$SLACK_KEY" \
@@ -89,7 +91,7 @@ python3 -m workbench.benny_repair --task "$TASK_JSON" --token-file "$SLACK_KEY"
 
 The coordinator rechecks the source thread and matching GitHub PRs before launch and before each edit. The model has workspace file tools. The coordinator holds the Slack reader, runs the causal comparison and checks the unchanged candidate in offline Docker. The independent root-cause review must support the mechanism and rule out a competing explanation before implementation. A failed frozen probe enters the bounded repair loop, with its original output retained. An execution failure pauses the task with evidence.
 
-The runner stops at a verified local candidate once both frozen probes pass twice, the focused tests pass, and independent review confirms the correction and related behavior. It retains the commit, the candidate and baseline receipts, and the independent review. A second call at this checkpoint verifies those files again and returns the same candidate. For older prepared tasks, supply the original `--fix-search` phrases. The browser recording review remains required before Benny can repair a UI report.
+The runner stops at a verified local candidate once both frozen probes pass twice, the focused tests pass, and independent review confirms the correction and related behavior. For a UI repair it rebuilds the exact candidate's Control UI, checks both candidate recordings separately and requires the final independent review to cite the screenshot from the second frozen browser run. It retains the commit, the candidate and baseline receipts, and the independent review. A second call at this checkpoint verifies those files again and returns the same candidate. For older prepared tasks, supply the original `--fix-search` phrases.
 
 ## Submit the verified repair as a draft
 
@@ -97,8 +99,8 @@ The runner stops at a verified local candidate once both frozen probes pass twic
 python3 -m workbench.benny_draft --task "$TASK_JSON" --token-file "$SLACK_KEY"
 ```
 
-Use this entry to run a prepared non-UI repair through draft delivery or to submit an already verified candidate. It uses only the report’s configured personal fork. Before pushing the report branch and before creating the draft, the coordinator rechecks the source, tracker, pinned base, actual worktree and independent evidence. OpenClaw requires both runs of each applicable offline Gateway check in the same independent review. If the task uses the local-only policy, the destination must still have Actions disabled.
+Use this entry to run a prepared repair through draft delivery or to submit an already verified candidate. It uses only the report’s configured personal fork. Before pushing the report branch and before creating the draft, the coordinator rechecks the source, tracker, pinned base, actual worktree and independent evidence. For UI cases it also rechecks both revisions' media receipts, the original screenshots and recordings, and the final review's citation. OpenClaw requires both runs of each applicable offline Gateway check in the same independent review. If the task uses the local-only policy, the destination must still have Actions disabled.
 
 The draft describes the reproduction, root cause, focused checks and related behavior. It includes hashes for the original and candidate observations and the independent review. A trusted issue in the target GitHub repo is linked with `Refs`. Slack coordinates, local paths, raw logs and private attachments stay in the task artifacts. The coordinator scans every outgoing commit and stops on probable credential material or a binary diff without review.
 
-The operation keeps a receipt before branch and PR writes. An unavailable response triggers a remote read. A matching draft can be confirmed on a subsequent call without another write. If the outcome remains unknown or the draft was closed, the coordinator retains the branch and receipt for inspection. Benny stops at draft status. Live Slack and GitHub integration, browser recording review, and optional operations-thread updates still need end-to-end acceptance.
+The operation keeps a receipt before branch and PR writes. An unavailable response triggers a remote read. A matching draft can be confirmed on a subsequent call without another write. If the outcome remains unknown or the draft was closed, the coordinator retains the branch and receipt for inspection. Benny stops at draft status. Live Slack-to-GitHub delivery and optional operations-thread updates still need end-to-end acceptance.

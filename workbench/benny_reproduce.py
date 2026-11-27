@@ -9,7 +9,8 @@ import re
 import time
 
 from runner.sandbox import run_sandbox
-from workbench import benny, benny_handoff, benny_triage, cli, delivery, pr_watch, project_triage, project_verify, start, workflow
+from workbench import (benny, benny_handoff, benny_triage, browser_recording, cli, delivery, pr_watch,
+                       project_triage, project_verify, start, workflow)
 from workbench.benny_slack import Slack, SlackError
 
 
@@ -59,7 +60,60 @@ def _output(repo, out):
     return root
 
 
-def _measure(repo, revision, pinned, destination, contract, bundle, deadline, sandbox, attester):
+def _visual_contract(project, journey, baseline, candidate):
+    if baseline is None and candidate is None and not journey.get('recording'):
+        return None
+    if project != 'openclaw' or not all(journey.get(key) is True for key in ('browser', 'screenshot', 'recording')):
+        raise ValueError('Benny visual acceptance needs a recorded OpenClaw browser journey')
+    conditions = (baseline, candidate)
+    if (any(not isinstance(text, str) or not 1 <= len(text.strip()) <= 600 or not text.strip().isprintable()
+            for text in conditions) or baseline.strip().casefold() == candidate.strip().casefold()):
+        raise ValueError('supply distinct visible conditions for the baseline fault and the candidate outcome')
+    return {'baseline': baseline.strip(), 'candidate': candidate.strip()}
+
+
+def _visual_condition(contract, side):
+    visual = contract.get('visual')
+    if visual is None:
+        _visual_contract(contract['project'], contract['journey'], None, None)
+        return None
+    if not isinstance(visual, dict) or set(visual) != {'baseline', 'candidate'}:
+        raise ValueError('invalid frozen Benny visual conditions')
+    verified = _visual_contract(contract['project'], contract['journey'], visual['baseline'], visual['candidate'])
+    if verified != visual:
+        raise ValueError('frozen Benny visual conditions changed')
+    return visual[side]
+
+
+def _primary_report(directory, contract, attempt):
+    return directory / f"{contract['journey']['id']}.primary-{attempt}.json"
+
+
+def _review_path(report):
+    return report.with_suffix('.media.json')
+
+
+def _review_visuals(directory, runs, contract, condition):
+    """Audit the two frozen primary executions and their matching visible observations."""
+    if condition is None:
+        if 'media_reviews' in runs:
+            raise ValueError('unexpected browser reviews outside the approved conditions')
+        return []
+    records = runs.get('media_reviews')
+    if not isinstance(records, list) or len(records) != 2:
+        raise ValueError('both independent browser runs need a media review')
+    proofs = []
+    for attempt, record in enumerate(records, 1):
+        report = _primary_report(directory, contract, attempt)
+        receipt = _review_path(report)
+        if not isinstance(record, dict) or record.get('report') != receipt.name:
+            raise ValueError('browser review does not match the original primary execution')
+        proof = browser_recording.audit_review(report, cli.digest(report), condition, receipt, record.get('sha256'))
+        proofs.append((report, proof))
+    return proofs
+
+
+def _measure(repo, revision, pinned, destination, contract, bundle, deadline, sandbox, attester, *, side, review):
     if not isinstance(pinned, str) or not IMAGE.fullmatch(pinned):
         raise ValueError('Benny requires a source-attested image ID')
     destination.mkdir(mode=0o700)
@@ -70,6 +124,16 @@ def _measure(repo, revision, pinned, destination, contract, bundle, deadline, sa
         marks = project_triage._probe(engine, bundle, contract['doctor'], contract['journey'], contract['independent'],
                                       contract['helper_digests'], set())
         engine.report['observations'] = marks
+        required = FAILURES if side == 'baseline' else PASSES
+        condition = _visual_condition(contract, side)
+        if condition and marks['doctor_healthy'] and marks['primary'] == marks['oracle'] == required:
+            receipts = engine.report['media_reviews'] = []
+            for attempt in (1, 2):
+                report = _primary_report(destination, contract, attempt)
+                receipt = _review_path(report)
+                review(report, cli.digest(report), condition, receipt, timeout=min(90, _remaining(deadline)))
+                receipts.append({'report': receipt.name, 'sha256': cli.digest(receipt)})
+            _review_visuals(destination, engine.report, contract, condition)
     finally:
         cli.write(destination/'result.json', engine.report)
     if not marks['doctor_healthy'] or 'unclassified' in [*marks['primary'], *marks['oracle']]:
@@ -83,7 +147,8 @@ def _measure(repo, revision, pinned, destination, contract, bundle, deadline, sa
 
 def reproduce(*, slack, route, sha256, repo, revision, image, manifest, helpers, journey, oracle,
               oracle_marker, oracle_failure_marker, out, seconds=600, memory_mb=3328, claim_seconds=600,
-              sandbox=run_sandbox, attester=workflow._verified_image):
+              baseline_visible=None, candidate_visible=None, sandbox=run_sandbox, attester=workflow._verified_image,
+              review=browser_recording.review):
     _limits(seconds, memory_mb)
     if type(claim_seconds) is not int or not 0 <= claim_seconds <= 3600:
         raise ValueError('Benny ownership wait must be 0–3600 seconds')
@@ -95,9 +160,12 @@ def reproduce(*, slack, route, sha256, repo, revision, image, manifest, helpers,
     base = cli.sha(repo, revision, timeout=min(10, _remaining(deadline)))
     project, doctor, primary, alternate, files, digests = project_triage._inputs(
         manifest, helpers, journey, oracle, oracle_marker, oracle_failure_marker)
+    visual = _visual_contract(project, primary, baseline_visible, candidate_visible)
     root = _output(repo, out)
     contract = {'schema': cli.SCHEMA, 'project': project, 'doctor': doctor, 'journey': primary,
                 'independent': alternate, 'helper_digests': digests, 'memory_mb': memory_mb, 'base': base}
+    if visual:
+        contract['visual'] = visual
     cli.write(root/'contract.json', contract)
     project_verify._write_bundle(root/'bundle', {f'helpers/{name}': data for name, data in files.items()})
     original = frozen['permalink'] + '\n\n' + frozen['messages'][0]['text'] + '\n'
@@ -109,7 +177,8 @@ def reproduce(*, slack, route, sha256, repo, revision, image, manifest, helpers,
     try:
         pinned = attester(repo, image, min(180, _remaining(deadline)), commit=base)
         report['image'] = pinned
-        status = _measure(repo, base, pinned, root/'baseline', contract, root/'bundle', deadline, sandbox, attester)
+        status = _measure(repo, base, pinned, root/'baseline', contract, root/'bundle', deadline, sandbox, attester,
+                          side='baseline', review=review)
         report['baseline_sha256'] = cli.digest(root/'baseline/result.json')
         report['runtime_status'] = 'not-reproduced' if status == 'healthy' else status
         try:
@@ -118,7 +187,7 @@ def reproduce(*, slack, route, sha256, repo, revision, image, manifest, helpers,
             report['status'] = 'source-unconfirmed'
         else:
             report.update(status=report['runtime_status'], finished_at=cli.now())
-    except project_verify.ERRORS as error:
+    except (*project_verify.ERRORS, RuntimeError) as error:
         report['reason'] = str(error)[:400]
     cli.write(root/'result.json', report)
     return report
@@ -155,6 +224,8 @@ def _observations(directory, result, contract, commit, image, expected):
                 raise ValueError('doctor did not prove a healthy execution environment')
         elif project_triage._observation(raw, check, image) != required:
             raise ValueError('sandbox evidence does not show the approved discriminating outcome')
+    side = 'baseline' if expected == 'observed-failure' else 'candidate'
+    _review_visuals(directory, result, contract, _visual_condition(contract, side))
     return containers
 
 
@@ -179,7 +250,7 @@ def _approved(receipt, sha256):
 
 
 def verify_candidate(*, receipt, sha256, revision, out, seconds=600, sandbox=run_sandbox,
-                     attester=workflow._verified_image, derive=project_triage._derive):
+                     attester=workflow._verified_image, derive=project_triage._derive, review=browser_recording.review):
     path, proof, contract, previous = _approved(receipt, sha256)
     _limits(seconds, contract['memory_mb'])
     deadline = time.monotonic() + seconds
@@ -193,7 +264,8 @@ def verify_candidate(*, receipt, sha256, revision, out, seconds=600, sandbox=run
     try:
         rebuild = contract['project'] == 'openclaw' and bool(contract['journey'].get('browser'))
         image = derive(repo, proof['base'], head, proof['image'], _remaining(deadline), rebuild_openclaw_ui=rebuild)
-        status = _measure(repo, head, image, root/'candidate', contract, path.parent/'bundle', deadline, sandbox, attester)
+        status = _measure(repo, head, image, root/'candidate', contract, path.parent/'bundle', deadline, sandbox, attester,
+                          side='candidate', review=review)
         candidate = root/'candidate/result.json'
         result.update(image=image, runtime_status=status, candidate_sha256=cli.digest(candidate))
         if status == 'healthy':
@@ -201,10 +273,11 @@ def verify_candidate(*, receipt, sha256, revision, out, seconds=600, sandbox=run
             if previous & after:
                 raise ValueError('candidate evidence reused a baseline container')
             _approved(path, sha256)
+            _remaining(deadline)
             result['status'] = 'verified'
         else:
             result['status'] = 'still-reproduced' if status == 'reproduced' else status
-    except project_verify.ERRORS as error:
+    except (*project_verify.ERRORS, RuntimeError) as error:
         result['reason'] = str(error)[:400]
     cli.write(root/'result.json', result)
     return result
@@ -233,7 +306,8 @@ def _check_repair_owner(slack, proof, fix_search, deadline, tracker=None):
 def prepare_repair(*, slack, receipt, sha256, task_id, tasks_root, workspaces_root, seconds=1800, iterations=3,
                    launch=start.start, tracker=None, fix_search=()):
     path, proof, contract, _ = _approved(receipt, sha256)
-    if contract['journey'].get('screenshot'):
+    visual = _visual_condition(contract, 'baseline')
+    if contract['journey'].get('screenshot') and not visual:
         raise ValueError('visual cases need the independent recording review before starting repair')
     _limits(seconds, contract['memory_mb'])
     if type(iterations) is not int or not 1 <= iterations <= 20:
@@ -250,11 +324,13 @@ def prepare_repair(*, slack, receipt, sha256, task_id, tasks_root, workspaces_ro
         return prepared
 
     prepared = launch(task_id=task_id, repo=repo, issue_file=path.parent/'report.txt', source=source['permalink'],
-                      kind='bug', surface='non-ui', iterations=iterations, seconds=seconds, image=proof['image'],
+                      kind='bug', surface='ui' if visual else 'non-ui', iterations=iterations, seconds=seconds,
+                      image=proof['image'],
                       tasks_root=tasks_root, workspaces_root=workspaces_root, prepare_only=True, require_root_cause=True,
                       source_mode='image', build_source_image=True, memory_mb=contract['memory_mb'], prepare=prepare)
     data = cli.read(Path(prepared['task']))
     if (data['base_commit'] != proof['base'] or data.get('status') != 'paused'
+            or data.get('surface') != ('ui' if visual else 'non-ui')
             or data.get('benny_reproduction') != binding):
         raise ValueError('prepared repair task did not retain the approved paused baseline')
     return prepared
@@ -276,6 +352,8 @@ def main(argv=None):
                                'journey', 'oracle', 'oracle-marker', 'oracle-failure-marker', 'out'))
     repro.add_argument('--claim-seconds', type=int, default=600)
     repro.add_argument('--memory-mb', type=int, default=3328)
+    repro.add_argument('--baseline-visible')
+    repro.add_argument('--candidate-visible')
     args('verify-candidate', ('receipt', 'sha256', 'revision', 'out'))
     repair = args('prepare-repair', ('token-file', 'receipt', 'sha256', 'task-id', 'tasks-root', 'workspaces-root'))
     repair.add_argument('--iterations', type=int, default=3)

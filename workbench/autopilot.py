@@ -844,6 +844,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     data = cli.read(task)
     benny_binding = data.get('benny_reproduction')
     benny_repo = None
+    benny_browser = False
     from workbench import swarm
     try:
         run_control.admit(task, AutopilotError)
@@ -854,6 +855,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             proof, contract = benny_repair.validate(task, data, issue_path, image=image, source_mode=source_mode,
                                                        memory_mb=memory_mb, build_source_image=build_source_image)
             benny_repo = proof['repository']
+            benny_browser = data['surface'] == 'ui'
             benny_repair.check_owner()
             _, separator, issue = issue.partition('\n\n')
             if not separator or not issue.strip():
@@ -1140,9 +1142,6 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       'Existing acceptance criteria below are authoritative: preserve their IDs and text, '
                       'do not replace, relax, or substitute them with suggested criteria. '
                       'For feature tasks also include "feature_doc":"relative/path/to/functional-documentation.md". '
-                      'For UI tasks also include "screenshot":{"command":[...],"marker":"...",'
-                      '"exit_code":0}; it must use a real browser to capture the candidate UI and write PNG '
-                      'to the path in WORKBENCH_SCREENSHOT_PATH. The marker must come from the capture run. '
                       'Commands run offline inside the supplied Docker image, not on the host; do not assume '
                       'installed tools or synthesize an error as a reproduction. Constructing, mocking, or '
                       'throwing an error object is not evidence of a real failure. When existing criteria '
@@ -1154,6 +1153,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       f'TASK KIND: {data["kind"]}\nIMAGE: {image}\n'
                       f'EXISTING ACCEPTANCE CRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'ISSUE DATA:\n{issue}' + intent_note)
+            if data['surface'] == 'ui' and not benny_browser:
+                prompt += ('\nInclude "screenshot":{"command":[...],"marker":"...","exit_code":0}. '
+                           'Use a real browser to capture the candidate UI and write PNG to '
+                           'WORKBENCH_SCREENSHOT_PATH. The marker must come from that capture run.')
             if feature:
                 prompt += ('\nCopy the approved handoff criteria into the criteria array exactly as provided. '
                            'Use its id and text fields only, without adding revisions or other fields. '
@@ -1182,6 +1185,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                            'and the exact green text must appear literally in the test source. Give each '
                            'a short constant marker. Put the red marker in the assertion message without '
                            'the observed value, which the assertion reports separately.')
+            if benny_browser:
+                prompt += ('\nThe frozen Benny browser journey supplies the independent screenshot and recording. '
+                           'Omit the screenshot command. Preserve the approved browser conditions: '
+                           + json.dumps(contract['visual'], ensure_ascii=False))
             if 'performance_contract' in data:
                 from workbench import perf_issue
                 try:
@@ -1235,7 +1242,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 bug_cause.contract(data, plan, source_mode)
             if target and data['kind'] == 'feature':
                 _check_spec(plan, 'baseline')
-            if data['surface'] == 'ui':
+            if data['surface'] == 'ui' and not benny_browser:
                 _check_spec(plan, 'screenshot')
                 if not workflow._workspace_command(plan['screenshot']['command']):
                     raise AutopilotError('screenshot command requires a tracked workspace script')
@@ -1523,7 +1530,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                         visual_build = visual_parity.rebuild_image(workspace, image_base, base_image, candidate,
                                                                    visual_plan, _remaining(cli.read(task)))
                         check_image = visual_build['image']
-                    elif openclaw_delivery and verify_openclaw.needs_browser(current, candidate):
+                    elif benny_browser or (openclaw_delivery and verify_openclaw.needs_browser(current, candidate)):
                         check_image = verify_openclaw.build_browser_image(workspace, image_base, base_image, candidate,
                                                                           _remaining(cli.read(task)))
                     else:
@@ -1633,7 +1640,22 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             screenshot_hashes = []
             visual_description = ''
             screenshot_script = ''
-            if data['surface'] == 'ui':
+            if benny_browser:
+                from workbench.benny_repair import record_visual_capture
+                require_active()
+                capture, observations, source = record_visual_capture(task, data, benny_result, candidate, verifier)
+                results.append(capture)
+                screenshot_hashes = [cli.digest(capture['screenshot'])]
+                visual_description = json.dumps(observations, ensure_ascii=False)
+                if len(source) > 18000:
+                    screenshot_script = (source[:9000].decode('utf-8', errors='replace') + '\n[excerpt]\n'
+                                         + source[-9000:].decode('utf-8', errors='replace'))
+                else:
+                    screenshot_script = source.decode('utf-8', errors='replace')
+                benny_instruction += ('Cite the independent screenshot from the second frozen browser run. '
+                                      'Its described visible state was checked separately on both browser executions. '
+                                      'For the impact review cite an independent behavior or test result.\n')
+            elif data['surface'] == 'ui':
                 try:
                     capture_source = workflow._verify_workspace_entry(workspace, state['plan']['screenshot']['command'])
                     if capture_source.stat().st_size > 30000:
@@ -1744,7 +1766,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                     record['basis_content'] = Path(record['basis']).read_text(encoding='utf-8')[:30000]
                 history.append(record)
             script_context = _review_scripts(workspace, data['base_commit'], candidate, state['plan'],
-                                             kind=data['kind'], surface=data['surface'],
+                                             kind=data['kind'], surface='non-ui' if benny_browser else data['surface'],
                                              compare_feature_baseline=bool(target))
             guard_changes = []
             guard_run = None

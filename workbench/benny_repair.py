@@ -6,13 +6,18 @@ from pathlib import Path
 import time
 import uuid
 
-from workbench import autopilot, benny_handoff, benny_reproduce, bug_cause, cli, delivery, project_verify, run_control, start, workflow
+from workbench import (autopilot, benny_handoff, benny_reproduce, bug_cause, cli, delivery, project_verify,
+                       run_control, start, workflow)
 from workbench.benny_slack import Slack
 from workbench.task_lock import task_lock
 
 
 def candidate_proof(binding, reference, head):
     """Recheck both sets of raw observations for the requested candidate."""
+    return _candidate_proof(binding, reference, head)[0]
+
+
+def _candidate_proof(binding, reference, head):
     path, baseline, contract, before = benny_reproduce._approved(binding['path'], binding['sha256'])
     proof_path = Path(reference['path'])
     result = benny_handoff._load(proof_path, reference['sha256'], 'benny-candidate-proof')
@@ -26,7 +31,52 @@ def candidate_proof(binding, reference, head):
     after = benny_reproduce._observations(raw_path.parent, cli.read(raw_path), contract, head, result['image'], 'pass')
     if before & after:
         raise ValueError('candidate evidence reused a baseline container')
-    return result
+    return result, contract
+
+
+def _visual_capture(data, reference, head, actor):
+    binding = data['benny_reproduction']
+    result, contract = _candidate_proof(binding, reference, head)
+    folder = Path(reference['path']).parent/'candidate'
+    condition = benny_reproduce._visual_condition(contract, 'candidate')
+    if condition is None:
+        raise ValueError('Benny screenshot requires the frozen browser visual contract')
+    reviews = benny_reproduce._review_visuals(folder, cli.read(folder/'result.json'), contract, condition)
+    native, _ = reviews[-1]
+    raw = cli.read(native)
+    source = {'path': str(native), 'sha256': cli.digest(native)}
+    report = {**raw, 'workspace': str(Path(data['repo']).resolve()), 'actor': actor, 'kind': 'screenshot',
+              'source_mode': 'image', 'verified_image_id': result['image'], 'source_verified_commit': head,
+              'expected_exit': 0, 'expected_marker': contract['journey']['marker'], 'original_execution': source}
+    script = project_verify._helper(Path(binding['path']).parent/'bundle/helpers', contract['journey']['helper'])
+    return native.with_suffix('.screenshot-evidence.json'), report, reviews, script
+
+
+def record_visual_capture(task, data, reference, head, actor):
+    path, report, reviews, script = _visual_capture(data, reference, head, actor)
+    cli.write(path, report)
+    cli.evidence_add(argparse.Namespace(file=report['screenshot_path'], kind='screenshot', commit=head, actor=actor,
+                                        criterion=[], description='Screenshot from the second frozen Benny browser run'), data)
+    item = data['evidence'][-1]
+    item.update(execution_report=str(path), execution_report_sha256=cli.digest(path))
+    cli.write(task, data)
+    observations = [{key: proof[key] for key in ('condition', 'reason', 'references')} for _, proof in reviews]
+    return {'report': str(path), 'screenshot': report['screenshot_path']}, observations, script
+
+
+def require_visual_capture(data, reference, head, independent):
+    if data['surface'] != 'ui':
+        return
+    review = cli.read(Path(independent['path']))
+    actor = independent['actor']
+    path, report, _, _ = _visual_capture(data, reference, head, actor)
+    digest = cli.digest(path)
+    if (cli.read(path) != report or report['screenshot_sha256'] not in review.get('screenshot_hashes', [])
+            or not any(review['reports'].get(label) == {'path': str(path), 'sha256': digest}
+                       for item in review['assessments'] for label in item['evidence'])
+            or not any(not item.get('superseded') and item.get('execution_report') == str(path)
+                       and delivery._valid_screenshot(item, actor, head, data['repo']) for item in data['evidence'])):
+        raise ValueError('Benny independent review must cite the bound browser screenshot')
 
 
 class RepairRun:
@@ -43,13 +93,16 @@ class RepairRun:
 
     def validate(self, task, data, issue, *, image, source_mode, memory_mb, build_source_image):
         if (task != self.task or data.get('benny_reproduction') != self.binding
-                or data['kind'] != 'bug' or data['surface'] != 'non-ui'
+                or data['kind'] != 'bug'
                 or data.get('root_cause') != bug_cause.MODE
                 or data['base_commit'] != self.binding['base'] or issue != task.with_name('issue.txt')):
             raise ValueError('task no longer matches the approved Benny repair')
         _, proof, contract, _ = benny_reproduce._approved(self.binding['path'], self.binding['sha256'])
+        visual = benny_reproduce._visual_condition(contract, 'baseline')
         if (proof['base'] != self.binding['base'] or proof['image'] != image or contract['memory_mb'] != memory_mb
-                or source_mode != 'image' or build_source_image is not True or contract['journey'].get('screenshot')
+                or source_mode != 'image' or build_source_image is not True
+                or data['surface'] != ('ui' if visual else 'non-ui')
+                or bool(contract['journey'].get('screenshot')) != bool(visual)
                 or data.get('verification_target') or data.get('baseline_replay') or data.get('adoption')
                 or cli.digest(issue) != proof['report_sha256']):
             raise ValueError('Benny repair input, source mode, or approved image changed')
@@ -80,8 +133,6 @@ class RepairRun:
         out = self.task.parent/f'benny-candidate-{uuid.uuid4().hex}'
 
         def use_candidate(repo, base, head, baseline_image, timeout, *, rebuild_openclaw_ui):
-            if rebuild_openclaw_ui:
-                raise ValueError('Benny browser repair requires the recording reviewer')
             return self.attest(current['repo'], image, min(180, timeout), commit=head)
 
         result = self.verify(receipt=self.binding['path'], sha256=self.binding['sha256'], revision=commit,
@@ -154,6 +205,7 @@ def run_repair(*, task, slack, fix_search=(), tracker=None, execute=autopilot.ru
         review = json.loads(Path(independent['path']).read_text(encoding='utf-8'))
         if review.get('benny_candidate') != data['benny_candidate']:
             raise ValueError('independent review is not bound to the frozen Benny candidate replay')
+        require_visual_capture(data, data['benny_candidate'], head, independent)
         if data['status'] == 'running':
             run_control.admit(task)
             autopilot._pause(task, 'Benny candidate already verified; restored the pending delivery checkpoint')

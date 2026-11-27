@@ -71,6 +71,8 @@ def _presentation(data, accepted, route, contract):
     ]
     if 'regression_sha256' in review:
         body.append('- Focused regression failed on the baseline and passed on the candidate.')
+    if contract.get('visual'):
+        body.append('- Separate reviews confirmed the frozen visible state in both browser runs on each revision.')
     if verify_openclaw.applies(data, route['rules']['repository']):
         for journey in verify_openclaw.required_journeys(data, head):
             body.append(f'- OpenClaw `{journey}` passed in two independent offline runs.')
@@ -138,10 +140,13 @@ def deliver(*, task, slack, fix_search=(), tracker=None, github=None, repair=ben
             current, issues = cli.evidence_gate(latest, head)
             if current != head or issues:
                 raise ValueError('Benny draft requires current acceptance evidence and a clean candidate')
-            benny_repair.candidate_proof(binding, accepted['candidate'], head)
             review = delivery._independent_verification(latest, head)
             if review != accepted['independent']:
                 raise ValueError('Benny independent reviewer or receipt changed')
+            if latest['surface'] == 'ui':
+                benny_repair.require_visual_capture(latest, accepted['candidate'], head, review)
+            else:
+                benny_repair.candidate_proof(binding, accepted['candidate'], head)
             verify_openclaw.require(latest, head, repo, review_item=review)
             if latest.get('local_gate'):
                 delivery.require_local_write(task, data, head, publisher, repo, verified_benny_pause=True)

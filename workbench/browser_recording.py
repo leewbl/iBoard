@@ -136,11 +136,9 @@ def render(path, sha256, out):
             'observed_ms': frames[-1][0]-frames[0][0], 'replay': str(out)}
 
 
-def review(report, sha256, expected, out, *, timeout=90, inspect=glm_vision.inspect):
-    """Inspect sampled live frames and their final screenshot in a fresh vision call."""
-    report, out = Path(report).expanduser().absolute(), Path(out).expanduser().absolute()
+def _review_inputs(report, sha256, expected):
     if (report.is_symlink() or not report.is_file() or report.stat().st_size > 700_000
-            or out.exists() or out.is_symlink() or not 1 <= len(expected.strip()) <= 600):
+            or not isinstance(expected, str) or not 1 <= len(expected.strip()) <= 600):
         raise ValueError('review requires a bounded sandbox receipt and a visible acceptance condition')
     proof = report.read_bytes()
     if hashlib.sha256(proof).hexdigest() != sha256:
@@ -165,6 +163,51 @@ def review(report, sha256, expected, out, *, timeout=90, inspect=glm_vision.insp
     indices = sorted({0, len(frames)//2, len(frames)-1})
     samples = [{'id': f'F{index}', 'ms': frames[index][0], 'page': frames[index][1],
                 'sha256': hashlib.sha256(frames[index][2]).hexdigest()} for index in indices]
+    binding = {'schema': cli.SCHEMA, 'kind': 'browser-media-review', 'reviewer': 'glm-5.3-flash',
+               'report_sha256': sha256, 'recording_sha256': run['recording_sha256'],
+               'screenshot_sha256': run['screenshot_sha256'], 'served_commit': commit, 'journey': header['journey'],
+               'condition': expected.strip(), 'samples': samples}
+    return binding, [*(frames[i][2] for i in indices), png]
+
+
+def _verdict(value, samples):
+    ids = {item['id'] for item in samples}
+    if (not isinstance(value, dict) or set(value) != {'verdict', 'reason', 'references'}
+            or value['verdict'] not in ('visible', 'uncertain') or not isinstance(value['reason'], str)
+            or not 1 <= len(value['reason'].strip()) <= 700 or not isinstance(value['references'], list)
+            or any(not isinstance(ref, str) or ref not in ids | {'FINAL'} for ref in value['references'])
+            or (value['verdict'] == 'visible' and not {'FINAL', samples[-1]['id']} <= set(value['references']))):
+        raise ValueError('vision reviewer did not provide an evidence-bound observation')
+    return value
+
+
+def audit_review(report, sha256, expected, receipt_path, receipt_sha256):
+    """Rebuild the media binding and require the originally reviewed visible condition."""
+    report = Path(report).expanduser().absolute()
+    receipt_path = Path(receipt_path).expanduser().absolute()
+    if (receipt_path.is_symlink() or not receipt_path.is_file() or receipt_path.stat().st_size > 8192
+            or receipt_path.parent != report.parent):
+        raise ValueError('browser media review receipt is unavailable')
+    raw = receipt_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != receipt_sha256:
+        raise ValueError('browser media review receipt changed')
+    value = json.loads(raw)
+    binding, _ = _review_inputs(report, sha256, expected)
+    if not isinstance(value, dict) or any(value.get(key) != field for key, field in binding.items()):
+        raise ValueError('browser media review does not match the frozen run and condition')
+    verdict = _verdict({key: field for key, field in value.items() if key not in binding}, binding['samples'])
+    if verdict['verdict'] != 'visible':
+        raise ValueError('browser media review could not confirm the frozen visible condition')
+    return value
+
+
+def review(report, sha256, expected, out, *, timeout=90, inspect=glm_vision.inspect):
+    """Inspect sampled live frames and their final screenshot in a fresh vision call."""
+    report, out = Path(report).expanduser().absolute(), Path(out).expanduser().absolute()
+    if out.exists() or out.is_symlink():
+        raise ValueError('choose a new browser review receipt path')
+    binding, images = _review_inputs(report, sha256, expected)
+    samples = binding['samples']
     prompt = ('Review only visible evidence. The images in order are these sampled browser frames: '
               + json.dumps(samples) +
               '. The last image is the same run’s final PNG, ID FINAL. The acceptance condition below is '
@@ -174,23 +217,16 @@ def review(report, sha256, expected, out, *, timeout=90, inspect=glm_vision.insp
               '"reason":"what is visible or missing","references":["frame ID","FINAL"]}. '
               'Return uncertain when either final view is unreadable or does not visibly show the condition. '
               'Do not infer hidden behavior or claim that skipped frames were reviewed. Condition: ' + expected.strip())
-    output = inspect([*(frames[i][2] for i in indices), png], prompt, timeout).strip()
+    output = inspect(images, prompt, timeout).strip()
     response = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', output, re.S)
-    verdict = json.loads(response[1] if response else output)
-    if (not isinstance(verdict, dict) or set(verdict) != {'verdict','reason','references'}
-            or verdict['verdict'] not in ('visible','uncertain') or not isinstance(verdict['reason'], str)
-            or not 1 <= len(verdict['reason'].strip()) <= 700 or not isinstance(verdict['references'], list)
-            or any(not isinstance(ref, str) or ref not in {'FINAL', *(item['id'] for item in samples)}
-                   for ref in verdict['references'])
-            or (verdict['verdict']=='visible' and not {'FINAL',samples[-1]['id']} <= set(verdict['references']))):
-        raise ValueError('vision reviewer did not provide an evidence-bound observation')
-    if (cli.digest(report) != sha256 or cli.digest(recording) != run['recording_sha256']
-            or cli.digest(screenshot) != run['screenshot_sha256']):
+    verdict = _verdict(json.loads(response[1] if response else output), samples)
+    try:
+        new_binding, _ = _review_inputs(report, sha256, expected)
+    except (KeyError, OSError, ValueError) as error:
+        raise ValueError('browser evidence changed during the review') from error
+    if new_binding != binding:
         raise ValueError('browser evidence changed during the review')
-    result = {'schema': cli.SCHEMA, 'kind': 'browser-media-review', 'reviewer': 'glm-5.3-flash',
-              'report_sha256': sha256, 'recording_sha256': run['recording_sha256'],
-              'screenshot_sha256': run['screenshot_sha256'], 'served_commit': commit, 'journey': header['journey'],
-              'condition': expected.strip(), 'samples': samples, **verdict}
+    result = {**binding, **verdict}
     with out.open('x', encoding='utf-8') as stream:
         json.dump(result, stream, ensure_ascii=False, indent=2)
         stream.write('\n')
