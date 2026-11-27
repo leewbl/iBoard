@@ -628,13 +628,13 @@ class Publisher(delivery.GitHub):
         if proc.returncode:
             raise PublishError('update failed or remote branch changed; inspect remote state')
 
-    def pulls(self, repo, branch, *, base='main'):
+    def pulls(self, repo, branch, *, base='main', state='open'):
         scope = ('--base', base) if base is not None else ()
-        return self._call('pr', 'list', '--repo', repo, '--state', 'open', '--head', branch, *scope,
+        return self._call('pr', 'list', '--repo', repo, '--state', state, '--head', branch, *scope,
                           '--json', 'number,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository,'
-                          'headRepository,headRepositoryOwner,body,title,isDraft')
+                          'headRepository,headRepositoryOwner,body,title,isDraft,state')
 
-    def create(self, repo, branch, task_id, data):
+    def create(self, repo, branch, task_id, data, *, draft=False):
         body = data['_prepared_pr_body']
         title = data.get('_prepared_pr_title') or f'Complete verified task {task_id}'
         base = data.get('_prepared_pr_base', 'main')
@@ -643,8 +643,9 @@ class Publisher(delivery.GitHub):
             path.write_text(body, encoding='utf-8')
             try:
                 proc = subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--base', base,
-                                       '--head', branch, '--title', title,
-                                       '--body-file', str(path)], capture_output=True, text=True, timeout=self._bounded(120))
+                                       '--head', branch, '--title', title, '--body-file', str(path),
+                                       *(['--draft'] if draft else [])], capture_output=True, text=True,
+                                      timeout=self._bounded(120))
             except subprocess.TimeoutExpired as error:
                 raise PublishError('PR creation outcome unknown after timeout; inspect GitHub before retrying') from error
             except OSError as error:

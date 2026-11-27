@@ -89,4 +89,16 @@ python3 -m workbench.benny_repair --task "$TASK_JSON" --token-file "$SLACK_KEY"
 
 The coordinator rechecks the source thread and matching GitHub PRs before launch and before each edit. The model has workspace file tools. The coordinator holds the Slack reader, runs the causal comparison and checks the unchanged candidate in offline Docker. The independent root-cause review must support the mechanism and rule out a competing explanation before implementation. A failed frozen probe enters the bounded repair loop, with its original output retained. An execution failure pauses the task with evidence.
 
-The runner stops at a verified local candidate once both frozen probes pass twice, the focused tests pass, and independent review confirms the correction and related behavior. It retains the commit, the candidate and baseline receipts, and the independent review. A second call at this checkpoint verifies those files again and returns the same candidate. For older prepared tasks, supply the original `--fix-search` phrases. The draft PR route and browser recording review are separate remaining integration work.
+The runner stops at a verified local candidate once both frozen probes pass twice, the focused tests pass, and independent review confirms the correction and related behavior. It retains the commit, the candidate and baseline receipts, and the independent review. A second call at this checkpoint verifies those files again and returns the same candidate. For older prepared tasks, supply the original `--fix-search` phrases. The browser recording review remains required before Benny can repair a UI report.
+
+## Submit the verified repair as a draft
+
+```sh
+python3 -m workbench.benny_draft --task "$TASK_JSON" --token-file "$SLACK_KEY"
+```
+
+Use this entry to run a prepared non-UI repair through draft delivery or to submit an already verified candidate. It uses only the report’s configured personal fork. Before pushing the report branch and before creating the draft, the coordinator rechecks the source, tracker, pinned base, actual worktree and independent evidence. OpenClaw requires both runs of each applicable offline Gateway check in the same independent review. If the task uses the local-only policy, the destination must still have Actions disabled.
+
+The draft describes the reproduction, root cause, focused checks and related behavior. It includes hashes for the original and candidate observations and the independent review. A trusted issue in the target GitHub repo is linked with `Refs`. Slack coordinates, local paths, raw logs and private attachments stay in the task artifacts. The coordinator scans every outgoing commit and stops on probable credential material or a binary diff without review.
+
+The operation keeps a receipt before branch and PR writes. An unavailable response triggers a remote read. A matching draft can be confirmed on a subsequent call without another write. If the outcome remains unknown or the draft was closed, the coordinator retains the branch and receipt for inspection. Benny stops at draft status. Live Slack and GitHub integration, browser recording review, and optional operations-thread updates still need end-to-end acceptance.

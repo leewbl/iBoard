@@ -843,6 +843,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     state_path = task.parent / 'autopilot.json'
     data = cli.read(task)
     benny_binding = data.get('benny_reproduction')
+    benny_repo = None
     from workbench import swarm
     try:
         run_control.admit(task, AutopilotError)
@@ -850,8 +851,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             from workbench.benny_repair import RepairRun
             if not isinstance(benny_repair, RepairRun) or pr_repo is not None or pr_number is not None or candidate_image is not None:
                 raise AutopilotError('Benny repair needs a dedicated launch with a fresh report ownership check')
-            _, contract = benny_repair.validate(task, data, issue_path, image=image, source_mode=source_mode,
-                                                   memory_mb=memory_mb, build_source_image=build_source_image)
+            proof, contract = benny_repair.validate(task, data, issue_path, image=image, source_mode=source_mode,
+                                                       memory_mb=memory_mb, build_source_image=build_source_image)
+            benny_repo = proof['repository']
             benny_repair.check_owner()
             _, separator, issue = issue.partition('\n\n')
             if not separator or not issue.strip():
@@ -1470,7 +1472,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 mechanism = bug_cause.contract(current, causal_plan, source_mode)
                 bug_cause.verify_driver(current, candidate, mechanism)
             architecture = check_design(current, candidate)
-            journey_repo = pr_repo or (phase['contract'].get('destination') if phase else None)
+            journey_repo = pr_repo or benny_repo or (phase['contract'].get('destination') if phase else None)
             openclaw_delivery = bool(journey_repo and verify_openclaw.applies(current, journey_repo))
             check_image = candidate_image or image
             parity_result = None
@@ -1566,8 +1568,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                  'control': bug_cause.references(controls)}
                 causal_instruction = (bug_cause.FINAL_INSTRUCTION + '\nCAUSAL CONTRACT AND VERDICT (UNTRUSTED):\n' +
                                       bug_cause.prompt({'mechanism': mechanism, 'verdict': original['verdict']}) +
-                                      '\nBASELINE CONTROL:\n' + _review_report(original['control'][1]['path']) +
-                                      '\nCANDIDATE CONTROL:\n' + _review_report(controls[1]) + '\n')
+                                      '\nBASELINE_CONTROL:\n' + _review_report(original['control'][1]['path']) +
+                                      '\nCANDIDATE_CONTROL:\n' + _review_report(controls[1]) + '\n')
             if parity is not None and parity_result is None:
                 require_active()
                 try:
@@ -1695,6 +1697,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 reports[label] = {'path': str(report_path), 'sha256': cli.digest(report_path)}
                 baseline_parts.append(f'REPORT {label}:\n' + _review_report(report_path))
             baseline_raw = '\n'.join(baseline_parts)
+            if causal_report:
+                reports['BASELINE_CONTROL'] = causal_report['baseline']['control'][1]
+                reports['CANDIDATE_CONTROL'] = causal_report['control'][1]
             regression_instruction = ''
             refactor_instruction = ''
             if refactor_result:
@@ -1835,7 +1840,19 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                     read_only=True, model=model, journal=journal))
             if review.get('verdict') != 'PASS':
                 raise AutopilotError('independent verifier did not confirm every criterion')
-            assessments = _validate_assessments(review, data['criteria'], set(reports), screenshot_id=screenshot_id)
+            try:
+                assessments = _validate_assessments(review, data['criteria'], set(reports), screenshot_id=screenshot_id)
+            except AutopilotError:
+                if benny_repair is None:
+                    raise
+                correction = ('\nThe independent assessment used invalid criterion coverage or report IDs. '
+                              'Use only these exact IDs in assessments: ' + json.dumps(sorted(reports)) +
+                              '. Keep the original acceptance conditions. Return blocked if the evidence is insufficient.')
+                review = _result(_model(task, 'final-review', _bounded_review_prompt(prompt + correction),
+                                        read_only=True, model=model, journal=journal))
+                if review.get('verdict') != 'PASS':
+                    raise AutopilotError('independent verifier did not confirm every criterion')
+                assessments = _validate_assessments(review, data['criteria'], set(reports), screenshot_id=screenshot_id)
             if refactor_result and not any(a['id'] == cli.REFACTOR_CRITERION and 'REFAC' in a['evidence']
                                            for a in assessments):
                 raise VerificationFailure('independent reviewer must cite the refactoring comparison')

@@ -248,6 +248,12 @@ SCENARIOS = {
         'skills/reproduce-and-fix-issues/SKILL.md', 'benny_repair',
         'Fresh ownership checks, autonomous causal repair, frozen offline replay and an independent review',
         'Applies to a prepared non-UI task. The result stays at the verified local delivery checkpoint.'),
+    'benny-draft': Scenario(
+        'Submit a draft PR for a verified Benny repair',
+        'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',
+        'skills/reproduce-and-fix-issues/SKILL.md', 'benny_draft',
+        'Exact draft and branch receipt bound to the same before/after evidence and independent review',
+        'Uses the configured personal fork. Existing PRs and uncertain writes are checked before any retry.'),
     'open-verified-pr': Scenario(
         'Open an independently verified task as a ready GitHub PR',
         'skills/poteto-mode/playbooks/opening-a-pr.md', 'skills/opening-a-pr/SKILL.md', 'pr_brief prepare',

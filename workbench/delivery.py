@@ -152,7 +152,7 @@ def require_actions_disabled(github, repo):
         raise DeliveryError('cannot verify destination GitHub Actions is disabled') from error
 
 
-def require_local_write(task_path, expected, head, github, repo):
+def require_local_write(task_path, expected, head, github, repo, *, verified_benny_pause=False):
     """Revalidate local-only evidence and execution settings immediately before a write."""
     if not expected.get('local_gate'):
         return
@@ -161,7 +161,10 @@ def require_local_write(task_path, expected, head, github, repo):
         latest = cli.read(Path(task_path))
         if latest != expected:
             raise DeliveryError('task identity, policy or evidence changed before local-only write')
-        checked_head, errors = cli.gate(latest, head)
+        gate = cli.gate
+        if verified_benny_pause and latest.get('benny_reproduction') and latest.get('status') == 'paused':
+            gate = cli.evidence_gate
+        checked_head, errors = gate(latest, head)
         if errors or checked_head != head:
             raise DeliveryError('local evidence or candidate changed before write')
         _independent_verification(latest, head)
