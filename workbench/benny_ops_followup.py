@@ -1,4 +1,4 @@
-"""Answer direct questions about a completed Benny run in its operations thread."""
+"""Answer questions and verify one correction in a settled Benny operations thread."""
 
 import hashlib
 import json
@@ -10,8 +10,9 @@ import tempfile
 import time
 
 from model.claude_glm import execute
-from workbench import benny, benny_followup, benny_handoff, benny_operations, benny_ops_evidence, benny_triage, cli
-from workbench.benny_slack import STAMP, RetryAfter, SlackError
+from workbench import (benny, benny_followup, benny_handoff, benny_notice, benny_operations, benny_ops_correction,
+                       benny_ops_evidence, benny_reproduce, benny_triage, cli)
+from workbench.benny_slack import STAMP, USER, RetryAfter, SlackError
 from workbench.task_lock import task_lock
 
 
@@ -21,6 +22,7 @@ LOCK = '.operations-followup.lock'
 TERMINAL = frozenset({'expired', 'stopped', 'source-changed', 'model-blocked'})
 _RUNNING = {'Reproducing', 'Verifying existing fix', 'Attempting bounded fix'}
 _SCOPE_FIELDS = {'workspace', 'source_channel', 'source_root', 'channel', 'identity', 'repository'}
+_MIN_CORRECTION = 10
 
 
 class _SourceChanged(ValueError):
@@ -93,19 +95,48 @@ def _packet(outcome, state, reference):
     return evidence
 
 
-def arm(path, *, operations, outcome, seconds):
+def _correction_owner(outcome, event, operations):
+    initial = outcome.get('original_reproduction', outcome.get('reproduction'))
+    notice, archive = outcome.get('source_notice'), outcome.get('correction_options')
+    if (_reference(initial, 'result.json') != event/'reproduction/result.json'
+            or _reference(notice, 'source-notice.json') != event/'source-notice.json'
+            or _reference(archive, 'correction-options.json') != event/'correction-options.json'):
+        raise ValueError('Benny operations correction needs the original event evidence and approved setups')
+    initial_path = Path(initial['path'])
+    _, proof, _, _ = benny_reproduce._approved(initial_path, initial['sha256'])
+    _, source = benny.load_route(proof['route']['path'], proof['route']['sha256'])
+    benny_notice.confirmed(notice, reproduction=initial, proof=proof)
+    setups = benny_handoff._load(archive['path'], archive['sha256'], 'benny-correction-options').get('setups')
+    scope = operations['scope']
+    location = source['snapshot']['location']
+    reporter = source['snapshot']['messages'][0]
+    if (source['rules']['workspace'] != scope['workspace'] or source['rules']['repository'] != scope['repository']
+            or (location['channel'], location['root']) != (scope['source_channel'], scope['source_root'])
+            or reporter['bot'] or not isinstance(setups, dict) or not setups):
+        raise ValueError('Benny operations correction needs a human reporter in the original settled scope')
+    return reporter['author']
+
+
+def arm(path, *, operations, outcome, seconds, correction_seconds=None):
     """Freeze one follow-up window after a terminal operations status."""
     if type(seconds) is not int or not 1 <= seconds <= 3600:
         raise ValueError('Benny operations follow-up needs a window from 1 to 3600 seconds')
+    if correction_seconds is not None and not (
+            type(correction_seconds) is int and _MIN_CORRECTION <= correction_seconds <= 3600):
+        raise ValueError('Benny operations correction needs a valid verification budget')
     path = _path(path, PLAN, exists=False)
     anchor = _reference(operations, 'operations.json')
     with task_lock(anchor, lock_name=LOCK, reentrant=False):
         _, state = _operations(operations, path.parent)
         approved = {'schema': cli.SCHEMA, 'kind': KIND, 'operations': operations, 'outcome': outcome,
                     'evidence': _packet(outcome, state, operations), 'seconds': seconds}
+        if correction_seconds is not None:
+            approved.update(correction_seconds=correction_seconds,
+                            correction_reporter=_correction_owner(outcome, path.parent, state))
         if path.exists():
             plan = benny_handoff._load(_path(path, PLAN), cli.digest(path), KIND)
-            if any(plan.get(key) != value for key, value in approved.items()):
+            if (plan.keys() != approved.keys() | {'starts_at', 'expires_at'}
+                    or any(plan.get(key) != value for key, value in approved.items())):
                 raise ValueError('Benny follow-up cannot replace its original evidence or window')
         else:
             start = time.time()
@@ -172,8 +203,22 @@ class _Window:
 
     def actions(self, rows):
         return [(row, action) for row in rows if (benny._ticks(row['ts']) < round(self.plan['expires_at'] * 1_000_000)
-                and (action := benny_followup._message(row, self.ops.identity, None))
+                and (action := self.action(row))
                 and (action['kind'] == 'stop' or benny._ticks(row['ts']) >= round(self.plan['starts_at'] * 1_000_000)))]
+
+    def action(self, row):
+        identity = self.ops.identity
+        if row['bot'] or row['author'] == identity:
+            return None
+        addressed = re.fullmatch(fr'(?:hey\s+)?<@{re.escape(identity)}>[\s,:：，]+((?:correction|更正)\s*[:：]\s*\S.*)',
+                                 row['text'].strip(), re.I | re.S)
+        if addressed:
+            text = addressed[1].strip()
+            if (row['author'] == self.plan.get('correction_reporter') and not row['files']
+                    and benny_triage._text(text, 1400) and benny_triage._text(row['text'], 1500)):
+                return {'kind': 'correction', 'text': text}
+            return None
+        return benny_followup._message(row, identity, None)
 
     def verify_evidence(self):
         reference = self.plan['operations']
@@ -189,17 +234,29 @@ class _Window:
         self.state['handled'][timestamp] = {'status': outcome, **details}
         return self.save('watching', pending=None)
 
+    def facts(self):
+        evidence = self.plan['evidence']
+        result = self.state.get('correction', {}).get('result')
+        if result is None:
+            return evidence
+        correction = self._correction_body(result)
+        return {**{key: {**fact, 'text': f"Before the operations retest. {fact['text']}"}
+                   for key, fact in evidence.items()}, 'C1': {'kind': 'correction', 'text': correction}}
+
     def conclude(self, rows):
         pending = self.state['pending']
+        if 'reference' in pending:
+            self._correction_body(self.state['correction']['result'])
         matches = [row['ts'] for row in rows if row['author'] == self.ops.identity
                    and benny._ticks(row['ts']) > benny._ticks(pending['question_ts'])
                    and pending.get('reply_ts', row['ts']) == row['ts']
                    and benny_handoff._normalize(row['text']) == benny_handoff._normalize(pending['body'])]
         if len(matches) == 1:
-            return self.finish(pending['question_ts'], 'confirmed', reply_ts=matches[0], citations=pending['citations'])
+            details = {key: pending[key] for key in ('citations', 'reference') if key in pending}
+            return self.finish(pending['question_ts'], 'confirmed', reply_ts=matches[0], **details)
         return self.save('reply-unconfirmed')
 
-    def run(self, model):
+    def run(self, model, correction):
         self.ops._authorize(self.deadline)
         rows = self.thread()
         actions = self.actions(rows)
@@ -207,18 +264,77 @@ class _Window:
             return self.save('stopped')
         if self.state['pending']:
             return self.conclude(rows)
+        if self.state['status'] == 'correcting':
+            return self.resume_correction(rows, correction)
+        if correction is not None and 'correction' not in self.state:
+            selected = next(((row, action) for row, action in actions if action['kind'] == 'correction'), None)
+            budget = min(self.plan.get('correction_seconds', 0), int(self.plan['expires_at'] - time.time()))
+            if selected and budget >= _MIN_CORRECTION and time.monotonic() < self.deadline:
+                row, action = selected
+                self.save('correcting', correction={'message': row, 'text': action['text'],
+                                                     'verification_seconds': budget})
+                return self.resume_correction(rows, correction)
         selected = next(((row, action) for row, action in actions
                          if action['kind'] == 'question' and row['ts'] not in self.state['handled']), None)
         if selected is None or self.deadline - time.monotonic() < 2:
             return self.state
         row, action = selected
+        evidence = self.facts()
         self.save('asking-model', question_ts=row['ts'])
         try:
-            citations = _answer(model, action['question'], self.plan['evidence'], self.deadline)
+            citations = _answer(model, action['question'], evidence, self.deadline)
         except (ValueError, KeyError, OSError, TypeError, RuntimeError):
             return self.save('model-blocked')
         if not citations:
             return self.finish(row['ts'], 'no-evidence')
+        if self.facts() != evidence:
+            return self.save('source-changed')
+        facts = [f"[{item['id']}] {benny_handoff._text(evidence[item['id']]['text'])}" for item in citations]
+        return self.respond(row, '\n'.join(facts), citations=citations)
+
+    def resume_correction(self, rows, correction):
+        selected = self.state['correction']
+        row = selected['message']
+        if row not in rows:
+            return self.save('source-changed')
+        if (self.action(row) != {'kind': 'correction', 'text': selected['text']}
+                or not _MIN_CORRECTION <= selected['verification_seconds'] <= self.plan['correction_seconds']):
+            raise ValueError('Benny operations correction no longer matches the selected request')
+        result = selected.get('result')
+        if result is None:
+            if correction is None:
+                return self.state
+            if time.time() >= self.plan['expires_at']:
+                return self.state
+            try:
+                result = correction(outcome=self.plan['outcome'], operations=self.operations, message=row,
+                                    text=selected['text'], verification_seconds=selected['verification_seconds'],
+                                    expires_at=self.plan['expires_at'])
+                self._correction_body(result)
+            except RetryAfter:
+                raise
+            except (OSError, ValueError, TypeError, KeyError, cli.WorkbenchError):
+                return self.finish(row['ts'], 'correction-blocked')
+            self.save('correcting', correction={**selected, 'result': result})
+        body = self._correction_body(result)
+        self.deadline = time.monotonic() + min(30, max(0, self.plan['expires_at'] - time.time()))
+        return self.respond(row, body, reference=result['reference'])
+
+    def _correction_body(self, result):
+        if (not isinstance(result, dict) or result.keys() != {'body', 'reference'}
+                or not benny_triage._text(result['body'], 600)):
+            raise ValueError('Benny operations correction did not return a bounded verification result')
+        reference = result['reference']
+        path = _reference(reference, 'result.json')
+        if path != self.path.parent/'operations-correction/result.json':
+            raise ValueError('Benny operations correction result changed or belongs to a different event')
+        body = benny_ops_correction.confirmed(reference, event=self.path.parent, outcome=self.plan['outcome'],
+                                             operations=self.operations)
+        if result['body'] != body:
+            raise ValueError('Benny operations correction did not match the completed verification receipt')
+        return benny_followup._reply_text(result['body'], {})
+
+    def respond(self, row, answer, **details):
         if time.time() >= self.plan['expires_at']:
             return self.save('expired')
         if time.monotonic() >= self.deadline:
@@ -229,12 +345,12 @@ class _Window:
             return self.save('stopped')
         if row not in rows:
             return self.save('source-changed')
+        self.facts()
         if time.time() >= self.plan['expires_at'] or time.monotonic() >= self.deadline:
             return self.finish(row['ts'], 'out-of-step-budget')
         marker = hashlib.sha256((self.state['plan_sha256'] + ':' + row['ts']).encode()).hexdigest()[:16]
-        facts = [f"[{item['id']}] {benny_handoff._text(self.plan['evidence'][item['id']]['text'])}" for item in citations]
-        body = '\n'.join([*facts, '', f'Benny evidence reply {marker}'])
-        pending = {'question_ts': row['ts'], 'body': body, 'citations': citations}
+        body = f'{answer}\n\nBenny evidence reply {marker}'
+        pending = {'question_ts': row['ts'], 'body': body, **details}
         self.save('reply-unconfirmed', pending=pending)
         if any(benny_handoff._normalize(item['text']) == benny_handoff._normalize(body) for item in rows):
             return self.conclude(rows)
@@ -250,8 +366,8 @@ class _Window:
         return self.conclude(self.thread())
 
 
-def step(plan_ref, *, slack, writer, seconds=30, model=execute):
-    """Observe one follow-up window and answer at most one eligible question."""
+def step(plan_ref, *, slack, writer, seconds=30, model=execute, correction=None):
+    """Handle one question or an eligible correction inside the original window."""
     if type(seconds) is not int or not 1 <= seconds <= 60:
         raise ValueError('Benny operations follow-up observations need 1 to 60 seconds')
     path = _reference(plan_ref, PLAN)
@@ -262,6 +378,10 @@ def step(plan_ref, *, slack, writer, seconds=30, model=execute):
         if (type(window) is not int or not 1 <= window <= 3600 or type(start) not in (int, float)
                 or type(expiry) not in (int, float) or not 0 < start < expiry or start + window != expiry):
             raise ValueError('Benny operations follow-up has an invalid frozen window')
+        if ('correction_seconds' in plan or 'correction_reporter' in plan) and (
+                type(plan.get('correction_seconds')) is not int or not _MIN_CORRECTION <= plan['correction_seconds'] <= 3600
+                or not benny._matches(USER, plan.get('correction_reporter'))):
+            raise ValueError('Benny operations follow-up has an invalid frozen correction scope')
         remaining = max(0, expiry - time.time())
         deadline = time.monotonic() + min(seconds, remaining)
         ops, operations = _operations(plan['operations'], path.parent, slack=slack, writer=writer)
@@ -274,7 +394,7 @@ def step(plan_ref, *, slack, writer, seconds=30, model=execute):
             return run.save('model-blocked')
         try:
             run.verify_evidence()
-            return run.run(model)
+            return run.run(model, correction)
         except _SourceChanged:
             return run.save('source-changed')
         except RetryAfter as error:

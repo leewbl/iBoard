@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from test_benny_operations import IDENTITY, OPERATIONS, REPOSITORY, SOURCE, WORKSPACE, OperationsFixture
-from workbench import benny_operations, benny_ops_evidence, benny_ops_followup, cli
+from workbench import benny_operations, benny_ops_correction, benny_ops_evidence, benny_ops_followup, cli
 from workbench.benny_slack import RetryAfter, SlackRejected
 
 
@@ -61,6 +61,109 @@ class BennyOperationsFollowupTests(unittest.TestCase):
 
     def step(self):
         return benny_ops_followup.step(self.plan, slack=self.slack, writer=self.slack, model=self.model)
+
+    def arm_correction(self):
+        self.plan_path.unlink()
+        remembered = self.wall
+        self.wall = self.epoch + .1
+        try:
+            with patch.object(benny_ops_followup, '_correction_owner', return_value='UHUMAN'):
+                self.plan = benny_ops_followup.arm(
+                    self.plan_path, operations=self.operations, outcome=self.outcome, seconds=45, correction_seconds=30,
+                )
+        finally:
+            self.wall = remembered
+
+    def correction_result(self):
+        path = self.path.parent/'operations-correction'/'result.json'
+        cli.write(path, {'schema': cli.SCHEMA, 'kind': benny_ops_correction.KIND, 'phase': 'completed',
+                         'status': 'not-reproduced'})
+        result = {'body': benny_ops_correction.BODY['not-reproduced'],
+                  'reference': {'path': str(path), 'sha256': cli.digest(path)}}
+        verifier = patch.object(benny_ops_correction, 'confirmed', return_value=result['body'])
+        verifier.start()
+        self.addCleanup(verifier.stop)
+        return result
+
+    def step_correction(self, callback):
+        return benny_ops_followup.step(self.plan, slack=self.slack, writer=self.slack, model=self.model,
+                                      correction=callback)
+
+    def test_one_reporter_correction_precedes_questions_and_updates_followup_facts(self):
+        self.arm_correction()
+        question = self.post(210000, '<@UBENNY> Did the rerun reproduce the fault?')
+        self.post(220000, '<@UBENNY> Correction: are you sure?', user='UOTHER')
+        change = self.post(230000, '<@UBENNY> Correction: Please use a clean session.')
+        self.post(240000, '<@UBENNY> Correction: setup: other')
+        result = self.correction_result()
+        runner = Mock(return_value=result)
+        self.slack.reply_ts = f'{self.epoch}.400000'
+        state = self.step_correction(runner)
+        runner.assert_called_once()
+        self.assertEqual(runner.call_args.kwargs['message']['ts'], change)
+        self.assertEqual(runner.call_args.kwargs['text'], 'Correction: Please use a clean session.')
+        self.assertEqual(runner.call_args.kwargs['verification_seconds'], 30)
+        self.assertEqual(runner.call_args.kwargs['expires_at'], cli.read(self.plan_path)['expires_at'])
+        self.assertEqual(state['handled'][change]['reference'], result['reference'])
+        self.model.assert_not_called()
+        self.assertIn(result['body'], self.slack.replies[-1]['text'])
+        self.assertEqual(cli.read(self.plan_path)['outcome'], self.outcome)
+
+        def answer_from_retest(_workspace, prompt, *_args, **_kwargs):
+            evidence = json.loads(prompt.split('\n', 1)[1])['evidence']
+            self.assertEqual(evidence['C1']['text'], result['body'])
+            self.assertTrue(evidence['R1']['text'].startswith('Before the operations retest.'))
+            return self.answer(citations=[{'id': 'C1', 'quote': 'did not reproduce'}])
+
+        self.model.side_effect = answer_from_retest
+        self.slack.reply_ts = f'{self.epoch}.410000'
+        self.assertEqual(self.step_correction(runner)['handled'][question]['status'], 'confirmed')
+        self.assertEqual(self.step_correction(runner)['status'], 'watching')
+        runner.assert_called_once()
+        self.model.assert_called_once()
+
+    def test_resumes_selected_correction_and_reconciles_an_interrupted_reply(self):
+        self.arm_correction()
+        change = self.post(230000, '<@UBENNY> 更正：设置：clean-session')
+        result = self.correction_result()
+        runner = Mock(side_effect=[KeyboardInterrupt, result])
+        self.slack.reply_ts = f'{self.epoch}.400000'
+        with self.assertRaises(KeyboardInterrupt):
+            self.step_correction(runner)
+        state = cli.read(self.path.with_name('operations-followup-state.json'))
+        self.assertEqual(state['status'], 'correcting')
+        self.assertEqual(state['correction']['message']['ts'], change)
+        self.slack.reply_interrupted = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.step_correction(runner)
+        state = self.step_correction(runner)
+        self.assertEqual(state['handled'][change]['reference'], result['reference'])
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_args_list[0], runner.call_args_list[1])
+        self.assertEqual(self.slack.writes(), ['post-root', 'reply'])
+
+    def test_stop_during_correction_holds_its_result_without_posting(self):
+        self.arm_correction()
+        self.post(230000, '<@UBENNY> Correction: setup: clean-session')
+
+        def stopped_rerun(**_kwargs):
+            self.post(270000, '<@UBENNY> stop')
+            return self.correction_result()
+
+        state = self.step_correction(stopped_rerun)
+        self.assertEqual(state['status'], 'stopped')
+        self.assertIn('result', state['correction'])
+        self.assertEqual(self.slack.writes(), ['post-root'])
+
+    def test_correction_is_disabled_without_approved_original_evidence(self):
+        with self.assertRaisesRegex(ValueError, 'exact receipt'):
+            benny_ops_followup.arm(self.plan_path, operations=self.operations, outcome=self.outcome, seconds=45,
+                                   correction_seconds=30)
+        runner = Mock()
+        self.post(230000, '<@UBENNY> Correction: setup: clean-session')
+        self.assertEqual(self.step_correction(runner)['status'], 'watching')
+        runner.assert_not_called()
+        self.model.assert_not_called()
 
     def test_answers_at_most_one_direct_question_at_a_time_with_whole_facts(self):
         self.post(150000, 'Did verification pass?')

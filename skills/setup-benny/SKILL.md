@@ -43,6 +43,8 @@ Set `operations.followup_seconds` to a positive duration up to 3,600 seconds to 
 
 The follow-up window resumes through `watch` using the original deadline and receipt. An ambiguous reply is checked against the thread before any further answer. The operational reply status is stored separately from the settled reproduction, repair or draft result.
 
+Set `operations.correction_retest` to `true` to allow the original reporter to request one verification-only rerun during this window. Configure source notices and approved correction setups first. In the operations thread, mention the configured identity and follow it with `Correction: setup: clean-state` or `Correction:` and a concrete explanation that matches an approved setup. The coordinator checks the original report before running the same commit and image. It retains the rerun evidence and sends one result reply alongside the settled outcome.
+
 ### Optional reproduction reply in the report thread
 
 Set `source_notice_identity` inside the `reproduce` worker policy to an approved Slack user ID. Pass the corresponding owner-only credential file with `--source-notice-writer-token-file`, or reuse `--writer-token-file` for the same identity. The coordinator posts one concise reply only after both offline probes confirm the report. When the operations thread is enabled, the coordinator updates it first and then includes its link in the reply. A trusted tracker issue is linked when present.

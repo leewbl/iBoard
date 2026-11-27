@@ -2,6 +2,7 @@
 
 import argparse
 from datetime import datetime, timezone
+from functools import partial
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -11,8 +12,8 @@ import socket
 import time
 
 from workbench import (autopilot, benny, benny_correction, benny_deploy, benny_draft, benny_events, benny_handoff,
-                       benny_notice, benny_operations, benny_ops_followup, benny_repair, benny_reproduce, benny_triage, cli, delivery,
-                       project_verify, publish, start)
+                       benny_notice, benny_operations, benny_ops_correction, benny_ops_followup, benny_repair,
+                       benny_reproduce, benny_triage, cli, delivery, project_verify, publish, start)
 from workbench.benny_slack import CHANNEL, STAMP, USER, Slack, SlackWriter
 from workbench.task_lock import TaskBusy, task_lock
 
@@ -148,10 +149,13 @@ def _policy(path, role):
         raise ValueError('Benny repair requires explicit searches and draft permission')
     operations = own.get('operations')
     if 'operations' in own and (not isinstance(operations, dict)
-            or operations.keys() - {'channel', 'identity', 'followup_seconds'}
+            or operations.keys() - {'channel', 'identity', 'followup_seconds', 'correction_retest'}
             or not benny._matches(CHANNEL, operations.get('channel')) or not benny._matches(USER, operations.get('identity'))
             or type(operations.get('followup_seconds', 0)) is not int or not 0 <= operations.get('followup_seconds', 0) <= 3600):
         raise ValueError('Benny operations needs an explicit Slack channel and writer identity')
+    if operations and (type(operations.get('correction_retest', False)) is not bool
+            or operations.get('correction_retest') and (not operations.get('followup_seconds') or not own.get('corrections'))):
+        raise ValueError('Benny operations correction needs a follow-up window and approved setups')
     if 'source_notice_identity' in own and not benny._matches(USER, own['source_notice_identity']):
         raise ValueError('Benny source notice needs an explicit Slack writer identity')
     own = {**own}
@@ -399,7 +403,7 @@ def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, 
                                 prior=prior, operations=operations)
 
 
-def _arm_operations_followup(out, result, seconds):
+def _arm_operations_followup(out, result, seconds, correction_seconds=None):
     try:
         evidence = {}
         if result['status'] == 'draft':
@@ -411,8 +415,11 @@ def _arm_operations_followup(out, result, seconds):
             verification = out/'existing/verification/result.json'
             if verification.is_file() and not verification.is_symlink():
                 evidence['existing_verification'] = _ref(verification)
+        can_retest = (correction_seconds and result['status'] in ('reproduced', 'verified', 'draft')
+                      and {'source_notice', 'correction_options'} <= result.keys())
+        correction = {'correction_seconds': correction_seconds} if can_retest else {}
         plan = benny_ops_followup.arm(out/'operations-followup.json', operations=result['operations'],
-                                       outcome={**result, **evidence}, seconds=seconds)
+                                       outcome={**result, **evidence}, seconds=seconds, **correction)
     except (*ERRORS, KeyError) as error:
         return {'operations_followup_status': 'blocked:' + type(error).__name__}
     return {'operations_followup': plan}
@@ -453,7 +460,8 @@ def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, source
             operations.status(OPERATIONS_RESULT.get(result['status'], 'Blocked'))
         result = {**result, 'operations': _ref(operation_path)}
         if (followup_seconds := config.get('followup_seconds', 0)) and result['status'] != 'waiting-claim':
-            result = {**result, **_arm_operations_followup(out, result, followup_seconds)}
+            correction_seconds = rules['verification_seconds'] if config.get('correction_retest') else None
+            result = {**result, **_arm_operations_followup(out, result, followup_seconds, correction_seconds)}
     return result
 
 
@@ -545,6 +553,15 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations
         return {**record, **result}
 
 
+def _run_operations_correction(*, plan, repo, policy, policy_sha256, slack, **request):
+    opts, digest = _policy(policy, 'reproduce')
+    if digest != policy_sha256 or not opts.get('operations', {}).get('correction_retest'):
+        raise ValueError('Benny operations correction policy changed after settlement')
+    runtime = {key: opts[key] for key in REPRO_OPTIONS | VISUAL_OPTIONS if key in opts}
+    runtime['repo'] = repo
+    return benny_ops_correction.run(event=Path(plan['path']).parent, runtime=runtime, slack=slack, **request)
+
+
 def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=None, source_notice_writer=None,
           seconds=300, max_events=8,
           poll_seconds=2):
@@ -580,8 +597,12 @@ def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=N
                     seconds_left = int(end - time.monotonic())
                     if seconds_left < 1:
                         break
+                    correction = partial(_run_operations_correction, plan=ack['operations_followup'],
+                                         repo=project['repo'], policy=policy, policy_sha256=result.get('policy_sha256'),
+                                         slack=slack)
                     followed = benny_ops_followup.step(ack['operations_followup'], slack=slack,
-                                                       writer=operations_writer or writer, seconds=min(30, seconds_left))
+                                                       writer=operations_writer or writer, seconds=min(30, seconds_left),
+                                                       correction=correction)
                     reports[ident] = ack['status']
                     followups[ident] = followed['status']
                     if followed['status'] in benny_ops_followup.TERMINAL:

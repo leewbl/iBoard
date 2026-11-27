@@ -25,7 +25,8 @@ REFS = {'initial': 'reproduction/result.json', 'notice': 'source-notice.json', '
 
 def _path(path):
     path = Path(path)
-    if not path.is_absolute() or path.resolve() != path or path.name != FILE or path.parent.name != 'correction':
+    if (not path.is_absolute() or path.resolve() != path or path.name != FILE
+            or path.parent.name not in ('correction', 'operations-correction')):
         raise ValueError('Benny interpretation must use its canonical correction file')
     try:
         info = path.lstat()
