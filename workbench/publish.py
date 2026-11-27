@@ -745,6 +745,8 @@ def publish(task_path, repo, github=None, *, replay_authority=None):
     delivery.require_refactor_intake(task_path, data)
     if 'verification_target' in data:
         raise PublishError('verification-only task does not authorize publishing')
+    if 'benny_reproduction' in data:
+        raise PublishError('Benny repair delivery requires a draft PR with sealed before/after evidence')
     replay_check = _admit_replay(task_path, data, repo, replay_authority, 'create')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
@@ -841,6 +843,8 @@ def republish(task_path, repo, number, previous_head, github=None, *, replay_aut
     delivery.require_refactor_intake(task_path, data)
     if 'verification_target' in data:
         raise PublishError('verification-only task does not authorize publishing')
+    if 'benny_reproduction' in data:
+        raise PublishError('Benny repair delivery requires a draft PR with sealed before/after evidence')
     replay_check = _admit_replay(task_path, data, repo, replay_authority, 'replace', number=number,
                                  previous=previous_head)
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):

@@ -1012,6 +1012,8 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
     data = cli.read(Path(task_path))
     require_refactor_intake(task_path, data)
     run_control.admit(task_path, DeliveryError)
+    if 'benny_reproduction' in data:
+        raise DeliveryError('Benny repair tasks do not authorize merging')
     if 'verification_target' in data and stack_binding is None:
         raise DeliveryError('verification-only task does not authorize merging')
     require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)

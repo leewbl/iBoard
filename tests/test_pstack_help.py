@@ -36,6 +36,8 @@ class PstackHelpTests(unittest.TestCase):
             'benny-handoff': 'benny_handoff prepare',
             'benny-followup': 'benny_followup',
             'benny-reproduce': 'benny verify',
+            'benny-reproduce-new': 'benny_reproduce reproduce',
+            'benny-verify-candidate': 'benny_reproduce verify-candidate',
             'review-pr': 'interrogate',
             'ship-stack': 'stack_ship plan',
             'inspect-task': 'pickup',

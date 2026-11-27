@@ -230,6 +230,18 @@ SCENARIOS = {
         'skills/reproduce-and-fix-issues/SKILL.md', 'benny verify',
         'A source-bound route and independently repeated before/after runtime evidence',
         'Existing fixes are read-only. New edits and publication are not dispatched here.'),
+    'benny-reproduce-new': Scenario(
+        'Reproduce a trusted unclaimed report in offline Docker',
+        'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',
+        'skills/reproduce-and-fix-issues/SKILL.md', 'benny_reproduce reproduce',
+        'A revision-bound report, frozen drivers and repeatable primary and independent observations',
+        'Requires a healthy doctor and two exact observations per probe before preparing repair.'),
+    'benny-verify-candidate': Scenario(
+        'Replay the reproduced report against a local candidate revision',
+        'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',
+        'skills/reproduce-and-fix-issues/SKILL.md', 'benny_reproduce verify-candidate',
+        'Two passing runs per frozen probe in fresh offline containers',
+        'Verifies a local revision without writing to GitHub or Slack.'),
     'open-verified-pr': Scenario(
         'Open an independently verified task as a ready GitHub PR',
         'skills/poteto-mode/playbooks/opening-a-pr.md', 'skills/opening-a-pr/SKILL.md', 'pr_brief prepare',

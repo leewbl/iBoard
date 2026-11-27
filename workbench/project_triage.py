@@ -130,30 +130,12 @@ def _fix_outcome(base, candidate):
     return "inconclusive"
 
 
-def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, oracle_marker, oracle_failure_marker,
-        out, timeout=600, memory_mb=3328, sandbox=run_sandbox, attester=workflow._verified_image, derive=None,
-        existing_fix=None):
-    repo = Path(repo).expanduser().resolve(strict=True)
-    base = cli.sha(repo, base, timeout=10)
-    revision = cli.sha(repo, revision, timeout=10)
-    output = Path(out).expanduser().resolve()
-    if output.is_relative_to(repo):
-        raise ValueError("keep triage evidence outside the product checkout")
-    if not 1 <= timeout <= 3600 or not 128 <= memory_mb <= 8192:
-        raise ValueError("time and memory bounds are 1–3600 s and 128–8192 MiB")
-    _image_reference(image)
-    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", base, revision],
-                      capture_output=True, timeout=10).returncode:
-        raise ValueError("comparison requires a candidate descended from the selected baseline")
+def _inputs(manifest, helpers, journey, oracle, oracle_marker, oracle_failure_marker):
     contract = project_verify._load_contract(manifest)
     doctor = contract["doctor"]
     primary = next((item for item in contract["features"] if item["id"] == journey), None)
     if not primary or not primary.get("failure_marker"):
         raise ValueError("select a journey with a declared observed failure marker")
-    if derive is None:
-        rebuild = existing_fix is not None and bool(primary.get("browser")) and contract["project"] == "openclaw"
-        def derive(repo, base, revision, image, timeout):
-            return _derive(repo, base, revision, image, timeout, rebuild_openclaw_ui=rebuild)
     known_markers = {item[key] for item in (primary, doctor) for key in ("marker", "failure_marker") if key in item}
     if (not re.fullmatch(r"[A-Z][A-Z0-9_]{0,92}_PASS", oracle_marker)
             or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,92}_FAIL", oracle_failure_marker)
@@ -175,6 +157,30 @@ def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, orac
     digests = {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
     alternate = {key: value for key, value in primary.items() if key not in ("args", "browser", "screenshot")}
     alternate.update(helper=oracle_name, marker=oracle_marker, failure_marker=oracle_failure_marker, screenshot=False)
+    return contract['project'], doctor, primary, alternate, inputs, digests
+
+
+def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, oracle_marker, oracle_failure_marker,
+        out, timeout=600, memory_mb=3328, sandbox=run_sandbox, attester=workflow._verified_image, derive=None,
+        existing_fix=None):
+    repo = Path(repo).expanduser().resolve(strict=True)
+    base = cli.sha(repo, base, timeout=10)
+    revision = cli.sha(repo, revision, timeout=10)
+    output = Path(out).expanduser().resolve()
+    if output.is_relative_to(repo):
+        raise ValueError("keep triage evidence outside the product checkout")
+    if not 1 <= timeout <= 3600 or not 128 <= memory_mb <= 8192:
+        raise ValueError("time and memory bounds are 1–3600 s and 128–8192 MiB")
+    _image_reference(image)
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", base, revision],
+                      capture_output=True, timeout=10).returncode:
+        raise ValueError("comparison requires a candidate descended from the selected baseline")
+    project, doctor, primary, alternate, inputs, digests = _inputs(
+        manifest, helpers, journey, oracle, oracle_marker, oracle_failure_marker)
+    if derive is None:
+        rebuild = existing_fix is not None and bool(primary.get("browser")) and project == "openclaw"
+        def derive(repo, base, revision, image, timeout):
+            return _derive(repo, base, revision, image, timeout, rebuild_openclaw_ui=rebuild)
     output.mkdir(mode=0o700, parents=True)
     bundle = output / "frozen"
     bundle.mkdir(mode=0o700)

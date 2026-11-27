@@ -833,6 +833,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         raise AutopilotError('issue must be nonempty and at most 100000 characters')
     state_path = task.parent / 'autopilot.json'
     data = cli.read(task)
+    if 'benny_reproduction' in data:
+        raise AutopilotError('Benny repair needs a dedicated launch with a fresh report ownership check')
     from workbench import swarm
     try:
         run_control.admit(task, AutopilotError)

@@ -1,10 +1,10 @@
 ---
 name: reproduce-and-fix-issues
-description: Reproduce a reported behavior and independently verify the existing GitHub fix in offline Docker.
+description: Reproduce a trusted report and independently verify a candidate in offline Docker.
 disable-model-invocation: true
 ---
 
-# Verify an existing fix
+# Reproduce a report and verify the fix
 
 ## Start from a Slack report
 
@@ -27,7 +27,7 @@ python3 -m workbench.benny verify --token-file "$SLACK_KEY" --receipt "$ROUTE" \
   --out "$NEW_EVIDENCE_DIR"
 ```
 
-Keep the frozen route and evidence outside the target checkout. A source change retains the runtime verdict while withholding confirmation of that report. `eligible-for-reproduction` is an intake result. The command does not create a patch from it.
+Keep the frozen route and evidence outside the target checkout. A source change retains the runtime verdict while withholding confirmation of that report. `eligible-for-reproduction` is an intake result. Use the new fault entry below for that route.
 
 ## Start from a GitHub artifact
 
@@ -48,4 +48,35 @@ A result is `confirmed` only when both probes see the fault twice on the baselin
 
 The output contains the frozen report and helper digests, raw baseline and candidate receipts, cleanup status, optional PNGs, and the final artifact recheck. Keep private evidence outside the target checkout. See the [OpenClaw CLI example](examples/openclaw-202294/README.md).
 
-The source receipt includes the thread attachment IDs. [Triage](../triage-issue-reports/SKILL.md#attachments) can collect and inspect those files. Ambiguous ownership outside the supported phrases needs separate review. The coordinator can [post the reviewed triage verdict](../triage-issue-reports/SKILL.md#apply-a-reviewed-handoff). Reproduction follow-ups, verification recordings and routing a new fix to the delivery gate remain separate work.
+The source receipt includes the thread attachment IDs. [Triage](../triage-issue-reports/SKILL.md#attachments) can collect and inspect those files. Ambiguous ownership outside the supported phrases needs separate review. The coordinator can [post the reviewed triage verdict](../triage-issue-reports/SKILL.md#apply-a-reviewed-handoff).
+
+## Reproduce an unclaimed fault
+
+The selected route must have the `eligible-for-reproduction` verdict. Pin a local revision and its source-attested image, then use the same manifest, doctor and separate probe described above. The coordinator rereads the original thread before and after the offline runs. Both probes must observe the exact symptom twice, each in a fresh read-only container. The doctor reruns after each failure. Keep the report, driver and raw receipts together outside the target checkout.
+
+```sh
+python3 -m workbench.benny_reproduce reproduce --token-file "$SLACK_KEY" \
+  --route "$ROUTE" --sha256 "$ROUTE_SHA" --repo "$TARGET_REPO" \
+  --revision "$BASE_COMMIT" --image "$BASE_IMAGE" --manifest "$MANIFEST" \
+  --helpers "$HELPERS" --journey "$JOURNEY" --oracle "$ORACLE" \
+  --oracle-marker OBSERVE_PASS --oracle-failure-marker OBSERVE_FAIL --out "$NEW_REPRO_DIR"
+```
+
+Hash the reproduction `result.json` and pass its path and SHA-256 to the next step. A healthy baseline, a crash without the exact symptom, incomplete evidence or a changed thread does not authorize repair. Keep the files for diagnosis.
+
+```sh
+python3 -m workbench.benny_reproduce verify-candidate --receipt "$REPRO_RESULT" \
+  --sha256 "$REPRO_SHA" --revision "$CANDIDATE_COMMIT" --out "$NEW_CANDIDATE_DIR"
+```
+
+The candidate must descend from the approved baseline. The runner derives the candidate offline from the same baseline image, holds the drivers and settings fixed, and reruns both probes twice. All runs must pass in distinct containers. `verified` describes runtime evidence for the selected revision.
+
+For a non-UI report, the coordinator can prepare a paused causal repair task once the claim window has elapsed. Supply one to four precise searches for an existing GitHub fix. An open or merged matching PR, incomplete search or new thread activity stops intake.
+
+```sh
+python3 -m workbench.benny_reproduce prepare-repair --token-file "$SLACK_KEY" \
+  --receipt "$REPRO_RESULT" --sha256 "$REPRO_SHA" --fix-search "$FIX_SEARCH_PHRASE" \
+  --task-id "$TASK_ID" --tasks-root "$TASKS_ROOT" --workspaces-root "$WORKSPACES_ROOT"
+```
+
+Paused intake fixes the baseline and enables the root-cause requirement. A dedicated repair launch and draft-only PR delivery still need integration. Browser repair intake also needs independent review of the recording.
