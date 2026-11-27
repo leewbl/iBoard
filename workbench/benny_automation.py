@@ -20,6 +20,7 @@ TRIAGE_OPTIONS = {'selections', 'terms', 'routing_map', 'seconds', 'model_name',
 REPRO_OPTIONS = {'image', 'manifest', 'helpers', 'journey', 'oracle', 'oracle_marker', 'oracle_failure_marker', 'memory_mb'}
 VISUAL_OPTIONS = {'baseline_visible', 'candidate_visible'}
 HANDOFF_SECONDS = 90
+REPRO_CHECKPOINTS = {'reproducing', 'prepare-repair', 'repair'}
 ERRORS = (*project_verify.ERRORS, autopilot.AutopilotError, delivery.DeliveryError, publish.PublishError, start.StartError)
 
 
@@ -180,7 +181,38 @@ def _triage(route, opts, *, project, rules, slack, writer, out, checkpoint):
     return {'status': result['status'], 'triage': reference}
 
 
-def _reproduce(route, opts, *, project, rules, slack, out, prior=None):
+def _retained_reproduction(path, route, project, prior):
+    if path.resolve() != path or not path.is_file():
+        raise ValueError('interrupted Benny reproduction has no complete result to resume')
+    reference = _ref(path)
+    if prior.get('phase') != 'reproducing' and prior.get('reproduction') != reference:
+        raise ValueError('retained Benny reproduction changed before repair')
+    proof = benny_handoff._load(path, reference['sha256'], 'benny-reproduction')
+    if (proof.get('base') != project['revision'] or proof.get('checkout') != project['repo']
+            or proof.get('route') != {'path': route['receipt'], 'sha256': route['sha256']}):
+        raise ValueError('retained Benny reproduction does not match the frozen event and deployment')
+    if proof.get('status') == 'reproduced':
+        _, proof, _, _ = benny_reproduce._approved(path, reference['sha256'])
+    elif prior.get('phase') != 'reproducing' or proof.get('status') not in (
+            'not-reproduced', 'inconclusive', 'environment-blocked', 'source-unconfirmed'):
+        raise ValueError('retained Benny reproduction has an invalid result for this checkpoint')
+    return reference, proof
+
+
+def _retained_task(task, workspace, reference, proof, repair, phase):
+    if task.resolve() != task or not task.is_file() or workspace.resolve() != workspace or not workspace.is_dir():
+        raise ValueError('interrupted Benny task preparation has no complete task to resume')
+    data = cli.read(task)
+    binding = {**reference, 'base': proof['base'], 'fix_search': repair['fix_search']}
+    if (data.get('id') != task.parent.name or data.get('repo') != str(workspace)
+            or data.get('benny_reproduction') != binding
+            or data.get('base_commit') != proof['base']
+            or (phase == 'prepare-repair' and data.get('status') != 'paused')
+            or start._read_input_stage(task)['phase'] != 'ready'):
+        raise ValueError('retained Benny task does not match the approved reproduction and original input')
+
+
+def _reproduce(route, opts, *, project, rules, slack, out, checkpoint, prior=None):
     if route['status'] not in ('verify-existing', 'eligible-for-reproduction'):
         return {'status': route['status']}
     runtime = {key: opts[key] for key in REPRO_OPTIONS if key in opts}
@@ -192,17 +224,16 @@ def _reproduce(route, opts, *, project, rules, slack, out, prior=None):
         confirmed = benny.verify(slack=slack, receipt=route['receipt'], sha256=route['sha256'],
                                  out=out/'existing', **runtime)
         return {'status': confirmed['outcome'], 'existing': _ref(out/'existing/result.json')}
+    path = out/'reproduction/result.json'
     if prior:
-        reference = prior['reproduction']
-        if reference != _ref(out/'reproduction/result.json'):
-            raise ValueError('waiting Benny reproduction changed before repair')
-        _, proof, _, _ = benny_reproduce._approved(reference['path'], reference['sha256'])
+        reference, proof = _retained_reproduction(path, route, project, prior)
     else:
+        checkpoint(phase='reproducing')
         proof = benny_reproduce.reproduce(slack=slack, route=route['receipt'], sha256=route['sha256'],
                                            revision=project['revision'], out=out/'reproduction',
                                            seconds=rules['verification_seconds'], **runtime,
                                            **{key: opts[key] for key in VISUAL_OPTIONS | {'claim_seconds'} if key in opts})
-        reference = _ref(out/'reproduction/result.json')
+        reference = _ref(path)
     result = {'status': proof['status'], 'reproduction': reference}
     repair = opts.get('repair')
     if not repair or proof['status'] != 'reproduced':
@@ -210,13 +241,25 @@ def _reproduce(route, opts, *, project, rules, slack, out, prior=None):
     ready_at = datetime.fromisoformat(proof['finished_at']).timestamp() + proof['claim_seconds']
     if time.time() < ready_at:
         return {**result, 'status': 'waiting-claim', 'ready_at': datetime.fromtimestamp(ready_at, timezone.utc).isoformat()}
-    prepared = benny_reproduce.prepare_repair(
-        slack=slack, receipt=reference['path'], sha256=reference['sha256'], task_id='benny-' + _hash(out.name)[:32],
-        tasks_root=out/'tasks', workspaces_root=out/'worktrees', fix_search=repair['fix_search'],
-        **{key: repair[key] for key in ('seconds', 'iterations') if key in repair})
+    task_id = 'benny-' + _hash(out.name)[:32]
+    task = out/'tasks'/task_id/'task.json'
+    phase = prior.get('phase') if prior else None
+    if phase in ('prepare-repair', 'repair'):
+        if prior.get('task') != str(task):
+            raise ValueError('Benny checkpoint refers to a different repair task')
+        _retained_task(task, out/'worktrees'/task_id, reference, proof, repair, phase)
+    else:
+        checkpoint(phase='prepare-repair', reproduction=reference, task=str(task))
+        prepared = benny_reproduce.prepare_repair(
+            slack=slack, receipt=reference['path'], sha256=reference['sha256'], task_id=task_id,
+            tasks_root=out/'tasks', workspaces_root=out/'worktrees', fix_search=repair['fix_search'],
+            **{key: repair[key] for key in ('seconds', 'iterations') if key in repair})
+        if Path(prepared['task']) != task:
+            raise ValueError('Benny prepared a task outside its dispatch checkpoint')
+    checkpoint(phase='repair', reproduction=reference, task=str(task))
     run = benny_draft.deliver if repair.get('draft') else benny_repair.run_repair
-    completed = run(task=prepared['task'], slack=slack)
-    return {**result, 'status': completed['status'], 'task': prepared['task'], 'repair': completed}
+    completed = run(task=str(task), slack=slack)
+    return {**result, 'status': completed['status'], 'task': str(task), 'repair': completed}
 
 
 def work(*, repo, rules, state, policy, event_id, slack, writer=None):
@@ -246,7 +289,9 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None):
             if any(prior.get(name) != value for name, value in expected.items()):
                 raise ValueError('Benny scope or worker policy changed after work started')
             if prior['status'] == 'running':
-                if role != 'triage' or prior.get('phase') != 'handoff' or not opts.get('apply_verdict'):
+                can_resume = (prior.get('phase') == 'handoff' and opts.get('apply_verdict') if role == 'triage'
+                              else prior.get('phase') in REPRO_CHECKPOINTS)
+                if not can_resume:
                     raise ValueError('an interrupted Benny dispatch requires inspection of its preserved files')
                 if prior['event'] != event_id:
                     return prior
@@ -270,15 +315,18 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None):
             cli.write(record_path, saved)
             return saved
 
-        if prior and prior['status'] == 'running':
-            result = _apply_handoff(prior, slack=slack, writer=writer)
-        else:
-            checkpoint()
-            if role == 'triage':
+        if role == 'triage':
+            if prior and prior['status'] == 'running':
+                result = _apply_handoff(prior, slack=slack, writer=writer)
+            else:
+                checkpoint()
                 result = _triage(route, opts, project=project, rules=rules, slack=slack, writer=writer, out=directory,
                                  checkpoint=checkpoint)
-            else:
-                result = _reproduce(route, opts, project=project, rules=rules, slack=slack, out=directory, prior=prior)
+        else:
+            if not prior and route['status'] != 'eligible-for-reproduction':
+                checkpoint()
+            result = _reproduce(route, opts, project=project, rules=rules, slack=slack, out=directory,
+                                checkpoint=checkpoint, prior=prior)
         cli.write(record_path, {**record, **result})
         return {**record, **result}
 

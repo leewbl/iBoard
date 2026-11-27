@@ -201,6 +201,22 @@ class BennyDraftTests(unittest.TestCase):
             self.deliver()
         self.assertEqual(self.open.requests, ['push', 'create'])
 
+    def test_restart_reconciles_created_draft_when_worker_exits_before_reading_remote(self):
+        create = self.open.create
+
+        def interrupted(*args, **kwargs):
+            create(*args, **kwargs)
+            raise KeyboardInterrupt
+
+        with patch.object(self.open, 'create', side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.deliver()
+        self.assertEqual(cli.read(self.journal)['phase'], 'create-intent')
+        result = self.deliver()
+        self.assertEqual((result['status'], result['head'], result['pr']), ('draft', self.head, 27))
+        self.assertEqual(cli.read(self.journal)['phase'], 'draft')
+        self.assertEqual(self.open.requests, ['push', 'create'])
+
     def test_requires_openclaw_gate_in_the_same_independent_review(self):
         with patch.object(benny_draft.verify_openclaw, 'require',
                           side_effect=benny_draft.verify_openclaw.GatewayGateError('offline Gateway receipt missing')):

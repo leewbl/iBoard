@@ -1,17 +1,20 @@
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import hmac
 from http.client import HTTPConnection
 import json
 from pathlib import Path
+import shutil
+import subprocess
 from threading import Thread
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from test_benny import CHANNEL, PR, ROOT, RULES, TRIAGE, WORKSPACE, reply
 import test_benny_triage
-from workbench import benny, benny_automation, benny_deploy, benny_events, benny_triage, cli
+import test_project_triage
+from workbench import benny, benny_automation, benny_deploy, benny_draft, benny_events, benny_reproduce, benny_triage, cli, start
 
 
 APP = 'A123IBOARD'
@@ -70,6 +73,44 @@ class BennyAutomationTests(unittest.TestCase):
         args = dict(repo=self.source.repo, rules=RULES, state=self.store, policy=self.policy, event_id=ident,
                     slack=self.source.fixture.slack)
         return benny_automation.work(**(args | overrides))
+
+    def queue_repair(self, event, *, claim_seconds=0):
+        marker = reply(1, '[benny:bug]', user=TRIAGE)
+        self.source.fixture.pages[0].append(marker)
+        self.assertEqual(self.receive(self.payload(event, marker))[0], 200)
+        runtime = test_project_triage.ProjectTriageTests()
+        self.addCleanup(runtime.doCleanups)
+        runtime.setUp()
+        runtime.repo = self.source.repo
+        runtime.base = cli.sha(runtime.repo, 'HEAD')
+        runtime.states.update({(test_project_triage.BASE_IMAGE, probe): 'observed' for probe in ('MAIN', 'ORACLE')})
+        self.opts['reproduce'].update(manifest=str(runtime.manifest), helpers=str(runtime.helpers),
+                                      oracle=str(runtime.oracle), journey='main', oracle_marker='ORACLE_PASS',
+                                      oracle_failure_marker='ORACLE_FAIL', claim_seconds=claim_seconds,
+                                      repair={'fix_search': ['rename label'], 'draft': True})
+        cli.write(self.policy, self.opts)
+        real_reproduce, real_prepare = benny_reproduce.reproduce, benny_reproduce.prepare_repair
+
+        def reproduce(**options):
+            return real_reproduce(**options, sandbox=runtime.sandbox, attester=runtime.attester)
+
+        def prepare(**options):
+            real_run, real_which = subprocess.run, shutil.which
+
+            def inspect(command, *args, **kwargs):
+                if command[:3] == ['docker', 'image', 'inspect']:
+                    self.assertEqual(command[3], test_project_triage.BASE_IMAGE)
+                    image = json.dumps([{'Id': test_project_triage.BASE_IMAGE}]).encode()
+                    return subprocess.CompletedProcess(command, 0, image, b'')
+                return real_run(command, *args, **kwargs)
+
+            def which(program, *args, **kwargs):
+                return program if program in ('claude', 'docker') else real_which(program, *args, **kwargs)
+
+            with patch.object(start.subprocess, 'run', side_effect=inspect), patch.object(start.shutil, 'which', side_effect=which):
+                return real_prepare(**options, tracker=self.source.tracker)
+
+        return runtime, reproduce, prepare
 
     def test_http_enqueue_deduplicates_and_runs_real_thread_triage_outside_receiver(self):
         self.assertEqual(self.receive({'type': 'url_verification', 'challenge': 'challenge123'}),
@@ -190,39 +231,129 @@ class BennyAutomationTests(unittest.TestCase):
         self.assertEqual(len(self.source.fixture.sent), 1)
 
     def test_claim_wait_reuses_original_reproduction_before_draft(self):
-        marker = reply(1, '[benny:bug]', user=TRIAGE)
-        self.source.fixture.pages[0].append(marker)
         event = 'Ev' + 'A' * 62
-        self.receive(self.payload(event, marker))
-        self.opts['reproduce']['repair'] = {'fix_search': ['rename label'], 'draft': True}
-        cli.write(self.policy, self.opts)
-        now = time.time()
-
-        def reproduced(*, out, **options):
-            out.mkdir()
-            proof = {'schema': cli.SCHEMA, 'status': 'reproduced', 'finished_at':
-                     datetime.fromtimestamp(now, timezone.utc).isoformat(), 'claim_seconds': 30}
-            cli.write(out/'result.json', proof)
-            return proof
-
-        def approved(path, sha256):
-            self.assertEqual(cli.digest(path), sha256)
-            return Path(path), cli.read(path), {}, set()
-
-        with patch.object(benny_automation.benny_reproduce, 'reproduce', side_effect=reproduced) as reproduce, \
-             patch.object(benny_automation.benny_reproduce, '_approved', side_effect=approved), \
-             patch.object(benny_automation.benny_reproduce, 'prepare_repair',
-                          return_value={'task': str(self.root/'task.json')}) as prepare, \
-             patch.object(benny_automation.benny_draft, 'deliver', return_value={'status': 'draft-confirmed'}) as draft:
+        _, reproduce, prepare = self.queue_repair(event, claim_seconds=30)
+        with patch.object(benny_reproduce, 'reproduce', side_effect=reproduce) as run, \
+             patch.object(benny_reproduce, 'prepare_repair', side_effect=prepare) as prepared, \
+             patch.object(benny_draft, 'deliver', return_value={'status': 'draft'}) as draft:
             waiting = self.work(event)
             self.assertEqual(waiting['status'], 'waiting-claim')
             self.assertEqual(self.work(event), waiting)
             draft.assert_not_called()
-            with patch.object(benny_automation.time, 'time', return_value=now + 31):
+            ready = datetime.fromisoformat(waiting['ready_at']).timestamp()
+            with patch.object(benny_automation.time, 'time', return_value=ready + 1):
                 result = self.work(event)
                 self.assertEqual(self.work(event), result)
-            self.assertEqual(result['status'], 'draft-confirmed')
+            self.assertEqual(result['status'], 'draft')
             self.assertEqual(result['reproduction'], waiting['reproduction'])
-            self.assertLessEqual(len(prepare.call_args.kwargs['task_id']), 64)
-            reproduce.assert_called_once()
+            self.assertLessEqual(len(prepared.call_args.kwargs['task_id']), 64)
+            run.assert_called_once()
             draft.assert_called_once()
+
+    def test_completed_reproduction_survives_worker_loss(self):
+        event = 'Ev456BASELINE'
+        runtime, reproduce, _ = self.queue_repair(event, claim_seconds=30)
+
+        def completed_then_interrupted(**options):
+            self.assertEqual(reproduce(**options)['status'], 'reproduced')
+            raise InterruptedError('stopped after baseline receipt')
+
+        with patch.object(benny_reproduce, 'reproduce', side_effect=completed_then_interrupted) as run, \
+             patch.object(benny_reproduce, 'prepare_repair') as prepare:
+            with self.assertRaises(InterruptedError):
+                self.work(event)
+            report = self.work(event)
+            run.assert_called_once()
+        self.assertEqual(report['status'], 'waiting-claim')
+        self.assertEqual(runtime.calls.count((test_project_triage.BASE_IMAGE, 'MAIN')), 2)
+        self.assertEqual(runtime.calls.count((test_project_triage.BASE_IMAGE, 'ORACLE')), 2)
+        prepare.assert_not_called()
+
+    def test_interrupted_reproduction_with_no_result_blocks_replay(self):
+        event = 'Ev456PARTIAL'
+        self.queue_repair(event)
+        with patch.object(benny_reproduce, 'reproduce', side_effect=InterruptedError('stopped before baseline')) as run, \
+             patch.object(benny_reproduce, 'prepare_repair') as prepare:
+            with self.assertRaises(InterruptedError):
+                self.work(event)
+            with self.assertRaises((OSError, ValueError)):
+                self.work(event)
+        run.assert_called_once()
+        prepare.assert_not_called()
+
+    def test_changed_probe_after_interruption_blocks_repair(self):
+        event = 'Ev456ALTERED'
+        _, reproduce, _ = self.queue_repair(event)
+
+        def changed_then_interrupted(**options):
+            self.assertEqual(reproduce(**options)['status'], 'reproduced')
+            observed = options['out']/'baseline/main.primary-1.json'
+            observed.write_text(observed.read_text() + '\n')
+            raise InterruptedError('stopped with changed probe receipt')
+
+        with patch.object(benny_reproduce, 'reproduce', side_effect=changed_then_interrupted) as run, \
+             patch.object(benny_reproduce, 'prepare_repair') as prepare:
+            with self.assertRaises(InterruptedError):
+                self.work(event)
+            with self.assertRaisesRegex(ValueError, 'frozen sandbox receipt'):
+                self.work(event)
+        run.assert_called_once()
+        prepare.assert_not_called()
+
+    def test_dispatch_adopts_completed_task_after_preparation_interruption(self):
+        event = 'Ev456PREPARED'
+        _, reproduce, prepare = self.queue_repair(event)
+        expected = {}
+
+        def prepared_then_interrupted(**options):
+            expected.update(prepare(**options))
+            start._read_input_stage(Path(expected['task']))
+            raise InterruptedError('stopped after native task preparation')
+
+        with patch.object(benny_reproduce, 'reproduce', side_effect=reproduce) as run, \
+             patch.object(benny_reproduce, 'prepare_repair', side_effect=prepared_then_interrupted) as prepared, \
+             patch.object(benny_draft, 'deliver', return_value={'status': 'draft'}) as draft:
+            with self.assertRaises(InterruptedError):
+                self.work(event)
+            draft.assert_not_called()
+            result = self.work(event)
+        self.assertEqual(result['task'], expected['task'])
+        self.assertEqual(result['status'], 'draft')
+        self.assertEqual(Path(draft.call_args.kwargs['task']), Path(expected['task']))
+        run.assert_called_once()
+        prepared.assert_called_once()
+
+    def test_dispatch_reconciles_same_draft_after_interruption_before_settling_event(self):
+        event = 'Ev456DRAFT'
+        _, reproduce, prepare = self.queue_repair(event)
+        deliveries = []
+        watch_options = dict(repo=self.source.repo, rules=RULES, state=self.store, policy=self.policy,
+                             slack=self.source.fixture.slack, seconds=3, max_events=1, poll_seconds=1)
+        processed = self.store/'processed'/f'{event}.json'
+
+        def draft_return(*, task, **_options):
+            task = Path(task)
+            accepted = {'schema': cli.SCHEMA, 'status': 'draft', 'pr': 27}
+            receipt = task.with_name('fixture-draft.json')
+            deliveries.append(task)
+            if receipt.exists():
+                return cli.read(receipt)
+            cli.write(receipt, accepted)
+            raise KeyboardInterrupt('stopped after draft confirmation')
+
+        with patch.object(benny_reproduce, 'reproduce', side_effect=reproduce) as run, \
+             patch.object(benny_reproduce, 'prepare_repair', side_effect=prepare) as prepared, \
+             patch.object(benny_draft, 'deliver', side_effect=draft_return):
+            with self.assertRaises(KeyboardInterrupt):
+                benny_automation.watch(**watch_options)
+            self.assertFalse(processed.exists())
+            summary = benny_automation.watch(**watch_options)
+            result = self.work(event)
+            self.assertEqual(self.work(event), result)
+        self.assertEqual(summary['events'], {event: 'draft'})
+        self.assertEqual(cli.read(processed), {'schema': cli.SCHEMA, 'event': event, 'status': 'draft'})
+        self.assertEqual(list(processed.parent.glob('*.json')), [processed])
+        self.assertEqual((result['status'], result['repair']['pr']), ('draft', 27))
+        self.assertEqual(deliveries, [Path(result['task'])] * 2)
+        run.assert_called_once()
+        prepared.assert_called_once()
