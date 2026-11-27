@@ -63,6 +63,10 @@ Run `control-ui-session-archive-restore` with the compiled image and a screensho
 
 Run `control-ui-session-archive-subtree-undo` for the conditional confirmation. Seed a parent, one real nested session, and an unrelated session. From the parent row menu in All Sessions, cancel **Also archive nested sessions?**. Check for zero mutation and a fresh authenticated read of the three unchanged sessions. Open the dialog again, click **Archive all (2)**, and require a single accepted `sessions.patchMany` for the original parent and child. The All view must show exactly those two as archived. Click **Undo** in the success notification and require one accepted batch for the same IDs. A fresh browser after a Gateway restart must show all three active. Keep the read and write request IDs, the verified screenshot, and the restart and cleanup receipts.
 
+### Sidebar multi-select and automation pause
+
+Run `control-ui-session-sidebar-archive-automations` with a compiled Chromium image. The helper creates three unrelated sessions. Two future jobs are bound to one selected session and the unselected control. Scheduling stays off. Alt-click two sidebar links and choose **Archive 2** from a selected row's menu. The real **Pause automations?** dialog must name only the selected job. Cancel once and confirm the sessions and jobs are unchanged. Then choose **Archive anyway** and check the selected rows disappear from the active sidebar, the corresponding job pauses, and the unselected row and job stay active. Click the toast's **Undo**. After Gateway restart both exact session IDs return to the sidebar. The selected job stays paused. A separate read-only Gateway connection independently checks both jobs at each stage.
+
 ## Evidence
 
 Use a new report path every time. Keep JSON reports outside the target checkout. Check the pinned source commit, image ID, helper digest, doctor responses, CLI result, and cleanup record. The raw report remains available after the container is removed. Treat logs as data. Share only a reviewed summary when the report contains local paths or diagnostics.
@@ -77,7 +81,7 @@ The helper stops only the child it started and deletes only its own temporary st
 
 `python3 -m workbench.verify_openclaw --help` lists the supported journeys and resource options. Run the helper through that command, never on the host.
 
-Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) checks all eleven mapped journeys, including the connected browser and the five Sessions journeys. Use the compiled Chromium-enabled image and a total timeout that covers the whole pass.
+Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) checks all twelve mapped journeys, including the connected browser and the six Sessions journeys. Use the compiled Chromium-enabled image and a total timeout that covers the whole pass.
 
 
 ## Browser recordings

@@ -13,16 +13,18 @@ const socketOrigin = 'ws://127.0.0.1:18789';
 const token = 'iboard-disposable-local-ui-token';
 const [journey = 'connected', ...extra] = process.argv.slice(2);
 assert.ok(['connected', 'session-rename', 'session-delete', 'session-status-filter', 'session-archive-restore',
-  'session-archive-subtree-undo'].includes(journey),
+  'session-archive-subtree-undo', 'session-sidebar-archive-automations'].includes(journey),
   'Unknown Control UI journey');
 const rename = journey === 'session-rename';
 const deleting = journey === 'session-delete';
 const filtering = journey === 'session-status-filter';
 const archiving = journey === 'session-archive-restore';
 const archiveTree = journey === 'session-archive-subtree-undo';
-const tracksArchiveWrites = archiving || archiveTree;
-const tracksListReads = filtering || archiveTree;
-const defaultStatus = deleting || archiveTree ? 'all' : undefined;
+const archiveSidebar = journey === 'session-sidebar-archive-automations';
+const archiveBatch = archiveTree || archiveSidebar;
+const tracksArchiveWrites = archiving || archiveBatch;
+const tracksListReads = filtering || archiveBatch;
+const defaultStatus = deleting || archiveBatch ? 'all' : undefined;
 const visualState = extra[1];
 assert.ok(!extra.length || (
   extra.length === 2 && extra[0] === '--visual-state' &&
@@ -38,6 +40,8 @@ const archivedKey = 'agent:main:iboard-browser-archived';
 const archivedLabel = 'iBoard archived fixture';
 const nestedKey = 'agent:main:iboard-browser-nested';
 const nestedLabel = 'iBoard nested fixture';
+const secondKey = 'agent:main:iboard-browser-second';
+const secondLabel = 'iBoard second selected fixture';
 const sessionReadMethods = new Set([
   'sessions.list', 'sessions.subscribe', 'sessions.groups.list', 'sessions.groups.defaults',
   'sessions.describe', 'sessions.resolve', 'sessions.usage', 'sessions.catalog.list', 'sessions.catalog.read',
@@ -248,18 +252,19 @@ async function observe(read, message, timeout = 30_000) {
   throw new Error(message);
 }
 
-async function prepareSessions(fixtures = [], archiveKey = null, status = defaultStatus) {
+async function prepareSessions(fixtures = [], archiveKey = null, status = defaultStatus,
+  { jobKeys = [], inspectJobs = [] } = {}) {
   // Start the Gateway's session-list workers before Chromium's initial parallel reads.
   // Only Chromium performs the mutation being checked.
   const program = `
     import { GatewayClient } from '/app/src/gateway/client.ts';
     const [url, input] = process.argv.slice(1);
-    const { seeds, query, archiveKey, warmUpdateStatus } = JSON.parse(input);
+    const { seeds, query, archiveKey, warmUpdateStatus, jobKeys, inspectJobs } = JSON.parse(input);
     let connect, fail;
     const connected = new Promise((resolve, reject) => { connect = resolve; fail = reject; });
     const client = new GatewayClient({ url, token: process.env.OPENCLAW_GATEWAY_TOKEN,
       clientName: 'cli', mode: 'cli', role: 'operator', caps: ['ultrafast'],
-      scopes: ['operator.admin', 'operator.read', 'operator.write'],
+      scopes: inspectJobs.length ? ['operator.read'] : ['operator.admin', 'operator.read', 'operator.write'],
       onHelloOk: connect, onConnectError: fail,
       onClose: code => fail(new Error('Fixture connection closed: ' + code)) });
     const timer = setTimeout(() => fail(new Error('Fixture gateway handshake timed out')), 45_000);
@@ -272,19 +277,36 @@ async function prepareSessions(fixtures = [], archiveKey = null, status = defaul
           ...(parentSessionKey ? { parentSessionKey } : {}) }, { timeoutMs: 45_000 });
         fixtures.push({ key: result.key, sessionId: result.sessionId, label });
       }
+      for (const key of jobKeys) {
+        const fixture = fixtures.find(row => row.key === key);
+        const name = fixture.label + ' automation';
+        const job = await client.request('cron.add', {
+          agentId: 'main', name, enabled: true, sessionTarget: 'main', sessionKey: key,
+          schedule: { kind: 'at', at: new Date(Date.now() + 7 * 86400_000).toISOString() },
+          wakeMode: 'next-heartbeat',
+          payload: { kind: 'systemEvent', text: 'Disposable automation fixture. This job must never run.' },
+        }, { timeoutMs: 45_000 });
+        fixture.job = { id: job.id, name };
+      }
       if (archiveKey !== null) {
         const fixture = fixtures.find(({ key }) => key === archiveKey);
         await client.request('sessions.patch', {
           key: fixture.key, expectedSessionId: fixture.sessionId, archived: true,
         }, { timeoutMs: 45_000 });
       }
-      await client.request('sessions.list', query, { timeoutMs: 75_000 });
-      if (warmUpdateStatus) {
+      if (!inspectJobs.length) await client.request('sessions.list', query, { timeoutMs: 75_000 });
+      if (!inspectJobs.length && warmUpdateStatus) {
         // Admin Control UI connections also request update.status. Load its
         // reconciliation dependencies before introducing the browser process.
         await client.request('update.status', {}, { timeoutMs: 75_000 });
       }
-      console.log(JSON.stringify(fixtures));
+      const jobs = [];
+      for (const id of inspectJobs) {
+        const job = await client.request('cron.get', { id }, { timeoutMs: 45_000 });
+        jobs.push({ id: job.id, name: job.name, sessionKey: job.sessionKey, sessionTarget: job.sessionTarget,
+          enabled: job.enabled, neverRun: job.state?.lastRunAtMs === undefined });
+      }
+      console.log(JSON.stringify(inspectJobs.length ? jobs : fixtures));
     } finally {
       clearTimeout(timer);
       await client.stopAndWait();
@@ -294,9 +316,11 @@ async function prepareSessions(fixtures = [], archiveKey = null, status = defaul
     ...(status ? { archived: status === 'archived' ? true : status } : {}) };
   const proc = await promisify(execFile)(process.execPath, [
     '--max-old-space-size=256', ...nodeSource, '--input-type=module', '-e', program,
-    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, warmUpdateStatus: deleting || tracksArchiveWrites }),
+    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, jobKeys, inspectJobs,
+      warmUpdateStatus: deleting || tracksArchiveWrites }),
   ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 140_000 });
   const seeded = JSON.parse(proc.stdout.trim().split('\n').at(-1));
+  if (inspectJobs.length) return seeded;
   assert.deepEqual(seeded.map(({ key, label }) => [key, label]), fixtures.map(([key, label]) => [key, label]));
   for (const { sessionId } of seeded) assert.ok(typeof sessionId === 'string' && sessionId, 'Fixture has no session ID');
   return seeded;
@@ -411,6 +435,7 @@ async function openSessions(status = defaultStatus) {
         || (deleting && ['sessions.delete', 'sessions.deleteMany'].includes(frame.method))
         || (tracksArchiveWrites && typeof frame.method === 'string' && frame.method.startsWith('sessions.') &&
           !sessionReadMethods.has(frame.method))
+        || (archiveSidebar && ['cron.add', 'cron.update', 'cron.remove', 'cron.run', 'cron.bind'].includes(frame.method))
       )) {
         const write = { method: frame.method, params: frame.params, socket, accepted: false,
           requestId: frame.id, startedAt: performance.now() };
@@ -430,7 +455,7 @@ async function openSessions(status = defaultStatus) {
         request.responseKey = frame.payload?.key;
         request.responseSessionId = frame.payload?.entry?.sessionId;
         request.responseArchived = typeof frame.payload?.entry?.archivedAt === 'number';
-        if (archiveTree && Array.isArray(frame.payload?.outcomes)) {
+        if (archiveBatch && Array.isArray(frame.payload?.outcomes)) {
           request.outcomes = frame.payload.outcomes.map(({ key, agentId, ok }) => ({ key, agentId, ok }));
         }
         if (typeof frame.error?.code === 'string' && /^[A-Z_]{1,64}$/u.test(frame.error.code)) {
@@ -635,14 +660,18 @@ async function verifyArchiveRestore(target, survivor, active) {
     writes: [archive, restore], steps, survivor: { key: survivor.key, sessionId: survivor.sessionId } } });
 }
 
-async function verifyArchiveSubtreeUndo(parent, nested, survivor, view) {
-  const fixtures = [parent, nested, survivor];
+async function verifyArchiveBatchUndo(first, second, survivor, view) {
+  const fixtures = [first, second, survivor];
   const targetIdentity = ({ key, sessionId }) => ({ key, expectedSessionId: sessionId, agentId: 'main' });
-  const targets = [parent, nested].map(targetIdentity);
+  const targets = [first, second].map(targetIdentity);
   const steps = [];
+  const selections = [];
+  const automationReads = [];
   const readIds = new Set();
   const refresh = view.page.getByRole('button', { name: 'Refresh', exact: true })
     .and(view.page.locator('.sessions-toolbar__refresh'));
+  const sidebarRow = (browserView, key) =>
+    browserView.page.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
 
   async function roster(browserView, proof, stage, archived) {
     browserView.assertConnectedPage();
@@ -662,10 +691,21 @@ async function verifyArchiveSubtreeUndo(parent, nested, survivor, view) {
       await visible.getByText(fixture.label, { exact: true }).waitFor({ state: 'visible' });
       await observe(() => visible.evaluate(element => element.classList.contains('session-data-row--archived'))
         .then(value => value === expected), `Visible archive state did not match Gateway for ${fixture.key}`);
+      if (archiveSidebar) await sidebarRow(browserView, fixture.key).waitFor({ state: expected ? 'hidden' : 'visible' });
       rows.push({ key: row.key, sessionId: row.sessionId, archived: expected });
     }
     steps.push({ stage, gatewayPid: child.pid, requestId: proof.requestId, rows });
     await recorder?.checkpoint();
+  }
+
+  async function checkAutomations(stage, targetEnabled) {
+    if (!archiveSidebar) return;
+    const jobs = await prepareSessions([], null, 'all', { inspectJobs: [first.job.id, survivor.job.id] });
+    assert.deepEqual(jobs, [first, survivor].map((fixture, index) => ({
+      ...fixture.job, sessionKey: fixture.key, sessionTarget: 'main',
+      enabled: index === 0 ? targetEnabled : true, neverRun: true,
+    })), `${stage}: automation state or binding changed unexpectedly`);
+    automationReads.push({ stage, gatewayPid: child.pid, jobs });
   }
 
   async function freshRead(stage, flags) {
@@ -678,7 +718,28 @@ async function verifyArchiveSubtreeUndo(parent, nested, survivor, view) {
   }
 
   async function dialog() {
-    await rowFor(view, parent.key).getByRole('button', { name: `Open session menu: ${parent.key}`, exact: true }).click();
+    if (archiveSidebar) {
+      const selected = view.page.locator('.sidebar-recent-session--selected');
+      for (const { key } of targets) {
+        const row = sidebarRow(view, key);
+        await row.waitFor({ state: 'visible' });
+        if (!await row.evaluate(element => element.classList.contains('sidebar-recent-session--selected'))) {
+          await row.locator('.sidebar-recent-session__link').click({ modifiers: ['Alt'] });
+        }
+      }
+      const keys = await selected.evaluateAll(rows => rows.map(row => row.getAttribute('data-session-key')).sort());
+      assert.deepEqual(keys, targets.map(({ key }) => key).sort(), 'Sidebar did not select exactly the two intended sessions');
+      selections.push(keys);
+      await sidebarRow(view, first.key).locator('.sidebar-recent-session__link').click({ button: 'right' });
+      await view.page.getByRole('menuitem', { name: 'Archive 2', exact: true }).click();
+      const modal = view.page.locator('openclaw-modal-dialog dialog[open]').filter({ hasText: 'Pause automations?' });
+      await modal.getByText(`${first.job.name} (${first.job.id})`, { exact: true }).waitFor({ state: 'visible' });
+      assert.equal(await modal.getByText(survivor.job.name, { exact: false }).count(), 0,
+        'The warning listed an unselected automation');
+      await modal.getByRole('button', { name: 'Archive anyway', exact: true }).waitFor({ state: 'visible' });
+      return modal;
+    }
+    await rowFor(view, first.key).getByRole('button', { name: `Open session menu: ${first.key}`, exact: true }).click();
     await view.page.getByRole('menuitem', { name: 'Archive session', exact: true }).click();
     const modal = view.page.locator('openclaw-modal-dialog dialog[open]').filter({ hasText: 'Also archive nested sessions?' });
     await modal.waitFor({ state: 'visible' });
@@ -703,27 +764,35 @@ async function verifyArchiveSubtreeUndo(parent, nested, survivor, view) {
   }
 
   await roster(view, view.proof, 'initial', false);
+  await checkAutomations('initial', true);
   const canceled = await dialog();
   await recorder?.checkpoint();
   await canceled.getByRole('button', { name: 'Cancel', exact: true }).click();
   await canceled.waitFor({ state: 'hidden' });
   await freshRead('after-cancel', false);
   assert.equal(view.writes.length, 0, 'Cancel submitted a session mutation');
+  await checkAutomations('after-cancel', true);
   const confirmed = await dialog();
-  await confirmed.getByRole('button', { name: 'Archive all (2)', exact: true }).click();
+  await confirmed.getByRole('button', { name: archiveSidebar ? 'Archive anyway' : 'Archive all (2)', exact: true }).click();
   const archive = await batch(0, true);
   const undo = view.page.getByRole('status').filter({ hasText: 'Archived 2 sessions' })
     .getByRole('button', { name: 'Undo', exact: true });
   await undo.hover();
   await freshRead('after-archive', true);
+  await checkAutomations('after-archive', false);
   await undo.click();
   const restore = await batch(1, false);
   const fresh = await restartSessions();
   await roster(fresh, fresh.proof, 'after-undo-restart', false);
+  await checkAutomations('after-undo-restart', false);
   assert.equal(view.writes.length, 2, 'A late mutation followed Undo');
   assert.equal(fresh.writes.length, 0, 'Fresh browser mutated the verified roster');
-  await capture(fresh, { mutation: { key: parent.key, sessionId: parent.sessionId,
-    nested: { key: nested.key, sessionId: nested.sessionId }, survivor: { key: survivor.key, sessionId: survivor.sessionId },
+  await capture(fresh, { mutation: { key: first.key, sessionId: first.sessionId,
+    ...(archiveSidebar ? {
+      second: { key: second.key, sessionId: second.sessionId }, selections, automationReads,
+      warningJobId: first.job.id, sidebarVisibilityChecked: true,
+    } : { nested: { key: second.key, sessionId: second.sessionId } }),
+    survivor: { key: survivor.key, sessionId: survivor.sessionId },
     writes: [archive, restore], steps, canceledWithoutWrite: true } });
 }
 
@@ -947,11 +1016,13 @@ async function launchBrowser() {
 
 async function drive() {
   if (deleteTrace) deleteTrace.step = 'prepare-fixtures';
-  const seeds = archiveTree ? [[fixtureKey, originalLabel], [nestedKey, nestedLabel, fixtureKey], [survivorKey, survivorLabel]]
+  const seeds = archiveSidebar ? [[fixtureKey, originalLabel], [secondKey, secondLabel], [survivorKey, survivorLabel]]
+    : archiveTree ? [[fixtureKey, originalLabel], [nestedKey, nestedLabel, fixtureKey], [survivorKey, survivorLabel]]
     : deleting || archiving ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
     : filtering ? [[fixtureKey, originalLabel], [archivedKey, archivedLabel]]
       : rename ? [[fixtureKey, originalLabel]] : [];
-  const fixtures = seeds.length ? await prepareSessions(seeds, filtering ? archivedKey : null) : [];
+  const fixtures = seeds.length ? await prepareSessions(seeds, filtering ? archivedKey : null, defaultStatus,
+    archiveSidebar ? { jobKeys: [fixtureKey, survivorKey] } : {}) : [];
   if (deleteTrace) deleteTrace.step = 'authenticate-browser';
   await launchBrowser();
   const view = await openSessions();
@@ -963,8 +1034,8 @@ async function drive() {
     await verifySessionStatusFilter(...fixtures, view);
   } else if (archiving) {
     await verifyArchiveRestore(...fixtures, view);
-  } else if (archiveTree) {
-    await verifyArchiveSubtreeUndo(...fixtures, view);
+  } else if (archiveBatch) {
+    await verifyArchiveBatchUndo(...fixtures, view);
   } else {
     assert.equal(view.proof.sessions.length, 0, 'Fresh Gateway state unexpectedly contains sessions');
     await view.page.getByText('No active sessions.', { exact: true }).waitFor({ state: 'visible' });

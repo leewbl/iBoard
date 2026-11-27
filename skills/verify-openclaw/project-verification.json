@@ -319,6 +319,25 @@
         {"path": "packages/gateway-protocol/src/session-row-fields.ts", "contains": "export function expandSessionRowFacts"},
         {"path": "packages/gateway-protocol/src/schema/sessions-create.ts", "contains": "parentSessionKey: Type.Optional(NonEmptyString)"}
       ]
+    },
+    {
+      "id": "control-ui-session-sidebar-archive-automations",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_SIDEBAR_ARCHIVE_AUTOMATIONS_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-sidebar-archive-automations"],
+      "reach": "Alt-click two independent active sessions in the sidebar, right-click an included row, then choose Archive 2.",
+      "drive": "Bind one future automation to a selected session and another to the unselected control. Cancel the warning once, reopen it and confirm Archive anyway. Use the Undo toast, then restart the Gateway.",
+      "observe": "Both warnings name only the selected session's job. Cancel causes no write. The two selected rows archive, and only the selected job pauses. Undo restores both original session IDs and sidebar rows after restart. The paused job stays disabled, the unselected job stays enabled and neither job runs.",
+      "gotchas": "Select top-level rows. Keep scheduling off and fixtures due well after the test. The read-only cron.get checks use a separate authenticated connection.",
+      "source": [
+        {"path": "ui/src/components/app-sidebar-session-navigation-logic.ts", "contains": "if (!session.isChild && event.altKey)"},
+        {"path": "ui/src/components/session-organizer-operations.runtime.ts", "contains": "await archiveSessionsWithUndo("},
+        {"path": "ui/src/components/session-automation-confirm.ts", "contains": "return readBoundAutomationNotice(request)"},
+        {"path": "src/gateway/server-methods/sessions-patch-effects.ts", "contains": "await disableCronJobsBoundToSessions({"},
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "restoreArchivedSessions(undoHost, archived, scope)"}
+      ]
     }
   ]
 }

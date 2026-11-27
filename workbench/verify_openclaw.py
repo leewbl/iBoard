@@ -26,7 +26,8 @@ SESSION_DELETE = 'control-ui-session-delete'
 SESSION_FILTER = 'control-ui-session-status-filter'
 SESSION_ARCHIVE = 'control-ui-session-archive-restore'
 SESSION_ARCHIVE_TREE = 'control-ui-session-archive-subtree-undo'
-SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE, SESSION_ARCHIVE, SESSION_ARCHIVE_TREE)
+SESSION_ARCHIVE_SIDEBAR = 'control-ui-session-sidebar-archive-automations'
+SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE, SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR)
 SESSION_JOURNEYS = (*SESSION_WRITES, SESSION_FILTER)
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
@@ -35,12 +36,13 @@ BROWSER_JOURNEYS = {
     SESSION_FILTER: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_STATUS_FILTER_PASS'),
     SESSION_ARCHIVE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RESTORE_PASS'),
     SESSION_ARCHIVE_TREE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_SUBTREE_UNDO_PASS'),
+    SESSION_ARCHIVE_SIDEBAR: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_SIDEBAR_ARCHIVE_AUTOMATIONS_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
 def _timeout(journey):
-    if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE):
+    if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR):
         return 600
     return 480 if journey in SESSION_JOURNEYS else 320
 
@@ -118,12 +120,13 @@ def _archive_evidence(mutation, readback, pids):
                for step, (state, rows), pid in zip(steps, expected, pids))
 
 
-def _archive_tree_evidence(mutation, readback, pids):
-    parent = {key: mutation[key] for key in ('key', 'sessionId')}
-    nested, survivor = mutation['nested'], mutation['survivor']
-    fixtures = (parent, nested, survivor)
+def _archive_batch_evidence(mutation, readback, pids, *, sidebar=False):
+    first = {key: mutation[key] for key in ('key', 'sessionId')}
+    second, survivor = mutation['second' if sidebar else 'nested'], mutation['survivor']
+    fixtures = (first, second, survivor)
+    second_key = 'agent:main:iboard-browser-' + ('second' if sidebar else 'nested')
     if (readback['count'] != 3 or readback['archived'] != 'all' or mutation['canceledWithoutWrite'] is not True
-            or nested['key'] != 'agent:main:iboard-browser-nested' or survivor['key'] != 'agent:main:iboard-browser-survivor'
+            or second['key'] != second_key or survivor['key'] != 'agent:main:iboard-browser-survivor'
             or not all(isinstance(row['sessionId'], str) and row['sessionId'].strip() for row in fixtures)
             or len({row['sessionId'] for row in fixtures}) != 3):
         return False
@@ -134,7 +137,7 @@ def _archive_tree_evidence(mutation, readback, pids):
     if not all(isinstance(request, str) and request.strip() for request in requests) or len(set(requests)) != 6:
         return False
     targets = sorted((dict(key=row['key'], expectedSessionId=row['sessionId'], agentId='main')
-                      for row in (parent, nested)), key=lambda row: row['key'])
+                      for row in (first, second)), key=lambda row: row['key'])
     for write, archived in zip(writes, (True, False)):
         if write['method'] != 'sessions.patchMany' or write['accepted'] is not True or write['archived'] is not archived:
             return False
@@ -153,6 +156,33 @@ def _archive_tree_evidence(mutation, readback, pids):
         for row, fixture in zip(step['rows'], fixtures):
             if (row['key'] != fixture['key'] or row['sessionId'] != fixture['sessionId']
                     or row['archived'] is not (index == 2 and fixture != survivor)):
+                return False
+    return True
+
+
+def _archive_sidebar_evidence(mutation, pids):
+    selected = sorted((mutation['key'], mutation['second']['key']))
+    if mutation['selections'] != [selected, selected] or mutation['sidebarVisibilityChecked'] is not True:
+        return False
+    reads = mutation['automationReads']
+    if not isinstance(reads, list) or len(reads) != len(mutation['steps']):
+        return False
+    if any(not isinstance(read['jobs'], list) or len(read['jobs']) != 2 for read in reads):
+        return False
+    selected_id = mutation['warningJobId']
+    survivor_id = reads[0]['jobs'][1]['id']
+    if (not all(isinstance(job_id, str) and job_id.strip() for job_id in (selected_id, survivor_id))
+            or selected_id == survivor_id):
+        return False
+    for index, (read, step) in enumerate(zip(reads, mutation['steps'])):
+        if read['gatewayPid'] != pids[int(index == 3)] or read['stage'] != step['stage']:
+            return False
+        for job, job_id, key, enabled, name in zip(read['jobs'], (selected_id, survivor_id),
+                (mutation['key'], mutation['survivor']['key']), (index < 2, True),
+                ('iBoard verification fixture automation', 'iBoard unselected fixture automation')):
+            if (job['id'] != job_id or job['name'] != name
+                    or job['sessionKey'] != key or job['sessionTarget'] != 'main'
+                    or job['enabled'] is not enabled or job['neverRun'] is not True):
                 return False
     return True
 
@@ -205,7 +235,10 @@ def _browser_evidence(report, screenshot):
         if report['journey'] == SESSION_ARCHIVE:
             return _archive_evidence(mutation, readback, pids)
         if report['journey'] == SESSION_ARCHIVE_TREE:
-            return _archive_tree_evidence(mutation, readback, pids)
+            return _archive_batch_evidence(mutation, readback, pids)
+        if report['journey'] == SESSION_ARCHIVE_SIDEBAR:
+            return (_archive_batch_evidence(mutation, readback, pids, sidebar=True)
+                    and _archive_sidebar_evidence(mutation, pids))
         if report['journey'] == SESSION_DELETE:
             survivor = mutation['survivor']
             return (readback['count'] == 1 and readback.get('archived') == 'all'
@@ -362,11 +395,21 @@ def required_journeys(data, head):
                           for path in paths)
     if archive_paths:
         selected.append(SESSION_ARCHIVE)
-    if archive_paths or any(path in ('packages/gateway-protocol/src/schema/sessions-create.ts',
-                                     'ui/src/components/session-organizer-batch-mutations.ts',
-                                     'ui/src/components/confirm-dialog-view.tsx', 'ui/src/lib/toast.ts')
-                            for path in paths):
+    shared_batch = archive_paths or any(path in (
+        'ui/src/components/session-organizer-batch-mutations.ts',
+        'ui/src/components/confirm-dialog-view.tsx', 'ui/src/lib/toast.ts', 'ui/src/lib/toast-view.tsx',
+    ) for path in paths)
+    if shared_batch or 'packages/gateway-protocol/src/schema/sessions-create.ts' in paths:
         selected.append(SESSION_ARCHIVE_TREE)
+    if shared_batch or any(path.startswith((
+        'ui/src/components/app-sidebar-session-', 'ui/src/components/sidebar-menus',
+        'ui/src/components/session-organizer-menu.', 'ui/src/components/session-organizer-operations.',
+    )) or path in (
+        'ui/src/components/session-automation-confirm.ts', 'src/cron/job-session-bindings.ts',
+        'src/gateway/session-automation-index.ts', 'src/gateway/server-methods/cron-list.ts',
+        'src/gateway/server-methods/sessions-patch-effects.ts',
+    ) for path in paths):
+        selected.append(SESSION_ARCHIVE_SIDEBAR)
     return selected
 
 
