@@ -275,6 +275,12 @@ def evidence_gate(data, expected):
         required.add('feature-doc')
     if 'verification_target' in data:
         required.update(('reproduction', 'resolution'))
+    if 'skill_authoring' in data:
+        from workbench import skill_authoring
+        try:
+            skill_authoring.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
     if data.get('regression_test') is not None:
         required.update(('tdd-red', 'tdd-green'))
     required.add('screenshot' if data['surface'] == 'ui' else 'runtime-log')

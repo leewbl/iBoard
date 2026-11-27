@@ -88,6 +88,11 @@ SCENARIOS = {
         'skills/reflect/SKILL.md', 'reflect collect',
         'Cited edits, rejected findings, an executable-check backlog and a local application receipt',
         'Review the destinations and select the exact edit IDs before applying them.'),
+    'author-skill': Scenario(
+        'Author or revise a skill and verify it before opening a PR',
+        'skills/poteto-mode/playbooks/authoring-a-skill.md', 'skills/author-skill/SKILL.md', 'skill_authoring check',
+        'Exact-commit metadata, link checks, and retained offline structural results',
+        'Use the normal iBoard publication gate after attaching the successful skill receipt.'),
     'recall': Scenario(
         'Recover project decisions and outstanding work from previous chats', 'skills/recall/SKILL.md',
         'skills/recall/SKILL.md', 'recall collect',

@@ -432,6 +432,12 @@ def _pr_body(data, head):
                  f'each frozen state: {", ".join(states)}. Evidence SHA-256 `{proof["sha256"]}`.\n')
     if data.get('kind') == 'feature':
         body += f'\n## Functional documentation\n\n[View documentation at the verified commit]({_feature_doc_link(data, head)})\n'
+    if 'skill_authoring' in data:
+        from workbench import skill_authoring
+        proof = skill_authoring.require(data, head)
+        body += ('\n## Skill verification\n\n'
+                 f'Checked committed metadata and references with {proof["probes"]} offline structural runs. '
+                 f'Evidence SHA-256 `{proof["sha256"]}`.\n')
     if data.get('kind') == 'refactor':
         from workbench import refactor, refactor_delivery
         try:
