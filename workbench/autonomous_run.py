@@ -225,8 +225,9 @@ def _attached_run(plan_path, plan_digest, *, once, reader, resume, observe_ci, s
                 record('recovered', phase=state['phase'])
             elif journal.get('in_flight') and not state.get('ci_wait') and state['phase'] != 'complete':
                 last = data.get('events', [])[-1:]
-                released = held and held['status'] == 'released' and last and last[0].get('type') == 'pause'
-                if not (released and held['request'] in last[0].get('reason', '')):
+                released = (last and last[0].get('type') == 'pause'
+                            and run_control.released_pause(task, last[0].get('reason', '')))
+                if not released:
                     # A killed supervisor may have left a local verified checkpoint just before reporting.
                     if not (not destination and plan['predicate'] == 'verified' and state['phase'] == 'delivery'):
                         raise RunError('previous supervised attempt stopped without a resumable receipt')

@@ -112,6 +112,11 @@ SCENARIOS = {
         'skills/autonomous-run/SKILL.md', 'autonomous_run freeze',
         'A frozen outcome, a run journal, and exact candidate and delivery proof',
         'Uses the original task budget and observes pending CI without launching another worker.'),
+    'autopilot-full': Scenario(
+        'Run several approved tasks and retain each delivery outcome', 'skills/poteto-mode/playbooks/autopilot-full.md',
+        'skills/autopilot-full/SKILL.md', 'autopilot_full freeze',
+        'Frozen task plans, an independent outcome per task, and a queue journal',
+        'Requires separate worktrees and existing delivery authorization. An operator can hold the entire queue.'),
     'catch-up': Scenario(
         'See progress since a selected time', 'skills/ketchup/SKILL.md',
         'skills/pickup/SKILL.md', 'pickup', 'Task events, supporting artifacts and optional live PR state',

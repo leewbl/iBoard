@@ -28,6 +28,8 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/
 
 [`workbench.autonomous_run`](../skills/autonomous-run/SKILL.md) 固定选定任务的验收、发布或合并目标，沿用原输入、预算和交付授权。CI 未结束时保留 PR、候选和基线，释放任务执行锁。下一次观察只查询该检查点，发现明确结果后再交给原有验收或修复流程。工作台保留每次重新启动、等待及最终证据。
 
+[`workbench.autopilot_full`](../skills/autopilot-full/SKILL.md) 把已冻结的独立任务加入队列，并发推进各自的验收、PR 或合并目标。整组暂停在下一次操作前生效，正在执行的步骤可留下提交和检查点，解除后按各任务的原预算恢复。队列保留每项结果，同一仓库的写入按顺序通过原门禁。目标分支前移会阻断基于旧版本的交付，队列自动重放和重新验收仍待接入。
+
 长任务的阶段决定保存在任务目录的 `decisions.tsv`。每行记录时间、阶段、决定、理由、证据和结果。[`workbench.decisions audit`](../skills/show-me-your-work/SKILL.md) 核对保留文件的哈希和 Git 提交，显示哪些链接仍需在线查看。新的运行会列出继承记录的时间范围，人工可追加说明或纠正。
 
 Claude Code 执行时会为该次运行保留可见回复、工具调用名称和结果状态，也保留直接 GLM 评审的回执。用 `workbench.decision_review` 选择一轮运行和可用的 OpenAI 模型，逐条对照决策、回执和哈希绑定的报告。受限的 Codex CLI 会话只接收该轮的材料。结果必须引用实际证据，运行或报告在审查期间发生变化则放弃本轮结论。已导入的外部会话单独注明来源。跨供应商复核由技能显式发起，OpenClaw 发布门禁仍使用其独立的断网验收。

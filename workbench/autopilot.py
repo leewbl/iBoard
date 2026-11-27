@@ -1787,14 +1787,16 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                         raise AutopilotError('CI repair failure evidence identity changed')
                 except (KeyError, OSError, TypeError, ValueError) as error:
                     raise AutopilotError('CI repair failure evidence is unavailable') from error
-                published = publish.republish(task, pr_repo, pr_number, pending_update['previous_head'])
+                with run_control.delivery_lane(task, pr_repo):
+                    published = publish.republish(task, pr_repo, pr_number, pending_update['previous_head'])
                 state['published_pr'] = published
                 del state['ci_republish']
                 cli.write(state_path, state)
                 append_decision('delivery', 'Updated the existing pull request.', 'The repaired head passed reverification.',
                        f'https://github.com/{pr_repo}/pull/{pr_number}', 'PR update recorded.')
             if not pr_number:
-                published = publisher(task, pr_repo)
+                with run_control.delivery_lane(task, pr_repo):
+                    published = publisher(task, pr_repo)
                 pr_number = published['pr']
                 state['published_pr'] = published
                 cli.write(state_path, state)
@@ -1882,7 +1884,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if state.pop('ci_wait', None) is not None:
                 cli.write(state_path, state)
             require_active()
-            result = merge(task, pr_repo, pr_number)
+            with run_control.delivery_lane(task, pr_repo):
+                result = merge(task, pr_repo, pr_number)
             state.update(phase='close-issue', delivery=result, delivery_repo=pr_repo, delivery_pr=pr_number)
             cli.write(state_path, state)
             if result.get('merged') is True:
@@ -1896,7 +1899,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             target_repo, target_pr = state['delivery_repo'], state['delivery_pr']
             if data['kind'] == 'bug' and delivery.own_issue_number(data.get('source'), target_repo) is not None:
                 _remaining(data)
-                state['issue'] = closer(task, target_repo, target_pr)
+                with run_control.delivery_lane(task, target_repo):
+                    state['issue'] = closer(task, target_repo, target_pr)
             else:
                 state['issue'] = {'closed': False, 'reason': 'no issue in the destination repository'}
             state['phase'] = 'complete'

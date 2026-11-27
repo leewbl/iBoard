@@ -25,6 +25,7 @@ class PstackHelpTests(unittest.TestCase):
             'resume-task': 'resume',
             'pause-task': 'run_control hold',
             'autonomous-run': 'autonomous_run freeze',
+            'autopilot-full': 'autopilot_full freeze',
             'generate-verify': 'project_verify create',
             'maintain-verify': 'project_verify maintain',
             'create-formal-verify': 'formal_verify create',
@@ -38,6 +39,7 @@ class PstackHelpTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'native-entry')
                 self.assertTrue(result['expected_evidence'])
                 self.assertIn('/blob/' + result['pstack_commit'] + '/pstack/', result['pstack_source'])
+        self.assertEqual(self.lookup('show', 'autopilot-full')['native_routes'][0]['scenario'], 'autopilot-full')
 
     def test_every_advertised_route_has_a_pinned_source_and_local_files(self):
         catalog = pstack_help._load_catalog()
@@ -52,7 +54,6 @@ class PstackHelpTests(unittest.TestCase):
 
     def test_catalog_only_and_prompt_guidance_have_no_runnable_route(self):
         for name, expected_status in (
-            ('autopilot-full', 'catalog-only'),
             ('setup-pstack', 'catalog-only'),
             ('principle-prove-it-works', 'guidance-only'),
         ):
