@@ -47,7 +47,7 @@
 
 | 文件（相对 `automations/benny/`） | 何时使用 | 操作结果或验收条件 | iBoard 接入与宿主依赖 |
 | --- | --- | --- | --- |
-| [`FOR_AGENTS.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/FOR_AGENTS.md) | 安装、更新或启用两项工作流的操作入口。 | 复制包时保留用户配置和已有修改，确认仓库内容及新会话可用的共享技能，分别配置两项流程。 | 项目应有单独配置与能力探测。依赖 Cursor 项目插件及 Automations 编辑器的步骤需要独立适配。 |
+| [`FOR_AGENTS.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/FOR_AGENTS.md) | 安装、更新或启用两项工作流的操作入口。 | 复制包时保留用户配置和已有修改，确认仓库内容及新会话可用的共享技能，分别配置两项流程。 | 原生 [部署包](../../skills/setup-benny/SKILL.md#install-and-verify-the-project-package) 保留现有项目文件，读取精确 Git 提交核对两条流程和共享依赖。签名事件可进入独立工作进程。Cursor 编辑器和真实 Slack 订阅仍需单独配置与验证。 |
 | [`README.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/README.md) | 操作者安装与验收入口。 | 向操作者说明两项流程、包和配置分离、试验时核对来源线程。 | iBoard 已有明确任务入口；独立集成说明应核对实际配置、可用能力与授权。 |
 | [`skills/setup-benny/SKILL.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/setup-benny/SKILL.md) | 变更来源、追踪器、仓库、应用控制、模型或预算时。 | 验证配置、项目技能及应用驱动能力，区分新建和已有流程，启用前在测试环境检查线程和故障边界。 | [配置及预检](../../skills/setup-benny/SKILL.md)验证授权工作区、指定来源频道和报告线程，并将它们与配置一起固化。实时订阅、自动创建两条流程及追踪器能力待接入。 |
 | [`skills/triage-issue-reports/SKILL.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/automations/benny/skills/triage-issue-reports/SKILL.md) | 授权来源中的单条报告。 | 查看全文、附件、代码和历史，按症状、影响层与重复项分类；只有符合条件才生成一份归档建议。原流程还有追踪器与原线程回执，需要核对写入及失败回补。 | [本地分诊与交接](../../skills/triage-issue-reports/SKILL.md)保留证据，授权后提交工单及原线程回执，支持固定窗口和具体更正。已模拟验收防重复、失败补偿和停止。完整媒体审阅、真实工作区和附件发布待验证。 |

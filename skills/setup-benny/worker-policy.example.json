@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "triage": {
+    "selections": ["src/example.ts:1-20"],
+    "terms": ["reported behavior"],
+    "seconds": 120,
+    "read_attachments": false,
+    "inspect_media": false,
+    "apply_verdict": false
+  },
+  "reproduce": {
+    "image": "benny-baseline:local",
+    "manifest": "verification/contract.json",
+    "helpers": "verification/helpers",
+    "journey": "selected-journey",
+    "oracle": "verification/observe.mjs",
+    "oracle_marker": "OBSERVE_PASS",
+    "oracle_failure_marker": "OBSERVE_FAIL",
+    "memory_mb": 3584,
+    "claim_seconds": 600,
+    "repair": null
+  }
+}

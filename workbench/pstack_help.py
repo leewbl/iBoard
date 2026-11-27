@@ -208,6 +208,17 @@ SCENARIOS = {
         'automations/benny/skills/setup-benny/SKILL.md', 'skills/setup-benny/SKILL.md', 'benny freeze',
         'A source receipt with its root permalink and validated workspace and verdict',
         'Uses a private operator-supplied Slack credential. Live subscriptions and tracker actions are separate.'),
+    'deploy-benny': Scenario(
+        'Preview, install and verify the two Benny roles from a committed project package',
+        'automations/benny/FOR_AGENTS.md', 'skills/setup-benny/SKILL.md#install-and-verify-the-project-package',
+        'benny_deploy preview', 'Committed Git revision, package digest and native dependency checks',
+        'An installed package is inactive until its authorized event receiver and worker are configured.'),
+    'receive-benny-events': Scenario(
+        'Run the signed receiver and process explicitly selected report events',
+        'automations/benny/templates/reproduce-automation-prompt.md',
+        'skills/setup-benny/SKILL.md#run-the-two-event-roles', 'benny_automation serve',
+        'Private queued event identity and a worker result bound to the source thread and deployment revision',
+        'Each role uses the existing handoff, offline reproduction and draft authorization rules.'),
     'triage-issue-reports': Scenario(
         'Classify a selected Benny report and check for existing tracker items',
         'automations/benny/skills/triage-issue-reports/SKILL.md',

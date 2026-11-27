@@ -1,16 +1,45 @@
 ---
 name: setup-benny
-description: Configure and preflight the Benny read-only Slack report and GitHub verification route.
+description: Install Benny in a Git project, receive authorized Slack events, and configure its workers.
 disable-model-invocation: true
 ---
 
 # Set up Benny report verification
 
+## Install and verify the project package
+
+```sh
+python3 -m workbench.benny_deploy preview --repo "$TARGET_REPO"
+python3 -m workbench.benny_deploy install --repo "$TARGET_REPO"
+python3 -m workbench.benny_deploy verify --repo "$TARGET_REPO"
+```
+
+The installer writes the inactive package under `.iboard/automations/benny/`. Review the preview, retain destination-only files and resolve any managed-file conflicts before installation. Commit the package in the target repository before running the readiness check. Run the check again from a fresh checkout at that commit. It reads the committed role files and records the pinned revision, manifest digest and currently resolvable native dependencies.
+
+## Run the two event roles
+
+Copy [worker-policy.example.json](worker-policy.example.json) outside the package. Select the source files and tracker searches for triage, then name the exact offline image, behavior driver and separate probe for reproduction. Policy file references are relative to the file. The example enables local evidence only. Authorize `triage.apply_verdict` and supply a separate `--writer-token-file` for the guarded original-thread reply and tracker handoff. Enable a `reproduce.repair` object with `fix_search`, `seconds`, `iterations` and `draft` for approved repair and optional draft delivery. A recorded browser driver also requires `baseline_visible` and `candidate_visible`.
+
+```sh
+python3 -m workbench.benny_automation serve --repo "$TARGET_REPO" \
+  --config "$BENNY_CONFIG" --state "$PRIVATE_STATE" --app-id "$SLACK_APP_ID" \
+  --signing-secret-file "$SLACK_SIGNING_SECRET_FILE" --selected-root "$APPROVED_ROOT_TS"
+python3 -m workbench.benny_automation watch --repo "$TARGET_REPO" \
+  --config "$BENNY_CONFIG" --state "$PRIVATE_STATE" --policy "$WORKER_POLICY" \
+  --token-file "$SLACK_READ_TOKEN_FILE" --seconds 900 --max-events 8
+```
+
+The receiver listens on loopback at `/slack/events`. Use an authorized HTTPS endpoint for Slack delivery. Choose exact report roots with repeatable `--selected-root` so intake stays within the reports approved for this run. The receiver authenticates the raw request, records only its coordinates and acknowledges once the event is durable. The worker reads the original thread through Slack, then chooses the corresponding workflow. A trusted triage reply can wake reproduction, which still checks the original verdict and ownership. [Slack request signatures](https://docs.slack.dev/authentication/verifying-requests-from-slack/) · [Slack event deliveries and retries](https://docs.slack.dev/apis/events-api/)
+
+The worker pins the Git deployment, routing rules and worker policy. Duplicate deliveries share one event receipt and one result per source and role. `watch` admits a bounded batch and revisits the original reproduction when the claim window ends. Native per-task limits govern the active model and Docker work. Use `work --event-id` with the same inputs to inspect or operate on one event. An interrupted dispatch retains its files and holds further automatic writes; inspect the native handoff or repair journal before retrying.
+
+## Read or verify one approved report
+
 Copy [configuration.example.json](configuration.example.json) to a project-specific file outside the target checkout. Fill in the Slack workspace, source channel, configured triage identity, GitHub target and time limits. Use a separate configuration for another source channel. Store the Slack credential in an owner-only file and supply it to iBoard as a path through `--token-file`. Keep it out of the project, configuration and any model prompt.
 
 Choose a specific, explicitly authorized source message. Use the read actions in [reproduce-and-fix-issues](../reproduce-and-fix-issues/SKILL.md) to confirm the credential's workspace, the root permalink, and the trusted verdict. If a reply triggered the run, keep both that reply's `message_ts` and the root `thread_ts`. Use a known test report when exercising the integration. A start without a verdict returns `awaiting-verdict` or waits within the optional configured budget.
 
-The Slack reader uses [auth.test](https://docs.slack.dev/reference/methods/auth.test/), [conversations.replies](https://docs.slack.dev/reference/methods/conversations.replies/) and [chat.getPermalink](https://docs.slack.dev/reference/methods/chat.getPermalink/). Ensure the read token is authorized for the source conversation. To include attachments in [triage](../triage-issue-reports/SKILL.md#attachments), authorize `files:read` for [files.info](https://docs.slack.dev/reference/methods/files.info/). The optional [handoff coordinator](../triage-issue-reports/SKILL.md#apply-a-reviewed-handoff) handles authorized tracker writes and thread replies using separate credentials and a reviewed plan. Live subscriptions and creating Cursor automation routines remain separate.
+The Slack reader uses [auth.test](https://docs.slack.dev/reference/methods/auth.test/), [conversations.replies](https://docs.slack.dev/reference/methods/conversations.replies/) and [chat.getPermalink](https://docs.slack.dev/reference/methods/chat.getPermalink/). Ensure the read token is authorized for the source conversation. To include attachments in [triage](../triage-issue-reports/SKILL.md#attachments), authorize `files:read` for [files.info](https://docs.slack.dev/reference/methods/files.info/). The optional [handoff coordinator](../triage-issue-reports/SKILL.md#apply-a-reviewed-handoff) handles authorized tracker writes and thread replies using separate credentials and a reviewed plan. Live subscription setup and Cursor automation editor deployment require those host environments.
 
 For runtime verification, also provide a source-attested local Docker image, an executable verification manifest, and the two approved probes for the behavior. The existing GitHub artifact must reside in the configured repository. A valid source receipt by itself only qualifies the starting point. The verifier still requires the before/after observations and unchanged source and artifact identities.
 
