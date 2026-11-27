@@ -18,8 +18,11 @@ def chunk(timestamp, *, pid=1, tid=99, identifier='same', nodes=(), samples=(), 
         'cpuProfile': {'nodes': list(nodes), 'samples': list(samples)}, 'timeDeltas': list(deltas)}})
 
 
-def frame(node_id, name, url=None, line=-1, **fields):
-    return {'id': node_id, 'callFrame': {'functionName': name, 'url': url, 'lineNumber': line}, **fields}
+def frame(node_id, name, url=None, line=-1, column=None, **fields):
+    location = {'functionName': name, 'url': url, 'lineNumber': line}
+    if column is not None:
+        location['columnNumber'] = column
+    return {'id': node_id, 'callFrame': location, **fields}
 
 
 class ChromeTraceTests(unittest.TestCase):
@@ -36,7 +39,8 @@ class ChromeTraceTests(unittest.TestCase):
             event('B', 21, name='inner', cat='app'),
             event('E', 35, name='outer', cat='app', s='proc', id='001'),
             event('X', 25, name='FunctionCall', cat='devtools.timeline', dur=3.25, tts=16, tdur=2,
-                  args={'data': {'functionName': 'draw', 'url': 'https://example.invalid/app.js', 'lineNumber': 1}}),
+                  args={'data': {'functionName': 'draw', 'url': 'https://example.invalid/app.js',
+                                 'lineNumber': 1, 'columnNumber': 9}}),
             event('E', 27, name='inner', cat='app', tid=8),
             event('E', 22, name='inner', cat='app'),
             event('E', 30, name='outer', cat='app', s='wrong', id='001'),
@@ -66,13 +70,14 @@ class ChromeTraceTests(unittest.TestCase):
                          (16, 2))
         self.assertEqual(result['duration_groups'][1], {
             'category': 'devtools.timeline', 'name': 'FunctionCall', 'symbol': 'draw',
-            'path': 'https://example.invalid/app.js', 'line': 1, 'events': 1, 'total_us': 3.25, 'max_us': 3.25,
+            'path': 'https://example.invalid/app.js', 'line': 1, 'column': 9,
+            'events': 1, 'total_us': 3.25, 'max_us': 3.25,
         })
 
     def test_imports_split_cpu_chunks_with_process_and_profile_identity(self):
         db = self.database()
         first = frame(1, '(root)', children=[2])
-        leaf = frame(2, 'tick', 'file:///does/not/exist.js', 5)
+        leaf = frame(2, 'tick', 'file:///does/not/exist.js', 5, 0)
         events = [
             chunk(25, samples=[2], deltas=[6], nodes=[first]),
             head(),
@@ -87,16 +92,39 @@ class ChromeTraceTests(unittest.TestCase):
         self.assertEqual(result['duration_groups'][0]['total_us'], 1000)
         self.assertIsNone(result['duration_groups'][0]['path'])
         self.assertEqual(result['cpu_frames'][0], {
-            'symbol': 'tick', 'path': 'file:///does/not/exist.js', 'line': 6, 'samples': 2, 'sampled_us': 4,
+            'symbol': 'tick', 'path': 'file:///does/not/exist.js', 'line': 6, 'column': 1,
+            'samples': 2, 'sampled_us': 4,
         })
         self.assertEqual(result['hot_cpu_paths'][0]['ancestry'], 'root-observed')
         self.assertEqual([frame['symbol'] for frame in result['hot_cpu_paths'][0]['frames']], ['(root)', 'tick'])
+        self.assertEqual([frame['column'] for frame in result['hot_cpu_paths'][0]['frames']], [None, 1])
         self.assertEqual(db.execute('SELECT pid, tid, declared_start_us FROM trace_profiles ORDER BY pid').fetchall(),
                          [(1, 7, 12), (2, 55, 12)])
         self.assertEqual(db.execute('SELECT node_id, parent_id FROM trace_profile_frames WHERE profile_key = 1').fetchall(),
                          [(1, None), (2, 1)])
         self.assertEqual(db.execute('SELECT chunk_ordinal FROM trace_profile_samples WHERE profile_key = 1 ORDER BY ordinal').fetchall(),
                          [(0,), (2,)])
+
+    def test_keeps_distinct_generated_columns_and_leaves_unavailable_locations_unknown(self):
+        db = self.database()
+        url = 'http://127.0.0.1:18789/bundle.js'
+        durations = [
+            event('X', index, name='FunctionCall', dur=index,
+                  args={'data': {'functionName': 'draw', 'url': url, 'lineNumber': 1, **column}})
+            for index, column in enumerate(({'columnNumber': 1}, {'columnNumber': 8}, {'columnNumber': 0}, {}), 1)
+        ]
+        result = chrome_trace.import_trace(db, [*durations, head(), chunk(
+            20, samples=[1, 2, 3], deltas=[2, 4, 5],
+            nodes=[frame(1, 'draw', url, 0, 0), frame(2, 'draw', url, 0, 7), frame(3, 'draw', url, 0)],
+        )])
+        self.assertEqual({(row['line'], row['column']): row['total_us'] for row in result['duration_groups']},
+                         {(1, 1): 1, (1, 8): 2, (1, None): 7})
+        self.assertEqual({(row['line'], row['column']): row['sampled_us'] for row in result['cpu_frames']},
+                         {(1, 1): 4, (1, 8): 5, (1, None): 0})
+        self.assertEqual(db.execute("SELECT column FROM trace_events WHERE name='FunctionCall' ORDER BY ordinal").fetchall(),
+                         [(1,), (8,), (None,), (None,)])
+        self.assertEqual(db.execute('SELECT column FROM trace_profile_frames ORDER BY node_id').fetchall(),
+                         [(1,), (8,), (None,)])
 
     def test_reconstructs_native_signed_delta_timestamps_before_attributing_time(self):
         db = self.database()
@@ -142,7 +170,7 @@ class ChromeTraceTests(unittest.TestCase):
         comparison = chrome_trace.compare_traces(before, after)
         self.assertEqual(comparison['durations']['compared_groups'], 36)
         self.assertEqual(comparison['durations']['largest_changes'], [{
-            'category': None, 'name': 'group-00', 'symbol': None, 'path': None, 'line': None,
+            'category': None, 'name': 'group-00', 'symbol': None, 'path': None, 'line': None, 'column': None,
             'before_events': 1, 'after_events': 1, 'before_total_us': 100,
             'after_total_us': 101, 'delta_total_us': 1,
         }])

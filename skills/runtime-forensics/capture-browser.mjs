@@ -8,6 +8,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const maxTraceBytes = 32 * 1024 * 1024;
 const maxScriptBytes = 2 * 1024 * 1024;
 const maxScripts = 100;
+const maxMapBytes = 8 * 1024 * 1024;
+const maxMapEvidenceBytes = 16 * 1024 * 1024;
+const maxMapAttempts = 16;
 const requireFromImage = createRequire('/app/package.json');
 const trackedFile = /^(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:js|mjs|cjs|ts|mts|cts)$/;
 
@@ -28,6 +31,7 @@ function request(value) {
     || value.args.some(arg => typeof arg !== 'string' || Buffer.byteLength(arg) > 2048 || arg.includes('\0'))
     || !Number.isInteger(value.port) || value.port < 1024 || value.port > 65535
     || !Number.isInteger(value.window_ms) || value.window_ms < 0 || value.window_ms > 60_000
+    || (value.source_maps !== undefined && typeof value.source_maps !== 'boolean')
     || typeof value.paused !== 'boolean' || !selector(value.click) || !selector(value.observe)
     || typeof value.route !== 'string' || value.route.length > 1024 || !value.route.startsWith('/')
     || /[\x00-\x20\x7f\\]/u.test(value.route) || value.route.startsWith('//')) {
@@ -110,9 +114,10 @@ async function stopServer(server) {
   }
 }
 
-function trackScripts(session, origin) {
+function trackScripts(session, origin, sourceMaps) {
   const scripts = new Map();
   let complete = true;
+  let referenceChars = 0;
   session.on('Debugger.scriptParsed', event => {
     let url;
     try {
@@ -121,6 +126,7 @@ function trackScripts(session, origin) {
       return;
     }
     if (url.origin !== origin || url.username || url.password) return;
+    const originalUrl = event.url;
     // Bind the actual browser URL without exposing its query or fragment.
     url.search = '';
     url.hash = '';
@@ -134,15 +140,26 @@ function trackScripts(session, origin) {
       complete = false;
       return;
     }
-    scripts.set(event.scriptId, {
-      url: url.href,
-      url_sha256: createHash('sha256').update(event.url, 'utf8').digest('hex'),
-    });
+    const identity = { url: url.href, url_sha256: sha256(originalUrl) };
+    const declared = sourceMaps && typeof event.sourceMapURL === 'string' && event.sourceMapURL.length > 0;
+    const standalone = event.startLine === 0 && event.startColumn === 0 && !event.hasSourceURL;
+    const reference = declared && standalone && event.sourceMapURL.length <= 4 * maxMapBytes
+      && referenceChars + event.sourceMapURL.length <= 2 * maxMapEvidenceBytes ? event.sourceMapURL : null;
+    if (reference) referenceChars += reference.length;
+    scripts.set(event.scriptId, { identity, originalUrl, declared, reference });
   });
-  return async () => {
+  return async externalScripts => {
     const records = new Map();
+    const candidates = new Map();
+    const declaredUrls = new Set();
     const deadline = performance.now() + 10_000;
-    for (const [scriptId, identity] of Array.from(scripts)) {
+    const pending = Array.from(scripts);
+    if (sourceMaps) {
+      for (const [, script] of pending) {
+        if (script.declared) declaredUrls.add(script.identity.url_sha256);
+      }
+    }
+    for (const [scriptId, { identity, originalUrl, reference }] of pending) {
       if (performance.now() >= deadline) {
         complete = false;
         break;
@@ -153,16 +170,132 @@ function trackScripts(session, origin) {
           complete = false;
           continue;
         }
-        const sha256 = createHash('sha256').update(scriptSource, 'utf8').digest('hex');
-        records.set(identity.url_sha256 + sha256, { ...identity, sha256 });
+        const digest = sha256(scriptSource);
+        records.set(identity.url_sha256 + digest, { ...identity, sha256: digest });
+        if (sourceMaps) {
+          const urlHash = identity.url_sha256;
+          const previous = candidates.get(urlHash);
+          const locator = externalScripts.has(withoutFragment(originalUrl)) ? reference : null;
+          if (previous) {
+            previous.ambiguous ||= previous.script_sha256 !== digest || previous.reference !== locator;
+          } else {
+            candidates.set(urlHash, { url_sha256: urlHash, script_sha256: digest,
+              originalUrl, reference: locator, ambiguous: false });
+          }
+        }
       } catch {
         complete = false;
       }
     }
+    const mapDigest = sourceMaps ? await writeSourceMaps(declaredUrls, candidates, origin, complete) : null;
     return { scripts: [...records.values()].sort((a, b) => a.url.localeCompare(b.url)
       || a.url_sha256.localeCompare(b.url_sha256) || a.sha256.localeCompare(b.sha256)),
-    scripts_complete: complete };
+    scripts_complete: complete, ...(mapDigest ? { source_maps_sha256: mapDigest } : {}) };
   };
+}
+
+function sha256(data) {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+function withoutFragment(value) {
+  const url = new URL(value);
+  url.hash = '';
+  return url.href;
+}
+
+function inlineSourceMap(reference) {
+  const comma = reference.indexOf(',');
+  const header = reference.slice(0, comma).toLowerCase();
+  if (comma < 0 || !/^data:application\/json(?:;charset=utf-8)?(?:;base64)?$/.test(header)) return null;
+  const payload = decodeURIComponent(reference.slice(comma + 1));
+  if (!header.endsWith(';base64')) return Buffer.from(payload, 'utf8');
+  const raw = Buffer.from(payload, 'base64');
+  const encoded = raw.toString('base64');
+  return encoded === payload || encoded.replace(/=+$/, '') === payload ? raw : null;
+}
+
+async function fetchSourceMap(url, timeout) {
+  const response = await fetch(url, {
+    redirect: 'manual', credentials: 'omit', signal: AbortSignal.timeout(timeout),
+  });
+  if (response.status !== 200 || response.url !== url.href || !response.body
+    || Number(response.headers.get('content-length')) > maxMapBytes) {
+    await response.body?.cancel();
+    return null;
+  }
+  const chunks = [];
+  let size = 0;
+  const reader = response.body.getReader();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return Buffer.concat(chunks, size);
+      size += value.length;
+      if (size > maxMapBytes) return null;
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel();
+  }
+}
+
+async function sourceMap(candidate, origin, timeout) {
+  const { reference } = candidate;
+  let raw, mapUrl;
+  if (/^data:/i.test(reference)) {
+    raw = inlineSourceMap(reference);
+    mapUrl = 'inline';
+  } else {
+    if (reference.length > 4096 || /[\x00-\x20\x7f\\]/u.test(reference)) return null;
+    const url = new URL(reference, candidate.originalUrl);
+    if (url.origin !== origin || url.href !== origin + url.pathname) return null;
+    raw = await fetchSourceMap(url, timeout);
+    mapUrl = url.href;
+  }
+  if (!raw?.length || raw.length > maxMapBytes) return null;
+  const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw));
+  if (parsed?.version !== 3 || !(Array.isArray(parsed.sections)
+    || (Array.isArray(parsed.sources) && typeof parsed.mappings === 'string'))) return null;
+  return { url_sha256: candidate.url_sha256, script_sha256: candidate.script_sha256,
+    map_url: mapUrl, map_sha256: sha256(raw), content_base64: raw.toString('base64') };
+}
+
+async function writeSourceMaps(declaredUrls, candidates, origin, complete) {
+  const maps = [];
+  let omitted = 0, attempts = 0;
+  // Leave room for the manifest wrapper and the omission count.
+  let evidenceBytes = 128;
+  const deadline = performance.now() + 10_000;
+  for (const url of declaredUrls) {
+    const candidate = candidates.get(url);
+    const remaining = Math.floor(deadline - performance.now());
+    if (complete && candidate?.reference && !candidate.ambiguous && remaining > 0 && attempts < maxMapAttempts) {
+      attempts += 1;
+      try {
+        const record = await sourceMap(candidate, origin, Math.min(remaining, 3_000));
+        if (record) {
+          const size = Buffer.byteLength(JSON.stringify(record)) + 1;
+          if (evidenceBytes + size <= maxMapEvidenceBytes) {
+            evidenceBytes += size;
+            maps.push(record);
+            continue;
+          }
+        }
+      } catch {
+        // An inaccessible or malformed map leaves its script unbound.
+      }
+    }
+    omitted += 1;
+  }
+  const evidence = `${JSON.stringify({ schema: 1, maps, omitted })}\n`;
+  const output = await open('/artifacts/browser-source-maps.json', 'wx', 0o600);
+  try {
+    await output.writeFile(evidence);
+  } finally {
+    await output.close();
+  }
+  return sha256(evidence);
 }
 
 async function sample(locator) {
@@ -254,9 +387,20 @@ async function capture(browser, spec) {
   }
   const page = await context.newPage();
   page.setDefaultTimeout(6_000);
+  const externalScripts = new Set();
+  if (spec.source_maps) {
+    page.on('response', response => {
+      const url = response.url();
+      const request = response.request();
+      if (externalScripts.size < maxScripts && url.length <= 4096 && response.ok() && local(url)
+        && request.resourceType() === 'script' && request.frame() === page.mainFrame()) {
+        externalScripts.add(withoutFragment(url));
+      }
+    });
+  }
   const pageSession = await context.newCDPSession(page);
   const traceSession = await browser.newBrowserCDPSession();
-  const digests = trackScripts(pageSession, spec.origin);
+  const digests = trackScripts(pageSession, spec.origin, spec.source_maps);
   await send(pageSession, 'Debugger.enable');
   await send(pageSession, 'Animation.enable');
   const expectedRate = spec.paused ? 0 : 1;
@@ -290,7 +434,7 @@ async function capture(browser, spec) {
     throw new Error('The animation playback rate changed during the capture');
   }
   await writeTrace(traceSession);
-  const scriptEvidence = await digests();
+  const scriptEvidence = await digests(externalScripts);
   checkOrigin(page);
   return {
     kind: 'iboard-browser-trace', port: spec.port, route: spec.route, window_ms: spec.window_ms,

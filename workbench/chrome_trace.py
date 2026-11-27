@@ -18,7 +18,7 @@ CREATE TABLE trace_events (
     ordinal INTEGER PRIMARY KEY, pid INTEGER, tid INTEGER, phase TEXT NOT NULL,
     name TEXT, category TEXT, ts_us REAL, raw_duration_us REAL, thread_ts_us REAL,
     thread_duration_us REAL, scope TEXT, event_id TEXT, id2 TEXT, bind_id TEXT,
-    symbol TEXT, path TEXT, line INTEGER
+    symbol TEXT, path TEXT, line INTEGER, column INTEGER
 );
 CREATE INDEX trace_events_thread_time ON trace_events (pid, tid, ts_us);
 CREATE TABLE trace_threads (
@@ -31,10 +31,10 @@ CREATE TABLE trace_intervals (
     duration_us REAL NOT NULL
 );
 CREATE VIEW trace_duration_totals AS
-    SELECT e.category, e.name, e.symbol, e.path, e.line, COUNT(*) AS events,
+    SELECT e.category, e.name, e.symbol, e.path, e.line, e.column, COUNT(*) AS events,
            SUM(i.duration_us) AS total_us, MAX(i.duration_us) AS max_us
     FROM trace_intervals i JOIN trace_events e ON i.start_ordinal = e.ordinal
-    GROUP BY e.category, e.name, e.symbol, e.path, e.line;
+    GROUP BY e.category, e.name, e.symbol, e.path, e.line, e.column;
 CREATE TABLE trace_profiles (
     profile_key INTEGER PRIMARY KEY, head_ordinal INTEGER NOT NULL REFERENCES trace_events (ordinal),
     pid INTEGER NOT NULL, tid INTEGER NOT NULL, event_id TEXT NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE trace_profiles (
 );
 CREATE TABLE trace_profile_frames (
     profile_key INTEGER NOT NULL REFERENCES trace_profiles (profile_key),
-    node_id INTEGER NOT NULL, parent_id INTEGER, symbol TEXT, path TEXT, line INTEGER,
+    node_id INTEGER NOT NULL, parent_id INTEGER, symbol TEXT, path TEXT, line INTEGER, column INTEGER,
     PRIMARY KEY (profile_key, node_id)
 );
 CREATE TABLE trace_profile_samples (
@@ -54,10 +54,10 @@ CREATE TABLE trace_profile_samples (
 );
 CREATE INDEX trace_profile_samples_frames ON trace_profile_samples (profile_key, node_id);
 CREATE VIEW trace_cpu_frame_totals AS
-    SELECT f.symbol, f.path, f.line, COUNT(*) AS samples, SUM(s.weight_us) AS sampled_us
+    SELECT f.symbol, f.path, f.line, f.column, COUNT(*) AS samples, SUM(s.weight_us) AS sampled_us
     FROM trace_profile_samples s
     JOIN trace_profile_frames f ON s.profile_key = f.profile_key AND s.node_id = f.node_id
-    GROUP BY f.symbol, f.path, f.line;
+    GROUP BY f.symbol, f.path, f.line, f.column;
 CREATE TABLE trace_import_gaps (
     reason TEXT PRIMARY KEY, records INTEGER NOT NULL
 );
@@ -101,12 +101,16 @@ def _id2(value):
     return None
 
 
-def _call_frame(value, *, first_line=0):
+def _call_frame(value, *, coordinate_base=0):
     frame = _mapping(value)
     line = _integer(frame.get('lineNumber'))
+    column = _integer(frame.get('columnNumber'))
     path = _text(frame.get('url')) or None
-    return (_text(frame.get('functionName')) or None, path,
-            line + 1 - first_line if path and line is not None and line >= first_line else None)
+    symbol = _text(frame.get('functionName')) or None
+    if path is None or line is None or line < coordinate_base:
+        return symbol, path, None, None
+    return (symbol, path, line + 1 - coordinate_base,
+            column + 1 - coordinate_base if column is not None and column >= coordinate_base else None)
 
 
 def _explicit_frame(event, data):
@@ -116,7 +120,7 @@ def _explicit_frame(event, data):
     if value is None and event.get('name') == 'FunctionCall':
         # Blink serializes a 1-based SourceLocation here. Profiler CallFrame
         # records use zero-based source coordinates.
-        return _call_frame(data, first_line=1)
+        return _call_frame(data, coordinate_base=1)
     return _call_frame(value)
 
 
@@ -255,7 +259,7 @@ def _import_profiles(db, headers, chunks, problems):
             previous = index
         db.execute('INSERT INTO trace_profiles VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                    (head, head, pid, tid, key[1], header_ts, _time(header.get('startTime')), _text(header.get('source'))))
-        db.executemany('INSERT INTO trace_profile_frames VALUES (?, ?, ?, ?, ?, ?)',
+        db.executemany('INSERT INTO trace_profile_frames VALUES (?, ?, ?, ?, ?, ?, ?)',
                        ((head, node_id, parent_links.get(node_id), *frame) for node_id, frame in frames.items()))
         db.executemany('INSERT INTO trace_profile_samples VALUES (?, ?, ?, ?, ?, ?, ?)',
                        ((head, sample, *values, offsets[sample], weights[sample])
@@ -283,14 +287,14 @@ def _hot_cpu_paths(db):
                 break
             seen.add(node)
             frame = db.execute("""
-                SELECT parent_id, symbol, path, line FROM trace_profile_frames
+                SELECT parent_id, symbol, path, line, column FROM trace_profile_frames
                 WHERE profile_key = ? AND node_id = ?
             """, (profile, node)).fetchone()
             if frame is None:
                 status = 'missing-parent'
                 break
-            parent, symbol, path, line = frame
-            chain.append({'node_id': node, 'symbol': symbol, 'path': path, 'line': line})
+            parent, symbol, path, line, column = frame
+            chain.append({'node_id': node, 'symbol': symbol, 'path': path, 'line': line, 'column': column})
             if parent is None:
                 status = 'root-observed' if symbol == '(root)' else 'no-recorded-parent'
                 break
@@ -342,7 +346,7 @@ def import_trace(db, payload):
 
     db.executescript(_SCHEMA)
     with db:
-        db.executemany('INSERT INTO trace_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', event_rows())
+        db.executemany('INSERT INTO trace_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', event_rows())
         if problems['invalid_event'] == len(events):
             raise ValueError('Chrome trace contains no recognizable events')
         db.executemany('INSERT INTO trace_threads VALUES (?, ?, ?, ?, ?)',
@@ -354,16 +358,16 @@ def import_trace(db, payload):
                        ((reason, count) for reason, count in problems.items() if count))
 
     duration_groups = [
-        dict(zip(('category', 'name', 'symbol', 'path', 'line', 'events', 'total_us', 'max_us'), row))
+        dict(zip(('category', 'name', 'symbol', 'path', 'line', 'column', 'events', 'total_us', 'max_us'), row))
         for row in db.execute("""
             SELECT * FROM trace_duration_totals
-            ORDER BY total_us DESC, category, name, symbol, path, line LIMIT 25
+            ORDER BY total_us DESC, category, name, symbol, path, line, column LIMIT 25
         """)
     ]
     cpu_frames = [
-        dict(zip(('symbol', 'path', 'line', 'samples', 'sampled_us'), row))
+        dict(zip(('symbol', 'path', 'line', 'column', 'samples', 'sampled_us'), row))
         for row in db.execute("""
-            SELECT * FROM trace_cpu_frame_totals ORDER BY sampled_us DESC, symbol, path, line LIMIT 25
+            SELECT * FROM trace_cpu_frame_totals ORDER BY sampled_us DESC, symbol, path, line, column LIMIT 25
         """)
     ]
     return {
@@ -381,7 +385,8 @@ def import_trace(db, payload):
         'cpu_semantics': 'Elapsed microseconds from each ordered V8 leaf sample to the next timestamp. '
                          'The final sample has zero weight. Original signed deltas are available in SQLite. '
                          'Profiles can overlap. Separate from event duration.',
-        'source_semantics': 'Locations come from explicit trace call frames. URLs were not opened or symbolicated.',
+        'source_semantics': 'Generated locations use 1-based lines and columns from explicit trace call frames. '
+                            'Missing coordinates remain unknown. URLs were not opened or symbolicated.',
     }
 
 
@@ -439,11 +444,11 @@ def compare_traces(before_db, after_db):
                 'before_gaps': before, 'after_gaps': after}
 
     durations = _compare_groups(before_db, after_db, 'trace_duration_totals',
-                                ('category', 'name', 'symbol', 'path', 'line'), 'events', 'total_us')
+                                ('category', 'name', 'symbol', 'path', 'line', 'column'), 'events', 'total_us')
     durations['coverage'] = coverage({'invalid_event', 'invalid_duration', 'invalid_boundary',
                                       'orphan_end', 'mismatched_end', 'unclosed_begin'})
     cpu = _compare_groups(before_db, after_db, 'trace_cpu_frame_totals',
-                          ('symbol', 'path', 'line'), 'samples', 'sampled_us')
+                          ('symbol', 'path', 'line', 'column'), 'samples', 'sampled_us')
     cpu['coverage'] = coverage({'invalid_event', 'incomplete_profile', 'invalid_profile', 'invalid_profile_event'})
     return {
         'durations': durations,

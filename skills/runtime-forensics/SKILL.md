@@ -26,15 +26,25 @@ page. Give the workload's real selectors when it needs an action or an observati
 python3 -m workbench.browser_forensics --repo /path/to/project \
   --revision HEAD --image LOCAL_IMAGE --entry server.mjs --port 18789 \
   --route / --click '#start' --observe '#animated-panel' \
-  --window-ms 1200 --pause-animations --out /tmp/iboard-browser-evidence
+  --window-ms 1200 --pause-animations --source-maps --out /tmp/iboard-browser-evidence
 ```
 
 The tool records Chrome Trace Events through the DevTools Protocol and imports
 them into SQLite. The trace marks the action and the observation window. A
 frame maps to a tracked line when the selected renderer observed the script
 bytes, they match the Git blob, and the line is within it. A URL also seen on
-another renderer thread stays unverified. Transformed bundles still need
-source-map support.
+another renderer thread stays unverified.
+
+`--source-maps` captures maps declared by observed scripts, either inline or
+at the selected loopback HTTP origin. The trace keeps generated line and column.
+For transformed bundles, the report adds the original Git file and coordinates
+when the captured map contains matching `sourcesContent` and a usable segment.
+It preserves the linked map and script digests and the mapped report locations
+in SQLite `trace_source_locations`. Missing column positions, stale source
+content, absent segments, and inaccessible maps leave those locations unverified.
+Each map is limited to 8 MiB and the capture's map sidecar to 16 MiB. Use a
+diagnostic build with accessible maps and inspect the generated and original
+positions before drawing a conclusion.
 
 With `--pause-animations`, both trials use the same image, source, action and
 observation window. A fixed CDP intervention pauses the browser animation

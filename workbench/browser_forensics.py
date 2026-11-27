@@ -15,8 +15,8 @@ from tempfile import TemporaryDirectory
 import time
 from urllib.parse import unquote, urlsplit
 
-from runner.sandbox import PROFILE_ARTIFACTS, SandboxError, run_sandbox
-from workbench import cli, trace_forensics, workflow
+from runner.sandbox import BROWSER_MAPS_ARTIFACT, PROFILE_ARTIFACTS, SandboxError, run_sandbox
+from workbench import browser_source_maps, cli, trace_forensics, workflow
 from workbench.runtime_forensics import ForensicsError, SKILL, _tracked
 
 
@@ -25,8 +25,7 @@ ARTIFACT, TRACE_LIMIT = PROFILE_ARTIFACTS['.cdptrace']
 SCRIPT_LIMIT = 2 << 20
 
 
-def _bindings(repo, revision, port, receipt):
-    """Bind only same-origin scripts whose captured bytes match a Git blob."""
+def _script_observations(receipt):
     scripts_by_url = defaultdict(set)
     if receipt.get('scripts_complete') is not True:
         return {}
@@ -40,8 +39,13 @@ def _bindings(repo, revision, port, receipt):
                        for value in (url_sha, digest))):
             raise ForensicsError('invalid script URL or digest in the capture receipt')
         scripts_by_url[url_sha].add((url, digest))
+    return scripts_by_url
+
+
+def _bindings(repo, revision, port, receipt):
+    """Bind only same-origin scripts whose captured bytes match a Git blob."""
     result = {}
-    for url_sha, observed in scripts_by_url.items():
+    for url_sha, observed in _script_observations(receipt).items():
         if len(observed) != 1:
             continue
         url, expected = next(iter(observed))
@@ -141,7 +145,7 @@ def _trace_window(trace):
             'elapsed_ms':round((times[2] - times[1]) / 1000, 3), 'pid':start['pid'], 'tid':start['tid']}
 
 
-def _label_sources(imported, bindings, window):
+def _label_sources(imported, bindings, window, mappings=None):
     # The page's Debugger session cannot attest scripts running on another
     # renderer thread. The importer groups by URL, so withhold the binding for
     # any URL that also occurs in other threads.
@@ -162,11 +166,22 @@ def _label_sources(imported, bindings, window):
     fallback = trace_forensics._source_locator(None, None, Path('/app'))
     finding = imported['finding']
     frames = chain.from_iterable(path['frames'] for path in finding['hot_cpu_paths'])
+    resolved = {}
     for item in chain(finding['duration_groups'], finding['cpu_frames'], frames):
         url, line = item['path'], item['line']
-        bound = bindings.get(hashlib.sha256(url.encode()).hexdigest()) if isinstance(url, str) else None
-        if bound is not None and url not in outside and type(line) is int and 0 < line <= bound['lines']:
+        url_sha = hashlib.sha256(url.encode()).hexdigest() if isinstance(url, str) and url not in outside else None
+        bound = bindings.get(url_sha)
+        generated_column = item.get('column')
+        mapped = mappings.get(url_sha) if mappings is not None else None
+        original = mapped[0].lookup(line, generated_column) if mapped is not None else None
+        if bound is not None and type(line) is int and 0 < line <= bound['lines']:
             item.update(source_file=bound['path'], source_status='verified-git-source')
+        elif original is not None:
+            receipt = mapped[1]
+            item.update(original, source_status='verified-git-source-map', source_map_sha256=receipt['map_sha256'])
+            resolved[(url_sha, line, generated_column)] = (
+                receipt['script_sha256'], receipt['map_sha256'], original['source_file'],
+                original['source_line'], original['source_column'], original['source_symbol'], original['source_sha256'])
         else:
             location, status = fallback(url, line)
             item.update(source_file=location, source_status=status)
@@ -175,6 +190,23 @@ def _label_sources(imported, bindings, window):
             item['path'] = display
         elif isinstance(url, str) and url.startswith(('data:', 'blob:', 'javascript:')):
             item['path'] = None
+    if mappings is not None:
+        db = sqlite3.connect(database)
+        try:
+            db.execute('''CREATE TABLE trace_source_locations(
+                url_sha256 TEXT, generated_line INTEGER, generated_column INTEGER, script_sha256 TEXT, map_sha256 TEXT,
+                source_file TEXT, source_line INTEGER, source_column INTEGER, source_symbol TEXT, source_sha256 TEXT,
+                PRIMARY KEY(url_sha256, generated_line, generated_column))''')
+            db.executemany('INSERT INTO trace_source_locations VALUES(?,?,?,?,?,?,?,?,?,?)',
+                           ((*position, *row) for position, row in resolved.items()))
+            db.commit()
+        finally:
+            db.close()
+        imported['database']['sha256'] = cli.digest(database)
+    finding['source_semantics'] = (
+        'Generated locations are 1-based. Source positions are reported when Chromium script bytes match Git '
+        'or a captured source map links the generated position to embedded Git-matching source. '
+        'Missing columns and ambiguous thread attribution remain unresolved.')
 
 
 def _trial(repo, revision, image, request, timeout, memory_mb, out):
@@ -185,6 +217,7 @@ def _trial(repo, revision, image, request, timeout, memory_mb, out):
     if remaining < 1:
         raise ForensicsError('source verification used the capture time budget')
     artifact = out / ARTIFACT
+    maps_output = out / BROWSER_MAPS_ARTIFACT if request.get('source_maps') else None
     helper_sha = cli.digest(DRIVER)
     with TemporaryDirectory(prefix='iboard-browser-trace-') as scratch:
         stage = Path(scratch)
@@ -194,7 +227,8 @@ def _trial(repo, revision, image, request, timeout, memory_mb, out):
         cli.write(stage / 'browser-request.json', request)
         report = run_sandbox(stage, pinned, ['node', '/workspace/' + DRIVER.name], remaining,
                              memory_mb=memory_mb, source_root='/app', workspace_read_only=True,
-                             profile_output=artifact, pids_limit=384)
+                             profile_output=artifact, pids_limit=384,
+                             browser_maps_output=maps_output)
     report.update(schema=cli.SCHEMA, source_verified_commit=revision, helper_sha256=helper_sha)
     report_path = out / 'sandbox.json'
     cli.write(report_path, report)
@@ -210,11 +244,21 @@ def _trial(repo, revision, image, request, timeout, memory_mb, out):
         raise ForensicsError('the browser capture is not a Chrome trace')
     window = _trace_window(loaded[1])
     bindings = _bindings(repo, revision, request['port'], receipt)
+    mappings = map_evidence = None
+    if maps_output is not None:
+        if (report.get('browser_maps_path') != str(maps_output)
+                or receipt.get('source_maps_sha256') != report.get('browser_maps_sha256')):
+            raise ForensicsError('browser capture did not collect the requested source map evidence')
+        mappings, map_evidence = browser_source_maps.bind(
+            repo, revision, request['port'], _script_observations(receipt), maps_output, report.get('browser_maps_sha256'))
     imported = trace_forensics._import(out / 'analysis', artifact, loaded, None, None, Path('/app'), None)
     imported.update(source_revision=revision, source_root='/app')
-    _label_sources(imported, bindings, window)
-    return {'commit':revision, 'image':pinned, 'report':str(report_path), 'receipt':receipt,
-            'script_bindings':bindings, 'window':window, 'trace':imported}
+    _label_sources(imported, bindings, window, mappings)
+    result = {'commit':revision, 'image':pinned, 'report':str(report_path), 'receipt':receipt,
+              'script_bindings':bindings, 'window':window, 'trace':imported}
+    if map_evidence is not None:
+        result['source_maps'] = map_evidence
+    return result
 
 
 def capture(*, repo, revision, image, request, pause_animations, timeout, memory_mb, out):
@@ -235,6 +279,8 @@ def capture(*, repo, revision, image, request, pause_animations, timeout, memory
             raise ForensicsError('browser selectors must be bounded single-line strings')
     if pause_animations and not request['observe']:
         raise ForensicsError('the animation probe requires an observed element')
+    if type(request.get('source_maps', False)) is not bool:
+        raise ForensicsError('source map collection requires a boolean request')
     if not revision or revision.startswith('-'):
         raise ForensicsError('select a Git commit or ref')
     revision = cli.sha(repo, revision, timeout=15)
@@ -272,11 +318,14 @@ def main(argv=None):
     parser.add_argument('--observe', help='Optional CSS selector of the element subtree to observe')
     parser.add_argument('--window-ms', type=int, default=1200)
     parser.add_argument('--pause-animations', action='store_true')
+    parser.add_argument('--source-maps', action='store_true', help='Capture linked source maps from the selected loopback page')
     parser.add_argument('--timeout', type=int, default=120, help='Time limit per capture')
     parser.add_argument('--memory-mb', type=int, default=2048)
     parser.add_argument('--out', type=Path, required=True)
     options = vars(parser.parse_args(argv))
     request = {key:options.pop(key) for key in ('entry', 'loader', 'args', 'port', 'route', 'click', 'observe', 'window_ms')}
+    if options.pop('source_maps'):
+        request['source_maps'] = True
     try:
         print(capture(request=request, **options))
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, OverflowError,

@@ -31,6 +31,8 @@ PROFILE_ARTIFACTS = {
     '.heapsnapshot': ('heap.heapsnapshot', 64 * 1024 * 1024),
     '.cdptrace': ('trace.cdptrace', 32 * 1024 * 1024),
 }
+BROWSER_MAPS_ARTIFACT = 'browser-source-maps.json'
+BROWSER_MAPS_LIMIT = 16 * 1024 * 1024
 STATECHART_FILE_LIMIT = 16 * 1024 * 1024
 STATECHART_TOTAL_LIMIT = 64 * 1024 * 1024
 STATECHART_REQUIRED = {'report.md', 'runtime.json', 'tlc.out'}
@@ -210,7 +212,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
                 workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None,
                 statechart_output=None, pids_limit=256, capture_failure_screenshot=False,
-                recording_output=None):
+                recording_output=None, browser_maps_output=None):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -219,7 +221,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     After the attached command returns, each untruncated output stream includes
     a SHA-256 digest of the original bytes, before UTF-8 decoding.
     Profile collection uses a scoped helper and copies its artifact out of a
-    disposable container mount.
+    disposable container mount. The browser helper can also save its bounded
+    source map evidence next to the trace.
     Statechart writes only named TLC reports and charts through a separate
     mount, including a normal invariant-violation exit.
     A declared screenshot check can also retain its PNG on an observed exit 1.
@@ -259,6 +262,12 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
             if suffix != '.heapsnapshot':
                 raise SandboxError("invalid scoped profile input for heap allocation tracking")
             profile_file_limit = profile[1]
+    if browser_maps_output is not None and (
+            profile != PROFILE_ARTIFACTS['.cdptrace']
+            or list(command) != ['node', '/workspace/capture-browser.mjs']
+            or Path(browser_maps_output).suffix != '.json'
+            or Path(browser_maps_output).resolve() == Path(profile_output).resolve()):
+        raise SandboxError('browser source maps require a separate JSON output and a scoped Chrome trace')
     if statechart_output is not None and (
             not workspace_read_only or source_root != '/workspace' or workdir != '.'
             or screenshot_output is not None or profile_output is not None or regression
@@ -402,6 +411,11 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                     report['profile_sha256'] = _copy_artifact(artifact_dir, filename, profile_output,
                                                              limit, 'runtime profile')
                     report['profile_path'] = str(Path(profile_output).resolve())
+                    if browser_maps_output is not None:
+                        report['browser_maps_sha256'] = _copy_artifact(
+                            artifact_dir, BROWSER_MAPS_ARTIFACT, browser_maps_output,
+                            BROWSER_MAPS_LIMIT, 'browser source maps')
+                        report['browser_maps_path'] = str(Path(browser_maps_output).resolve())
                 if statechart_output is not None and result.returncode in (0, 1):
                     report['statechart_artifacts'] = _copy_statechart(artifact_dir, statechart_output)
         except subprocess.TimeoutExpired:
