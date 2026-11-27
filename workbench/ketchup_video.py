@@ -13,7 +13,7 @@ import time
 
 from model import codex_review
 from runner.sandbox import MAX_SCREENSHOT, SandboxError, _validated_png
-from workbench import cli, delivery, ketchup_render, pickup, recall
+from workbench import cli, delivery, ketchup_render, pickup, recall_sessions
 from workbench.automate_me import _date, _digest, _file, _keep, _read, _require
 from workbench.intent_review import _ref
 from workbench.prompt_profiles import PSTACK_COMMIT
@@ -68,7 +68,7 @@ def _when(value):
 
 def _anchor(repo, transcript, invocation_line):
     path = _file(transcript)
-    content = _read(path, 5_000_000)
+    content = _read(path, recall_sessions.MAX_BYTES)
     rows = content.splitlines()
     _require(type(invocation_line) is int and 1 < invocation_line <= len(rows), 'select the exact command line')
     row = json.loads(rows[invocation_line - 1])
@@ -80,7 +80,7 @@ def _anchor(repo, transcript, invocation_line):
              and Path(row['cwd']).resolve() == repo and isinstance(invocation, str) and INVOKED.search(invocation),
              'select the actual ketchup-video invocation in the same workspace')
     end = _date(row['timestamp'])
-    session, turns, _, digest = recall._transcript(path, repo, None, end, None)
+    session, turns, _, digest = recall_sessions.transcript(path, repo, None, end, None)
     _require(session == row['sessionId'] and digest == _digest(content), 'chat changed during evidence collection')
     preceding = [turn for turn in turns if turn['line'] < invocation_line]
     human = [turn for turn in preceding if turn['role'] == 'user' and not re.match(r'^/(?:[\w-]+:)?[\w-]+(?:\s|$)', turn['text'])]
