@@ -21,6 +21,14 @@ class DeliveryError(Exception):
     pass
 
 
+class WaitingForWorkflows(DeliveryError):
+    """A stack may poll this exact PR again before attempting a write."""
+
+
+class GitHubWriteNotStarted(DeliveryError):
+    """The local process could not launch and sent no request."""
+
+
 def candidate_diff(repo, base, head):
     try:
         result = subprocess.run(['git', '-C', str(repo), '-c', 'core.quotePath=true', 'diff',
@@ -123,7 +131,7 @@ class GitHub:
         except subprocess.TimeoutExpired as exc:
             raise DeliveryError('merge outcome is unknown after timeout; inspect the PR before retrying') from exc
         except OSError as exc:
-            raise DeliveryError(f'merge command could not start: {exc}') from exc
+            raise GitHubWriteNotStarted(f'merge command could not start: {exc}') from exc
         if process.returncode:
             raise DeliveryError(f'merge refused: {process.stderr.strip()}')
 
@@ -942,38 +950,56 @@ def _openclaw_checks_pass(github, repo, number, pull, data, head, required):
                              for job in jobs if job.get('conclusion') == 'skipped'}
 
 
-def _required_workflows_pass(github, repo, number, pull, data, head, required, *, base_branch='main'):
+def _required_workflows_pass(github, repo, number, pull, data, head, required, *,
+                             base_branch='main', report_pending=False):
     """Verify the latest named PR runs directly; other successful checks do not imply CI ran."""
+    pending = []
+    active = ('queued', 'in_progress', 'waiting', 'requested', 'pending')
     for name in required:
         runs = github._call('run', 'list', '--repo', repo, '--workflow', name,
                             '--commit', head, '--event', 'pull_request',
                             '--json', 'databaseId,workflowName,headSha,headBranch,status,conclusion,event',
                             '--limit', '2')
+        if report_pending and runs == []:
+            pending.append(name)
+            continue
         if not isinstance(runs, list) or not runs or not isinstance(runs[0], dict):
             return False
         run = runs[0]
         run_id = run.get('databaseId')
+        unfinished = (report_pending and run.get('status') in active
+                      and run.get('conclusion') in (None, ''))
         if (type(run_id) is not int or run_id < 1 or run.get('workflowName') != name or
                 run.get('headSha') != head or run.get('headBranch') != pull.get('headRefName') or
-                run.get('event') != 'pull_request' or run.get('status') != 'completed' or
-                run.get('conclusion') != 'success'):
+                run.get('event') != 'pull_request' or (not unfinished and
+                (run.get('status'), run.get('conclusion')) != ('completed', 'success'))):
             return False
         details = github._call('api', f'repos/{repo}/actions/runs/{run_id}')
         if (not isinstance(details, dict) or details.get('id') != run_id or
                 type(details.get('run_attempt')) is not int or details['run_attempt'] != 1 or
                 details.get('name') != name or details.get('head_sha') != head or
                 details.get('head_branch') != pull.get('headRefName') or
-                details.get('event') != 'pull_request' or details.get('status') != 'completed' or
-                details.get('conclusion') != 'success'):
+                details.get('event') != 'pull_request'):
             return False
         prs = details.get('pull_requests')
-        if not isinstance(prs, list) or not any(
+        bound = isinstance(prs, list) and any(
                 isinstance(pr, dict) and pr.get('number') == int(number) and
                 isinstance(pr.get('base'), dict) and pr['base'].get('ref') == base_branch and
                 pr['base'].get('sha') == data['base_commit'] and
                 isinstance(pr.get('head'), dict) and pr['head'].get('ref') == pull.get('headRefName') and
-                pr['head'].get('sha') == head for pr in prs):
+                pr['head'].get('sha') == head for pr in prs)
+        if unfinished and details.get('status') in active and details.get('conclusion') in (None, ''):
+            if not bound and prs != []:
+                return False
+            pending.append(name)
+            continue
+        if not bound or (details.get('status'), details.get('conclusion')) != ('completed', 'success'):
             return False
+        if unfinished:
+            # The run finished between listing and inspecting it. Freshly list it
+            # before trusting its jobs or authorizing a write.
+            pending.append(name)
+            continue
         # A successful workflow conclusion can conceal failures (for example,
         # a workflow-specific known-main-red exception). Check every actual job
         # from this exact attempt, with strict pagination and no unknown states.
@@ -988,6 +1014,8 @@ def _required_workflows_pass(github, repo, number, pull, data, head, required, *
                   'conclusion', 'pull_requests')
         if not isinstance(latest, dict) or any(latest.get(key) != details.get(key) for key in stable):
             return False
+    if pending:
+        raise WaitingForWorkflows('required CI workflow pending: ' + ', '.join(pending))
     return True
 
 
@@ -1086,10 +1114,18 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
                 or pull.get('mergeStateStatus') not in (('CLEAN', 'UNSTABLE') if local_policy else ('CLEAN',))
                 or cli.read(Path(task_path)).get('required_ci_workflows') != stored_workflows
                 or cli.read(Path(task_path)).get('ci_skip_policy') != data.get('ci_skip_policy')
-                or cli.read(Path(task_path)).get('local_gate') != local_policy
-                or (not local_policy and not (_checks_pass(pull) or _openclaw_checks_pass(github, repo, number, pull, data, head, required_workflows)))
-                or (not local_policy and not _required_workflows_pass(github, repo, number, pull, data, head, required_workflows))):
+                or cli.read(Path(task_path)).get('local_gate') != local_policy):
             raise DeliveryError('PR head, base, CI or merge state changed or is not ready')
+        if not local_policy:
+            rollup_ready = _checks_pass(pull) or _openclaw_checks_pass(
+                github, repo, number, pull, data, head, required_workflows)
+            expecting_rollup = stack_binding is not None and pull.get('statusCheckRollup') == []
+            if ((not rollup_ready and not expecting_rollup) or
+                    not _required_workflows_pass(github, repo, number, pull, data, head, required_workflows,
+                                                 report_pending=stack_binding is not None)):
+                raise DeliveryError('PR head, base, CI or merge state changed or is not ready')
+            if expecting_rollup:
+                raise WaitingForWorkflows('GitHub has not attached the PR check rollup')
         if local_policy:
             try:
                 local_gate.validate(cli.read(Path(task_path)), head)

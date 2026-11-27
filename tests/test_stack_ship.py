@@ -27,6 +27,7 @@ class ForkFixture:
         self.merge_bindings = []
         self.push_bindings = []
         self.pending_checks = set()
+        self.failed_checks = set()
 
     def login(self):
         return 'alice'
@@ -52,8 +53,9 @@ class ForkFixture:
     def pull(self, repo, number):
         item = self.members[number-1]
         base_branch = 'main' if number in self.retargeted else item['base_branch']
+        conclusion = 'FAILURE' if number in self.failed_checks else 'SUCCESS'
         checks = ([{'status':'IN_PROGRESS','conclusion':None}] if number in self.pending_checks else
-                  [{'status':'COMPLETED','conclusion':'SUCCESS'}])
+                  [{'status':'COMPLETED','conclusion':conclusion}])
         return {'number':number, 'url':f'https://github.com/{repo}/pull/{number}',
                 'state':'MERGED' if number in self.landed else 'OPEN', 'isDraft':False, 'isCrossRepository':False,
                 'headRefOid':self.rebased_heads.get(number,item['head']), 'headRefName':item['head_branch'],
@@ -64,6 +66,16 @@ class ForkFixture:
     def thread_page(self, repo, number, cursor):
         return {**self.pull(repo, number),
                 'reviewThreads':{'pageInfo':{'hasNextPage':False},'nodes':[]}}
+
+    def _call(self, *args):
+        heads = {self.rebased_heads.get(member['number'],member['head']) for member in self.members}
+        if (args[:7] != ('run','list','--repo',REPO,'--workflow','CI','--commit')
+                or len(args) != 14 or args[7] not in heads
+                or args[8:] != ('--event','pull_request','--json',
+                                'databaseId,workflowName,headSha,headBranch,status,conclusion,event',
+                                '--limit','2')):
+            raise AssertionError(args)
+        return []
 
     def retarget(self, repo, number):
         self.writes.append(('retarget',number))
@@ -380,6 +392,177 @@ class StackShippingTests(unittest.TestCase):
     def test_continuation_reconciles_lost_retarget_after_main_advances(self):
         self.assert_multi_layer_continuation(frontier_change='lost-retarget')
 
+    def test_watch_replays_in_one_call_when_main_advances_during_ci(self):
+        self.assert_multi_layer_continuation(frontier_change='watch-ci')
+
+    def test_single_check_readiness_still_raises_while_checks_are_pending(self):
+        self.github.pending_checks.add(1)
+        with self.assertRaisesRegex(stack_ship.ShippingError, 'pending-checks'):
+            stack_ship._ready(self.github, REPO, self.github.members[0])
+        self.assertEqual(self.github.writes, [])
+
+    def test_watch_sleeps_only_until_the_persisted_deadline(self):
+        self.github.pending_checks.add(1)
+        now = [1000]
+        sleeps = []
+        timeouts = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        def ship(path, **options):
+            timeouts.append(options['timeout'])
+            return stack_ship.execute(path,merge=self.github.merge,**options)
+
+        options = {'tasks_root':self.root/'tasks','workspaces_root':self.root/'worktrees',
+                   'seconds':65,'reader':self.github,'ship':ship,'watch':True,'poll_seconds':30,
+                   'clock':lambda:now[0],'sleep':sleep}
+        result = stack_rebase.continue_shipping(self.plan,**options)
+        self.assertEqual((result['status'],result['reason'],result['landed']),
+                         ('blocked','shipping-time-limit',[]),result)
+        self.assertEqual(sleeps,[30,30,5])
+        self.assertEqual(timeouts,[65,35,5])
+        journal = cli.read(Path(result['continuation']))
+        self.assertEqual(journal['deadline'],1065)
+        self.assertEqual(stack_rebase.continue_shipping(self.plan,**options)['reason'],'shipping-time-limit')
+        self.assertEqual(timeouts,[65,35,5])
+        self.assertEqual(sleeps,[30,30,5])
+        self.assertEqual(self.github.writes,[])
+
+    def test_watch_stops_on_failed_checks_without_polling(self):
+        self.github.failed_checks.add(1)
+
+        def unexpected_sleep(_):
+            self.fail('A failed check must not enter the polling loop')
+
+        result = stack_rebase.continue_shipping(self.plan,tasks_root=self.root/'tasks',
+            workspaces_root=self.root/'worktrees',seconds=65,reader=self.github,watch=True,
+            poll_seconds=30,clock=lambda:1000,sleep=unexpected_sleep,
+            ship=lambda path, **options: stack_ship.execute(path,merge=self.github.merge,**options))
+        self.assertEqual((result['status'],result['landed'],result['pr']),('blocked',[],1),result)
+        self.assertIn('fail',result['reason'])
+        self.assertFalse(result.get('wait_for'))
+        self.assertEqual(self.github.writes,[])
+
+    def test_watch_stops_on_failed_required_workflow_even_if_preview_is_pending(self):
+        preview_pending = [{'status':'IN_PROGRESS','conclusion':None,'workflowName':'Preview'}]
+        original_pull = self.github.pull
+        original_call = self.github._call
+        root = self.github.members[0]
+
+        def pull(repo, number):
+            result = original_pull(repo,number)
+            if number == 1:
+                result['statusCheckRollup'] = preview_pending
+            return result
+
+        def failed_workflow(*args):
+            original_call(*args)
+            self.assertEqual(args[7],root['head'])
+            return [{'databaseId':123,'workflowName':'CI','headSha':root['head'],
+                     'headBranch':root['head_branch'],'status':'completed','conclusion':'failure',
+                     'event':'pull_request'}]
+
+        def unexpected_sleep(_):
+            self.fail('An unrelated pending Preview must not hide the failed required workflow')
+
+        with (patch.object(self.github,'pull',side_effect=pull),
+              patch.object(self.github,'_call',side_effect=failed_workflow) as lookup):
+            result = stack_rebase.continue_shipping(self.plan,tasks_root=self.root/'tasks',
+                workspaces_root=self.root/'worktrees',seconds=65,reader=self.github,watch=True,
+                poll_seconds=30,clock=lambda:1000,sleep=unexpected_sleep,
+                ship=lambda path, **options: stack_ship.execute(path,merge=self.github.merge,**options))
+        lookup.assert_called_once()
+        self.assertEqual((result['status'],result['landed'],result['pr']),('blocked',[],1),result)
+        self.assertIn('required',result['reason'])
+        self.assertFalse(result.get('wait_for'))
+        self.assertEqual(self.github.writes,[])
+
+    def test_watch_polls_when_a_blocked_pr_has_no_required_workflow_run_yet(self):
+        now = [1000]
+        sleeps = []
+        queries = []
+        original_pull = self.github.pull
+        root = self.github.members[0]
+
+        def pull(repo, number):
+            result = original_pull(repo,number)
+            if number == 1 and not sleeps:
+                result.update(mergeStateStatus='BLOCKED',statusCheckRollup=[])
+            return result
+
+        def workflow_runs(*args):
+            queries.append(args)
+            self.assertEqual(args[:12],('run','list','--repo',REPO,'--workflow','CI',
+                                        '--commit',root['head'],'--event','pull_request','--json',
+                                        'databaseId,workflowName,headSha,headBranch,status,conclusion,event'))
+            self.assertEqual(args[12:],('--limit','2'))
+            return []
+
+        def sleep(seconds):
+            self.assertEqual(self.github.writes,[])
+            retained = cli.read(self.plan.with_suffix('.json.continue.json'))['result']
+            self.assertEqual(retained['wait_for'],'pending-required-workflows')
+            self.assertIn('required CI workflow pending: CI',retained['reason'])
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        with (patch.object(self.github,'pull',side_effect=pull),
+              patch.object(self.github,'_call',side_effect=workflow_runs,create=True)):
+            result = stack_rebase.continue_shipping(self.plan,tasks_root=self.root/'tasks',
+                workspaces_root=self.root/'worktrees',seconds=65,reader=self.github,watch=True,
+                poll_seconds=30,clock=lambda:now[0],sleep=sleep,
+                ship=lambda path, **options: stack_ship.execute(path,merge=self.github.merge,**options))
+        self.assertEqual((result['status'],result['landed']),('complete',[1,2]),result)
+        self.assertEqual(sleeps,[30])
+        self.assertEqual(len(queries),1)
+        self.assertEqual(self.github.writes,[('land',1),('retarget',2),('land',2)])
+
+    def test_watch_confirms_a_delayed_merge_without_writing_it_again(self):
+        self.github.opened_after_push.add(1)
+        now = [1000]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            self.assertEqual(self.github.writes,[('land',1)])
+            self.assertEqual(self.github.branch(REPO,'main'),self.github.members[0]['head'])
+            self.github.landed.add(1)
+            now[0] += seconds
+
+        result = stack_rebase.continue_shipping(self.plan,tasks_root=self.root/'tasks',
+            workspaces_root=self.root/'worktrees',seconds=65,reader=self.github,watch=True,
+            poll_seconds=30,clock=lambda:now[0],sleep=sleep,
+            ship=lambda path, **options: stack_ship.execute(path,merge=self.github.merge,**options))
+        self.assertEqual((result['status'],result['landed'],result['ceiling']),('complete',[1,2],2),result)
+        self.assertEqual(sleeps,[30])
+        self.assertEqual(self.github.writes,[('land',1),('retarget',2),('land',2)])
+
+    def test_watch_stops_without_polling_when_merge_cli_did_not_start(self):
+        attempts = []
+
+        def failed_merge(task, repo, number, github, *, stack_binding, revalidate, deadline):
+            revalidate()
+            attempts.append(number)
+            raise delivery.GitHubWriteNotStarted('merge CLI did not start')
+
+        def unexpected_sleep(_):
+            self.fail('A merge known not to have started must not wait for a remote confirmation')
+
+        result = stack_rebase.continue_shipping(self.plan,tasks_root=self.root/'tasks',
+            workspaces_root=self.root/'worktrees',seconds=65,reader=self.github,watch=True,
+            poll_seconds=30,clock=lambda:1000,sleep=unexpected_sleep,
+            ship=lambda path, **options: stack_ship.execute(path,merge=failed_merge,**options))
+        self.assertEqual((result['status'],result['landed'],result['pr']),('blocked',[],1),result)
+        self.assertIn('merge CLI did not start',result['reason'])
+        self.assertFalse(result.get('wait_for'))
+        self.assertEqual(attempts,[1])
+        self.assertEqual(self.github.writes,[])
+        journal = cli.read(Path(result['journal']))
+        self.assertEqual([(event['pr'],event['head']) for event in journal['events']
+                          if event['phase'] == 'merge-intent'],[(1,self.github.members[0]['head'])])
+
     def assert_multi_layer_continuation(self, *, interrupt_last_push=False, frontier_change=None):
         third = self.append_member('third','third.txt')
         outside = self.append_member('fourth','outside-plan.txt')
@@ -478,7 +661,7 @@ class StackShippingTests(unittest.TestCase):
             number = replay['pr']
             self.assertEqual(number,landed_count+1)
             if number in replayed:
-                self.assertIn(frontier_change,('advance','lost-push','rewrite-main'))
+                self.assertIn(frontier_change,('advance','lost-push','rewrite-main','watch-ci'))
                 self.assertEqual(replayed[number]['old_patch_id'],replay['old_patch_id'])
                 self.assertNotEqual(replayed[number]['head'],replay['head'])
             self.assertEqual(replay['status'],'verified')
@@ -540,17 +723,52 @@ class StackShippingTests(unittest.TestCase):
             tree = cli.git(checkout,'rev-parse',f'{parent}^{{tree}}')
             return cli.git(checkout,'commit-tree',tree,'-p',parent,'-m',title)
 
+        def advance_main(verified_base):
+            checkout,remote = self.github.checkout,self.github.remote
+            upstream = self.root/'upstream-change'
+            cli.git(checkout,'worktree','add','--detach',str(upstream),verified_base)
+            (upstream/'upstream.txt').write_text('Another change landed while checks were pending.\n')
+            cli.git(upstream,'add','upstream.txt')
+            cli.git(upstream,'commit','-qm','Advance main while child CI is pending')
+            advanced = cli.sha(upstream,'HEAD')
+            delivery._fast_forward_push(checkout,str(remote),verified_base,advanced)
+            self.assertEqual(self.github.branch(REPO,'main'),advanced)
+            return advanced
+
         def assert_still_waiting(result):
             self.assertEqual((result['status'],result['landed'],result['pr'],result['ceiling']),
                              ('blocked',[1],2,3),result)
             self.assertIn('pending-checks',result['reason'])
+
+        if frontier_change == 'watch-ci':
+            now = [1000]
+            sleeps = []
+
+            def sleep(seconds):
+                sleeps.append(seconds)
+                now[0] += seconds
+                if len(sleeps) == 1:
+                    self.assertEqual(self.github.writes,[('land',1),('update',2)])
+                    self.assertEqual([replay['pr'] for replay in replay_attempts],[2])
+                    advance_main(replayed[2]['base'])
+                else:
+                    self.assertEqual(len(sleeps),2)
+                    self.assertEqual(self.github.writes,[('land',1),('update',2),('update',2)])
+                    self.assertEqual([replay['pr'] for replay in replay_attempts],[2,2])
+                    self.assertEqual(replayed[2]['base'],self.github.branch(REPO,'main'))
+                    self.github.pending_checks.remove(2)
+
+            options.update(seconds=100,watch=True,poll_seconds=30,clock=lambda:now[0],sleep=sleep)
 
         with (patch.object(stack_rebase,'_retained',side_effect=retained_task),
               patch.object(stack_ship.stack_verify,'_proof_locked',side_effect=independent_proof),
               patch.object(stack_ship,'_proof',side_effect=self.shipping_proof),
               patch.object(cli,'gate',side_effect=lambda data, head:(head,[]))):
             result = stack_rebase.continue_shipping(self.plan,**options)
-            if frontier_change:
+            if frontier_change == 'watch-ci':
+                self.assertEqual(sleeps,[30,30])
+                self.assertEqual(cli.read(Path(result['continuation']))['deadline'],1100)
+            elif frontier_change:
                 lost_responses = {'lost-push':'lost first child branch update response',
                                   'lost-retarget':'lost child retarget response'}
                 if frontier_change in lost_responses:
@@ -581,14 +799,7 @@ class StackShippingTests(unittest.TestCase):
                 continuation = Path(result['continuation'])
                 initial_deadline = cli.read(continuation)['deadline']
                 checkout,remote = self.github.checkout,self.github.remote
-                upstream = self.root/'upstream-change'
-                cli.git(checkout,'worktree','add','--detach',str(upstream),verified_base)
-                (upstream/'upstream.txt').write_text('Another change landed while checks were pending.\n')
-                cli.git(upstream,'add','upstream.txt')
-                cli.git(upstream,'commit','-qm','Advance main while child CI is pending')
-                advanced = cli.sha(upstream,'HEAD')
-                delivery._fast_forward_push(checkout,str(remote),verified_base,advanced)
-                self.assertEqual(self.github.branch(REPO,'main'),advanced)
+                advanced = advance_main(verified_base)
                 if frontier_change == 'unknown-head':
                     replacement = main_commit(first_replay['head'],'External change to the published child head')
                     ref = 'refs/heads/second'

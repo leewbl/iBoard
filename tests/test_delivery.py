@@ -33,6 +33,7 @@ class FakeGitHub:
         self.issue_state = 'open'
         self.closed_issues = []
         self.run_status = 'success'
+        self.run_phase = 'completed'
         self.run_missing = False
         self.run_detail_changes = {}
         self.run_reads = 0
@@ -51,14 +52,14 @@ class FakeGitHub:
                 return []
             return [{'databaseId': 123, 'workflowName': 'CI', 'headSha': self.head,
                      'headBranch': 'workbench/issue-1', 'event': 'pull_request',
-                     'status': 'completed', 'conclusion': self.run_status}]
+                     'status': self.run_phase, 'conclusion': self.run_status}]
         if args[0] == 'api':
             if '/jobs?' in args[1]:
                 return self.jobs_response
             self.details_reads += 1
             details = {'id': 123, 'run_attempt': 1, 'name': 'CI', 'head_sha': self.head,
                        'head_branch': 'workbench/issue-1', 'event': 'pull_request',
-                       'status': 'completed', 'conclusion': self.run_status,
+                       'status': self.run_phase, 'conclusion': self.run_status,
                        'pull_requests': [{'number': 1, 'base': {'ref': 'main', 'sha': self.base},
                                           'head': {'ref': 'workbench/issue-1', 'sha': self.head}}]}
             details.update(self.run_detail_changes)
@@ -283,6 +284,77 @@ class DeliveryTests(unittest.TestCase):
         with self.assertRaises(delivery.DeliveryError):
             delivery.guarded_merge(self.task, 'alice/project', 1, self.github)
         self.assertFalse(self.github.pushed)
+
+    def test_stack_waits_for_named_ci_with_an_unrelated_green_check(self):
+        self.github.protected = False
+        binding = {'head': self.head, 'base': self.github.base, 'head_branch': 'workbench/issue-1',
+                   'ci_workflows': ['CI']}
+        original_pull = self.github.pull
+
+        def pull(repo, number):
+            result = original_pull(repo, number)
+            result['statusCheckRollup'][0].update(name='Preview', workflowName='Preview')
+            return result
+
+        def before_write():
+            self.fail('delivery attempted a write while required CI was pending')
+
+        with patch.object(self.github, 'pull', side_effect=pull):
+            for missing in (True, False):
+                with self.subTest(missing=missing):
+                    self.github.run_missing = missing
+                    self.github.run_phase = 'in_progress'
+                    self.github.run_status = None
+                    with self.assertRaises(delivery.WaitingForWorkflows):
+                        delivery._guarded_merge(self.task, 'alice/project', 1, self.github,
+                                                stack_binding=binding, revalidate=before_write)
+                    with self.assertRaises(delivery.DeliveryError) as standalone:
+                        delivery.guarded_merge(self.task, 'alice/project', 1, self.github)
+                    self.assertNotIsInstance(standalone.exception, delivery.WaitingForWorkflows)
+                    self.assertFalse(self.github.merged)
+                    self.assertFalse(self.github.pushed)
+
+    def test_stack_wrong_identity_or_failed_named_ci_stops_even_when_another_is_pending(self):
+        workflows = ['CI', 'Tests']
+        data = cli.read(self.task)
+        data['required_ci_workflows'] = workflows
+        cli.write(self.task, data)
+        self.github.protected = False
+        binding = {'head': self.head, 'base': self.github.base, 'head_branch': 'workbench/issue-1',
+                   'ci_workflows': workflows}
+        original_call = self.github._call
+
+        def before_write():
+            self.fail('delivery attempted a write with an invalid required workflow')
+
+        for terminal in ('wrong-head', 'failed'):
+            with self.subTest(terminal=terminal):
+                observed = []
+
+                def call(*args):
+                    if args[0] == 'run':
+                        name = args[args.index('--workflow') + 1]
+                        observed.append(name)
+                        if name == 'CI':
+                            return []
+                        return [{'databaseId': 456, 'workflowName': name,
+                                 'headSha': '0' * 40 if terminal == 'wrong-head' else self.head,
+                                 'headBranch': 'workbench/issue-1', 'event': 'pull_request',
+                                 'status': 'in_progress' if terminal == 'wrong-head' else 'completed',
+                                 'conclusion': None if terminal == 'wrong-head' else 'failure'}]
+                    if args == ('api', 'repos/alice/project/actions/runs/456'):
+                        return {**original_call('api', 'repos/alice/project/actions/runs/123'),
+                                'id': 456, 'name': 'Tests', 'conclusion': 'failure'}
+                    return original_call(*args)
+
+                with patch.object(self.github, '_call', side_effect=call):
+                    with self.assertRaises(delivery.DeliveryError) as stopped:
+                        delivery._guarded_merge(self.task, 'alice/project', 1, self.github,
+                                                stack_binding=binding, revalidate=before_write)
+                self.assertNotIsInstance(stopped.exception, delivery.WaitingForWorkflows)
+                self.assertEqual(observed, workflows)
+                self.assertFalse(self.github.merged)
+                self.assertFalse(self.github.pushed)
 
     def test_required_ci_failure_cannot_be_hidden_by_successful_rollup(self):
         self.github.protected = False

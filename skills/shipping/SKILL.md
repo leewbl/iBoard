@@ -25,14 +25,18 @@ the same frozen plan through every required replay:
 
 ```sh
 python3 -m workbench.stack_rebase continue --plan shipping-plan.json \
-  --tasks-root tasks --workspaces-root workspaces --seconds 1800
+  --tasks-root tasks --workspaces-root workspaces --seconds 3600 --watch
 ```
 
 For image-based tasks, pass `--seed-image sha256:...` using a local image whose
 tracked source matches the frozen root base. The workbench derives each new
-baseline offline and verifies its source. Keep the same arguments when
-resuming after pending checks or a lost response. The original deadline
-continues to run. Renewed approval is needed when starting a new plan.
+baseline offline and verifies its source. In watch mode, the runner records
+the current wait, rechecks landed members and polls the next PR for readiness.
+It waits for pending checks, required approval or confirmation of a recorded
+write. A failed
+check or a mismatched PR stops the run. Use `--poll-seconds` to set the
+interval (30 seconds by default, up to 1800). Omit `--watch` to return at
+the first wait. Resuming keeps the saved deadline, plan, roots and image.
 
 To stop at the first member that requires a replay, use the original land
 command:
@@ -73,6 +77,7 @@ Run `land` again with the same plan, or use `continue` to replay again if
 main has advanced while checks were pending. Each replay starts from the
 original patch and verifies it against the latest main. It updates the same
 PR only if its head still matches the last confirmed update. A rewritten
-main, an outside head change, or an unconfirmed write halts further writes.
+main or an outside head change stops shipping. An unconfirmed write only
+permits read-only reconciliation until its outcome is known.
 Report each confirmed PR and the first pending or blocked member. Use
 `workbench.stack_verify` for read-only handoff.

@@ -196,11 +196,40 @@ def _confirmed_main(github, repo, member):
     return trunk
 
 
-def _ready(github, repo, member):
+def _ready(github, repo, member, data=None):
     status = pr_watch.snapshot(github, repo, member['number'], 'check', member['head'], member['base'])
-    if (status['status'] != 'github-ready' or status['base_branch'] != 'main'
-            or status['head_branch'] != member['head_branch']):
-        raise ShippingError('current GitHub frontier is blocked: ' + status['reason'])
+    if status['base_branch'] == 'main' and status['head_branch'] == member['head_branch']:
+        if status['status'] == 'github-ready':
+            return None
+        if data is None:
+            raise ShippingError('current GitHub frontier is blocked: ' + status['reason'])
+        if (status['reason'] == 'base-drift' and status['head'] == member['head']
+                and status['base'] != member['base']):
+            raise pr_watch.SnapshotChanged('main changed while checking the stack frontier')
+        rollup_pending = status['reason'] == 'pending-checks'
+        merge_blocked = (status['reason'] == 'github-merge-gate' and status['merge_state'] == 'BLOCKED'
+                         and status['mergeability'] == 'MERGEABLE')
+        if (rollup_pending or merge_blocked) and not data.get('local_gate'):
+            # GitHub may protect the branch before an exact named workflow appears
+            # in the rollup. A pending unrelated check can also conceal a failure.
+            pull = _observe(github, repo, member)
+            if pull['state'] != 'OPEN' or pull['isDraft'] or pull['baseRefName'] != 'main':
+                raise ShippingError('the stack frontier is no longer open on main')
+            if pull['baseRefOid'] != member['base']:
+                raise pr_watch.SnapshotChanged('main changed before checking required workflows')
+            required = delivery._merge_workflows(data, member.get('ci_workflows'))
+            try:
+                passed = delivery._required_workflows_pass(github, repo, member['number'], pull, data,
+                                                           member['head'], required, report_pending=True)
+            except delivery.WaitingForWorkflows:
+                if rollup_pending:
+                    return status['reason']
+                raise
+            if not passed:
+                raise ShippingError('a required CI workflow failed or does not match the verified PR')
+        if status['status'] == 'waiting':
+            return status['reason']
+    raise ShippingError('current GitHub frontier is blocked: ' + status['reason'])
 
 
 def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
@@ -229,9 +258,10 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
             journal['events'].append(entry)
             cli.write(journal_path, journal)
 
-        def result(status, *, pr=None, reason=None):
+        def result(status, *, pr=None, reason=None, wait_for=None):
             return {'status':status, 'repo':repo, 'ceiling':frozen['ceiling'], 'landed':confirmed,
-                    'pr':pr, 'reason':reason, 'journal':str(journal_path)}
+                    'pr':pr, 'reason':reason, 'journal':str(journal_path),
+                    **({'wait_for':wait_for} if wait_for else {})}
 
         for original in frozen['members']:
             number = original['number']
@@ -252,10 +282,19 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                         save(member, 'landed', head=member['head'], main=trunk_at_confirmation)
                     confirmed.append(number)
                     continue
-                if step in ('merge-intent', 'landed'):
-                    return result('awaiting-confirmation', pr=number, reason='merge-outcome-unconfirmed')
                 if pull['state'] != 'OPEN' or pull['isDraft']:
                     raise ShippingError('the pinned PR must be open and ready for review')
+                if step in ('merge-intent', 'landed'):
+                    if pull['baseRefName'] != 'main':
+                        raise ShippingError('the PR left main after a merge was requested')
+                    checks = pr_watch._checks(pull['statusCheckRollup'])
+                    if any(check['state'] == 'failed' for check in checks):
+                        raise ShippingError('a PR check failed while merge confirmation was pending')
+                    run_control.admit(task, ShippingError)
+                    if member is not original:
+                        run_control.admit(original['task'], ShippingError)
+                    return result('awaiting-confirmation', pr=number, reason='merge-outcome-unconfirmed',
+                                  wait_for='remote-confirmation')
                 with task_lock(task):
                     run_control.admit(task, ShippingError)
                     if member is not original:
@@ -264,7 +303,10 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                     trunk = github.branch(repo, 'main')
                     if step == 'retarget-intent':
                         if pull['baseRefName'] != 'main' or pull['baseRefOid'] != trunk:
-                            return result('awaiting-confirmation', pr=number, reason='retarget-outcome-unconfirmed')
+                            if pull['baseRefName'] not in ('main', member['base_branch']):
+                                raise ShippingError('the PR target changed outside the retarget request')
+                            return result('awaiting-confirmation', pr=number, reason='retarget-outcome-unconfirmed',
+                                          wait_for='remote-confirmation')
                         save(member, 'retargeted', head=member['head'], base=member['base'])
                     if trunk != member['base']:
                         reason = ('published-restack-base-moved' if member is not original
@@ -291,7 +333,10 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                         raise ShippingError('GitHub has not confirmed the verified main base')
                     if journal['steps'].get(str(number), {}).get('phase') == 'retarget-intent':
                         save(member, 'retargeted', head=member['head'], base=member['base'])
-                    _ready(github, repo, member)
+                    waiting = _ready(github, repo, member, data)
+                    if waiting:
+                        return result('blocked', pr=number, reason='current GitHub frontier is blocked: ' + waiting,
+                                      wait_for=waiting)
 
                     def before_write():
                         if _member(original, journal, repo) != member:
@@ -311,11 +356,27 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                         raise ShippingError('GitHub has not confirmed landing into main')
                     save(member, 'landed', head=member['head'], main=_confirmed_main(github, repo, member))
                     confirmed.append(number)
+            except delivery.GitHubWriteNotStarted as error:
+                if journal['steps'].get(str(number), {}).get('phase') == 'merge-intent':
+                    save(member, 'write-not-started', head=member['head'], base=member['base'], reason=str(error))
+                return result('blocked', pr=number, reason=str(error))
+            except delivery.WaitingForWorkflows as error:
+                return result('blocked', pr=number, reason=str(error), wait_for='pending-required-workflows')
+            except pr_watch.SnapshotChanged as error:
+                return result('blocked', pr=number, reason=str(error), wait_for='github-status-refresh')
             except (OSError, ValueError, KeyError, RuntimeError, cli.WorkbenchError, delivery.DeliveryError,
                     pr_watch.WatchError, start.StartError, autopilot.AutopilotError,
                     ShippingError) as error:
-                pending = journal['steps'].get(str(number), {}).get('phase') in ('retarget-intent', 'merge-intent')
-                return result('awaiting-confirmation' if pending else 'blocked', pr=number, reason=str(error))
+                phase = journal['steps'].get(str(number), {}).get('phase')
+                pending = phase in ('retarget-intent', 'merge-intent')
+                if pending and phase != step:
+                    wait_for = 'remote-confirmation'
+                elif isinstance(error, delivery.DeliveryError) and pr_watch.TRANSIENT.search(str(error)):
+                    wait_for = 'github-status-refresh'
+                else:
+                    wait_for = None
+                return result('awaiting-confirmation' if pending else 'blocked', pr=number, reason=str(error),
+                              wait_for=wait_for)
         return result('complete')
 
 

@@ -82,8 +82,9 @@ def _next(frozen, journal):
                 raise RebaseError('shipping journal identifies a different landed head')
             landed.append(effective)
             continue
-        if not landed or (step and (step.get('phase'), step.get('head'), step.get('base'))
-                                  != ('retargeted', member['head'], member['base'])):
+        known_steps = {('retargeted', member['head'], member['base']),
+                       ('write-not-started', effective['head'], effective['base'])}
+        if not landed or (step and (step.get('phase'), step.get('head'), step.get('base')) not in known_steps):
             raise RebaseError('restacking requires a confirmed parent and a child with no pending write')
         return landed, member, effective
     raise RebaseError('the frozen shipping plan has already landed')
@@ -418,6 +419,7 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
             'receipt':str(receipt_path), 'receipt_sha256':receipt_sha, 'proof':proof,
         }
         stack_ship._member(child, shipping, repo)
+        shipping['steps'].pop(str(number), None)
         cli.write(shipping_path, shipping)
         if 'confirmed' not in [item['action'] for item in journal['events']]:
             mark('confirmed')
@@ -481,10 +483,13 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
 
 
 def continue_shipping(plan_path, *, tasks_root, workspaces_root, seconds, seed_image=None, reader=None,
+                      watch=False, poll_seconds=30, clock=time.time, sleep=time.sleep,
                       ship=stack_ship.execute, prepare_rebase=prepare, publish=publish_rebased):
     """Advance a frozen stack through fresh base verification and exact-head publication."""
     if type(seconds) is not int or not 1 <= seconds <= 86_400:
         raise RebaseError('provide a bounded time for continuous shipping')
+    if type(watch) is not bool or type(poll_seconds) is not int or not 1 <= poll_seconds <= 1800:
+        raise RebaseError('provide a watch interval from 1 to 1800 seconds')
     if seed_image is not None and not re.fullmatch(r'sha256:[a-f0-9]{64}', seed_image):
         raise RebaseError('the local seed image must be pinned by image ID')
     path = Path(plan_path).expanduser()
@@ -502,19 +507,43 @@ def continue_shipping(plan_path, *, tasks_root, workspaces_root, seconds, seed_i
         config = {'plan_sha256':plan_sha, 'tasks_root':str(tasks_root),
                   'workspaces_root':str(workspaces_root), 'seconds':seconds, 'seed_image':seed_image}
         run = (cli.read(run_path) if run_path.exists() else
-               {'schema':cli.SCHEMA, 'config':config, 'deadline':time.time() + seconds})
+               {'schema':cli.SCHEMA, 'config':config, 'deadline':clock() + seconds})
         if run.get('config') != config:
             raise RebaseError('continue with the original plan, roots, image and time limit')
         if not run_path.exists():
             cli.write(run_path, run)
 
         def remaining():
-            return max(0, int(run['deadline'] - time.time()))
+            return max(0, int(run['deadline'] - clock()))
 
         def finish(result):
             run['result'] = result
             cli.write(run_path, run)
             return {**result, 'continuation':str(run_path)}
+
+        refresh_errors = 0
+
+        def observe(result):
+            nonlocal refresh_errors
+            condition = result.get('wait_for')
+            if not watch or not condition:
+                return finish(result)
+            refresh_errors = refresh_errors + 1 if condition == 'github-status-refresh' else 0
+            if refresh_errors >= 3:
+                stopped = {key:value for key,value in result.items() if key != 'wait_for'}
+                return finish({**stopped, 'status':'blocked', 'reason':'status-query-retries-exhausted',
+                               'last_reason':result['reason']})
+            finish(result)
+            delay = min(poll_seconds, run['deadline'] - clock())
+            if delay > 0:
+                sleep(delay)
+            return None
+
+        def transient_snapshot(error):
+            if not watch or not pr_watch.TRANSIENT.search(str(error)):
+                raise error
+            return observe({**run.get('result', {}), 'status':'blocked', 'reason':'github-temporarily-unavailable',
+                            'wait_for':'github-status-refresh'})
 
         while (left := remaining()) > 0:
             if cli.digest(path) != plan_sha:
@@ -530,17 +559,36 @@ def continue_shipping(plan_path, *, tasks_root, workspaces_root, seconds, seed_i
                            'pr':frontier['pr'], 'base':frontier['current_main']}
                 if any(evidence.get(key) != value for key, value in binding.items()):
                     raise RebaseError('pending restack checkpoint belongs to a different plan or frontier')
-                updated = publish(receipt, seconds=left, reader=reader)
+                try:
+                    updated = publish(receipt, seconds=left, reader=reader)
+                except delivery.DeliveryError as error:
+                    if (stopped := transient_snapshot(error)) is not None:
+                        return stopped
+                    continue
                 if updated.get('status') not in ('updated', 'stale-base'):
-                    return finish({**run['result'], 'status':updated['status'], 'reason':updated['reason'],
-                                   'restack':str(receipt)})
+                    status = {**run['result'], 'status':updated['status'], 'reason':updated['reason'],
+                              'restack':str(receipt)}
+                    if updated['status'] == 'awaiting-confirmation':
+                        status['wait_for'] = 'remote-confirmation'
+                    if (stopped := observe(status)) is not None:
+                        return stopped
+                    continue
+                refresh_errors = 0
                 del run['pending_update']
                 cli.write(run_path, run)
                 continue
-            result = ship(path, timeout=left, github=reader)
+            try:
+                result = ship(path, timeout=left, github=reader)
+            except delivery.DeliveryError as error:
+                if (stopped := transient_snapshot(error)) is not None:
+                    return stopped
+                continue
             if (result.get('reason') not in ('fresh-base-verification-required', 'published-restack-base-moved')
                     or not result.get('landed')):
-                return finish(result)
+                if (stopped := observe(result)) is not None:
+                    return stopped
+                continue
+            refresh_errors = 0
             if result != run.get('result'):
                 finish(result)
             base, pr = result['current_main'], result['pr']
@@ -566,7 +614,10 @@ def continue_shipping(plan_path, *, tasks_root, workspaces_root, seconds, seed_i
         last = run.get('result', {})
         if last.get('status') == 'complete':
             return {**last, 'continuation':str(run_path)}
-        return finish({**last, 'status':'blocked', 'reason':'shipping-time-limit'})
+        stopped = {key:value for key,value in last.items() if key != 'wait_for'}
+        if 'wait_for' in last:
+            stopped['last_reason'] = last['reason']
+        return finish({**stopped, 'status':'blocked', 'reason':'shipping-time-limit'})
 
 
 def main(argv=None):
@@ -586,6 +637,8 @@ def main(argv=None):
         advance.add_argument('--'+name,required=True)
     advance.add_argument('--seconds',type=int,required=True)
     advance.add_argument('--seed-image')
+    advance.add_argument('--watch', action='store_true', help='Poll known pending states under the original deadline')
+    advance.add_argument('--poll-seconds', type=int, default=30)
     args=parser.parse_args(argv)
     try:
         with redirect_stdout(sys.stderr):
@@ -596,7 +649,8 @@ def main(argv=None):
                 report = publish_rebased(args.receipt,seconds=args.seconds)
             else:
                 report = continue_shipping(args.plan,tasks_root=args.tasks_root,workspaces_root=args.workspaces_root,
-                                           seconds=args.seconds,seed_image=args.seed_image)
+                                           seconds=args.seconds,seed_image=args.seed_image,
+                                           watch=args.watch,poll_seconds=args.poll_seconds)
     except (OSError,ValueError,RebaseError,verify_pr.VerifyError,pr_watch.WatchError,start.StartError,
             stack_ship.ShippingError,delivery.DeliveryError,cli.WorkbenchError) as error:
         parser.error(str(error))
