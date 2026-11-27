@@ -18,6 +18,7 @@ class PstackHelpTests(unittest.TestCase):
     def test_named_scenarios_point_to_distinct_verification_lanes(self):
         expected = {
             'setup-models': 'model_profiles probe',
+            'poteto-mode': 'poteto_mode list',
             'bro': 'intent_review collect --mode bro',
             'in-your-own-words': 'intent_review collect --mode in-your-own-words',
             'reframe': 'intent_review collect --mode reframe',

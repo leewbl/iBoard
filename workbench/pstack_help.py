@@ -35,6 +35,11 @@ SCENARIOS = {
     'help': Scenario(
         'Find a workflow for a task', HELP_SOURCE, 'skills/poteto-help/SKILL.md',
         'pstack_help', 'The pinned source, local guide, available entry point and its evidence requirements'),
+    'poteto-mode': Scenario(
+        'Choose and execute a pinned pstack workflow', 'skills/poteto-mode/SKILL.md',
+        'skills/poteto-mode/SKILL.md', 'poteto_mode list',
+        'A cited selection, an explicit stage plan and per-stage native receipts',
+        'Route selection gives advice. Run only the exact approved native plan.'),
     'in-your-own-words': Scenario(
         'Confirm the goal, underlying problem, constraints and unknowns', 'skills/in-your-own-words/SKILL.md',
         'skills/in-your-own-words/SKILL.md', 'intent_review collect --mode in-your-own-words',
