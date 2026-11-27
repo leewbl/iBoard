@@ -319,7 +319,7 @@ def _reviewed_screenshot(data, head):
     raise PublishError('no independently reviewed screenshot is bound to this candidate')
 
 
-def _screenshot_body(task_path, data, head, repo, github, *, refactor_review=None):
+def _screenshot_body(task_path, data, head, repo, github, *, refactor_review=None, replay_check=None):
     """Publish a reviewed screenshot in a standalone, reproducible evidence branch."""
     review_data = data
     if refactor_review is not None:
@@ -369,7 +369,8 @@ def _screenshot_body(task_path, data, head, repo, github, *, refactor_review=Non
             if issues or checked_head != head:
                 raise PublishError('evidence or budget changed before screenshot publication')
             delivery._independent_verification(current_data, head)
-            _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review)
+            _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                                replay_check=replay_check)
             github.push_new(directory, repo, branch, commit)
         elif current != commit:
             raise PublishError('screenshot evidence branch differs; refusing to overwrite')
@@ -524,6 +525,19 @@ class Publisher(delivery.GitHub):
                                       capture_output=True, timeout=self._bounded(30))
             if ancestor.returncode:
                 raise PublishError('updated candidate must descend from the published candidate')
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise PublishError('unable to check the ancestry of the updated candidate') from error
+        self._push_leased(workspace, repo, branch, old, head)
+
+    def push_rebased(self, workspace, repo, branch, old, head):
+        """Replace the original verified task branch after a replay gate."""
+        if (not re.fullmatch(r'workbench/[A-Za-z0-9][A-Za-z0-9_-]{0,63}', branch)
+                or not all(re.fullmatch(r'[0-9a-f]{40}', x) for x in (old, head)) or old == head):
+            raise PublishError('invalid replay branch or revisions')
+        self._push_leased(workspace, repo, branch, old, head)
+
+    def _push_leased(self, workspace, repo, branch, old, head):
+        try:
             proc = subprocess.run(['git', '-C', workspace, 'push',
                                    f'--force-with-lease=refs/heads/{branch}:{old}',
                                    f'https://github.com/{repo}.git', f'{head}:refs/heads/{branch}'],
@@ -583,7 +597,7 @@ def _require_gateway(data, head, repo):
         raise PublishError(str(error)) from error
 
 
-def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=None):
+def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=None, replay_check=None):
     latest = cli.read(task_path)
     _require_gateway(latest, head, repo)
     if data.get('phase_binding'):
@@ -600,19 +614,37 @@ def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=
         delivery.recheck_refactor_write(task_path, data, head, repo, refactor_review)
     except delivery.DeliveryError as error:
         raise PublishError(str(error)) from error
+    if replay_check:
+        replay_check()
     run_control.admit(task_path, PublishError)
 
 
+def _admit_replay(task_path, data, repo, authority, action, *, number=None, previous=None):
+    if 'baseline_replay' not in data and authority is None:
+        return None
+
+    def check():
+        try:
+            delivery.require_replay_write(task_path, cli.read(task_path), repo, authority, action,
+                                          number=number, previous=previous)
+        except (ValueError, delivery.DeliveryError) as error:
+            raise PublishError(str(error)) from error
+
+    check()
+    return check
+
+
 @locked_task('task_path')
-def publish(task_path, repo, github=None):
+def publish(task_path, repo, github=None, *, replay_authority=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise PublishError('invalid repository')
     task_path = Path(task_path)
     run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
     delivery.require_refactor_intake(task_path, data)
-    if 'verification_target' in data or 'baseline_replay' in data:
+    if 'verification_target' in data:
         raise PublishError('verification-only task does not authorize publishing')
+    replay_check = _admit_replay(task_path, data, repo, replay_authority, 'create')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
     head, issues = cli.gate(data, 'HEAD')
@@ -633,7 +665,8 @@ def publish(task_path, repo, github=None):
     if github.branch(repo, 'main') != data['base_commit']:
         raise PublishError('base changed since verification')
     if data.get('surface') == 'ui':
-        body, artifact = _screenshot_body(task_path, data, head, repo, github, refactor_review=refactor_review)
+        body, artifact = _screenshot_body(task_path, data, head, repo, github, refactor_review=refactor_review,
+                                          replay_check=replay_check)
     else:
         artifact = None
         body = _pr_body({**data, 'delivery_repo': repo}, head)
@@ -643,7 +676,8 @@ def publish(task_path, repo, github=None):
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('task evidence or budget changed before branch push')
-        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review)
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
         github.push_new(data['repo'], repo, branch, head)
     elif current != head:
         raise PublishError('remote task branch differs; refusing to overwrite')
@@ -663,7 +697,8 @@ def publish(task_path, repo, github=None):
             checked_head, issues = cli.gate(checked, head)
             if issues or checked_head != head or _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
                 raise PublishError('evidence or budget changed before PR description update')
-            _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review)
+            _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                                replay_check=replay_check)
             github.update_body(repo, number, body)
             pulls = github.pulls(repo, branch)
             if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or
@@ -673,7 +708,8 @@ def publish(task_path, repo, github=None):
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('task evidence or budget changed before PR creation')
-        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review)
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
         number = github.create(repo, branch, data['id'], {**data, '_prepared_pr_body': body})
         pulls = github.pulls(repo, branch)
         if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or
@@ -684,7 +720,7 @@ def publish(task_path, repo, github=None):
 
 
 @locked_task('task_path')
-def republish(task_path, repo, number, previous_head, github=None):
+def republish(task_path, repo, number, previous_head, github=None, *, replay_authority=None):
     """Update one existing task PR only after fresh verification and an exact lease."""
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or type(number) is not int or number < 1:
         raise PublishError('invalid repository or PR number')
@@ -694,8 +730,10 @@ def republish(task_path, repo, number, previous_head, github=None):
     run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
     delivery.require_refactor_intake(task_path, data)
-    if 'verification_target' in data or 'baseline_replay' in data:
+    if 'verification_target' in data:
         raise PublishError('verification-only task does not authorize publishing')
+    replay_check = _admit_replay(task_path, data, repo, replay_authority, 'replace', number=number,
+                                 previous=previous_head)
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
     head, issues = cli.gate(data, 'HEAD')
@@ -725,7 +763,8 @@ def republish(task_path, repo, number, previous_head, github=None):
         if issues or checked_head != head:
             raise PublishError('evidence or budget changed before update')
     if data.get('surface') == 'ui':
-        body, artifact = _screenshot_body(task_path, data, head, repo, github, refactor_review=refactor_review)
+        body, artifact = _screenshot_body(task_path, data, head, repo, github, refactor_review=refactor_review,
+                                          replay_check=replay_check)
     else:
         artifact = None
         body = _pr_body({**data, 'delivery_repo': repo}, head)
@@ -733,8 +772,10 @@ def republish(task_path, repo, number, previous_head, github=None):
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('evidence or budget changed before update')
-        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review)
-        github.push_update(data['repo'], repo, branch, previous_head, head)
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
+        push = github.push_rebased if replay_check else github.push_update
+        push(data['repo'], repo, branch, previous_head, head)
     if github.remote_head(repo, branch) != head or github.branch(repo, 'main') != data['base_commit']:
         raise PublishError('remote changed during update; inspect before retrying')
     pulls = github.pulls(repo, branch)
@@ -748,7 +789,8 @@ def republish(task_path, repo, number, previous_head, github=None):
     if _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
         raise PublishError('published evidence changed during PR update')
     if pulls[0].get('body') != body:
-        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review)
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
         github.update_body(repo, number, body)
         pulls = github.pulls(repo, branch)
     if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or

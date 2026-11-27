@@ -9,10 +9,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import autonomous_run, autopilot, autopilot_full, cli, delivery, publish, start, task_replay, workflow
+from workbench import (autonomous_run, autopilot, autopilot_full, cli, delivery, publish,
+                       start, task_replay, task_replay_delivery, workflow)
 
 
-class TaskReplayTests(unittest.TestCase):
+class ReplayFixture(unittest.TestCase):
+    predicate = 'published'
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -39,14 +42,16 @@ class TaskReplayTests(unittest.TestCase):
 
         with redirect_stdout(io.StringIO()), patch('workbench.start.shutil.which', return_value='/fixture'), \
                 patch('workbench.start.subprocess.run', side_effect=inspect_image):
-            info = start.start(task_id='fixture', repo=self.repo, issue_file=issue, source='Selected bug',
+            info = start.start(task_id='fixture', repo=self.repo, issue_file=issue,
+                               source='https://github.com/example/fork/issues/42',
                                kind='bug', surface='non-ui', iterations=2, seconds=180,
                                image='fixture', tasks_root=self.root / 'tasks',
                                workspaces_root=self.root / 'worktrees', pr_repo='example/fork',
                                criteria=[{'id': 'fixed', 'text': 'The original command displays FIXED.'}],
-                               publish_only=True, prepare_only=True, log_files=[log])
+                               publish_only=self.predicate == 'published', prepare_only=True, log_files=[log],
+                               required_ci_workflows=['CI'] if self.predicate == 'merged' else None)
         self.task = Path(info['task'])
-        plan = autonomous_run.freeze(self.task, 'published', self.root / 'individual')
+        plan = autonomous_run.freeze(self.task, self.predicate, self.root / 'individual')
         manifest = self.root / 'manifest.json'
         cli.write(manifest, {'schema': cli.SCHEMA, 'parallelism': 1, 'interval': 1,
                              'members': [{key: plan[key] for key in ('plan', 'sha256')}]})
@@ -128,6 +133,8 @@ class TaskReplayTests(unittest.TestCase):
         return task_replay.verify(*self.approval, self.task, base or self.base,
                                   out=self.root / 'replay', owner=owner)
 
+
+class TaskReplayTests(ReplayFixture):
     def test_queue_starts_reverification_and_preserves_the_original_contract(self):
         calls = []
         def main_at_new_base(repo, branch):
@@ -204,6 +211,213 @@ class TaskReplayTests(unittest.TestCase):
         self.assertIn('main changed after fresh verification', refused['reason'])
         self.assertNotIn('review', refused)
         self.assertEqual(cli.read(Path(refused['task']).with_name('autopilot.json'))['phase'], 'delivery')
+
+class ReplayGitHub:
+    branch_name = 'workbench/fixture'
+
+    def __init__(self, base, old_head=None):
+        self.base = base
+        self.head = old_head
+        self.number = 9 if old_head else None
+        self.body = ''
+        self.writes = []
+        self.green = set()
+        self.queries = []
+        self.merged = False
+        self.closed = False
+        self.lose_merge_response = False
+
+    def login(self):
+        return 'example'
+
+    def repository(self, repo):
+        return {'fork': True, 'owner': {'login': 'example'}, 'default_branch': 'main'}
+
+    def branch(self, repo, branch):
+        return self.base
+
+    def remote_head(self, repo, branch):
+        return self.head
+
+    def branch_info(self, repo, branch):
+        return {'protected': False, 'commit': {'sha': self.base}}
+
+    def pull(self, repo, number):
+        if self.number is None or number != self.number:
+            raise ValueError('unexpected PR number')
+        checks = [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}] if self.head in self.green else []
+        return {'number': number, 'headRefOid': self.head, 'headRefName': self.branch_name,
+                'baseRefName': 'main', 'baseRefOid': self.base, 'isDraft': False,
+                'isCrossRepository': False, 'state': 'MERGED' if self.merged else 'OPEN',
+                'mergeStateStatus': 'CLEAN' if self.head in self.green else 'BLOCKED',
+                'statusCheckRollup': checks}
+
+    def pulls(self, repo, branch):
+        if self.number is None or self.merged:
+            return []
+        return [{**self.pull(repo, self.number), 'headRepository': {'name': 'fork'},
+                 'headRepositoryOwner': {'login': 'example'}, 'body': self.body}]
+
+    def push_new(self, workspace, repo, branch, head):
+        assert self.head is None and branch == self.branch_name
+        self.writes.append(('push', head))
+        self.head = head
+
+    def push_rebased(self, workspace, repo, branch, old, head):
+        assert self.head == old and branch == self.branch_name
+        self.writes.append(('lease', old, head))
+        self.head = head
+
+    def create(self, repo, branch, ident, data):
+        assert self.number is None and branch == self.branch_name
+        self.number = 9
+        self.writes.append(('create', self.number))
+        self.body = data['_prepared_pr_body']
+        return self.number
+
+    def update_body(self, repo, number, body):
+        assert self.number == number
+        self.writes.append(('body', number))
+        self.body = body
+
+    def _call(self, *args):
+        if args[0] == 'run':
+            head = args[args.index('--commit') + 1]
+            self.queries.append(head)
+            if head not in self.green:
+                return []
+            return [{'databaseId': 123, 'workflowName': 'CI', 'headSha': head, 'headBranch': self.branch_name,
+                     'event': 'pull_request', 'status': 'completed', 'conclusion': 'success'}]
+        if args[0] == 'api' and '/jobs?' in args[1]:
+            return {'total_count': 1, 'jobs': [{'id': 111, 'run_id': 123, 'status': 'completed',
+                                               'conclusion': 'success'}]}
+        if args[0] == 'api' and args[1].endswith('/runs/123'):
+            return {'id': 123, 'run_attempt': 1, 'name': 'CI', 'head_sha': self.head,
+                    'head_branch': self.branch_name, 'event': 'pull_request', 'status': 'completed',
+                    'conclusion': 'success', 'pull_requests': [
+                        {'number': self.number, 'base': {'ref': 'main', 'sha': self.base},
+                         'head': {'ref': self.branch_name, 'sha': self.head}}]}
+        raise AssertionError(args)
+
+    def fast_forward(self, workspace, repo, base, head):
+        assert self.base == base and self.head == head and head in self.green
+        assert cli.git(workspace, 'merge-base', base, head) == base
+        self.writes.append(('merge', head))
+        self.merged = True
+        self.base = head
+        if self.lose_merge_response:
+            raise delivery.DeliveryError('merge response lost after accepted write')
+
+    def issue(self, repo, number):
+        return {'number': number, 'state': 'closed' if self.closed else 'open'}
+
+    def close_issue(self, repo, number):
+        assert self.merged
+        self.closed = True
+        self.writes.append(('close', number))
+        return self.issue(repo, number)
+
+
+class ReplayPublishTests(ReplayFixture):
+    def test_opt_in_creates_a_pr_for_the_fresh_candidate_without_merge_authority(self):
+        github = ReplayGitHub(self.base)
+        options = dict(once=True, deliver_replayed=True, observe_base=partial(task_replay.observe, owner=github),
+                       advance_delivery=partial(task_replay_delivery.advance, github=github))
+        result = autopilot_full.run(*self.approval, **options)
+        self.assertEqual(result['status'], 'complete', result)
+        member = result['members'][0]
+        self.assertEqual(member['proof']['remote']['state'], 'OPEN')
+        self.assertEqual(member['proof']['base'], self.base)
+        self.assertNotEqual(member['proof']['candidate'], self.source_state['candidate_commit'])
+        self.assertEqual(github.writes, [('push', member['proof']['candidate']), ('create', 9)])
+        self.assertEqual(github.queries, [])
+        self.assertEqual(autopilot_full.run(*self.approval, **options), result)
+        self.assertEqual(len(github.writes), 2)
+
+
+class ReplayMergeTests(ReplayFixture):
+    predicate = 'merged'
+
+    def setUp(self):
+        super().setUp()
+        prior = self.source_state['candidate_commit']
+        self.source_state['published_pr'] = {'repo': 'example/fork', 'pr': 9, 'head': prior}
+        cli.write(self.task.with_name('autopilot.json'), self.source_state)
+        self.github = ReplayGitHub(self.base, prior)
+        self.github.green.add(prior)
+
+    def run_queue(self, *, ci=autopilot._wait_for_ci):
+        return autopilot_full.run(*self.approval, once=True, deliver_replayed=True,
+                                  observe_base=partial(task_replay.observe, owner=self.github),
+                                  advance_delivery=partial(task_replay_delivery.advance, github=self.github, ci=ci))
+
+    def test_updates_original_pr_then_waits_for_new_ci_and_merges_after_release(self):
+        tick = self.run_queue()
+        self.assertEqual(tick['status'], 'watching', tick)
+        member = tick['members'][0]
+        head = member['identity']['head']
+        self.assertEqual(member['identity']['pr'], 9)
+        self.assertEqual(self.github.writes, [('lease', self.source_state['candidate_commit'], head), ('body', 9)])
+        self.assertEqual(self.github.queries, [head])
+        self.assertEqual(cli.read(Path(member['reverification']['task']))['status'], 'paused')
+        autopilot_full.hold(*self.approval, reason='Inspect the pending replay')
+        self.github.green.add(head)
+        self.assertEqual(self.run_queue()['status'], 'held')
+        self.assertEqual(len(self.github.writes), 2)
+        autopilot_full.release(*self.approval)
+        complete = self.run_queue()
+        self.assertEqual(complete['status'], 'complete', complete)
+        self.assertEqual(complete['members'][0]['proof']['remote']['main'], head)
+        self.assertTrue(complete['members'][0]['issue']['closed'])
+        self.assertEqual(self.github.writes[-2:], [('merge', head), ('close', 42)])
+        self.assertTrue(all(query == head for query in self.github.queries))
+        self.assertEqual(self.run_queue()['status'], 'complete')
+        self.assertEqual(len(self.github.writes), 4)
+        self.assertEqual(cli.digest(self.task), self.original_digest)
+
+    def test_refuses_pr_reset_by_someone_else(self):
+        self.github.head = 'b' * 40
+        tick = self.run_queue()
+        self.assertEqual(tick['status'], 'blocked')
+        self.assertIn('PR no longer matches', tick['members'][0]['reason'])
+        self.assertEqual(self.github.writes, [])
+
+    def test_refuses_to_merge_after_main_changes_during_ci_wait(self):
+        waiting = self.run_queue()
+        head = waiting['members'][0]['identity']['head']
+        self.github.green.add(head)
+        self.github.base = 'b' * 40
+        tick = self.run_queue()
+        self.assertEqual(tick['status'], 'blocked')
+        self.assertIn('main moved', tick['members'][0]['reason'])
+        self.assertEqual(len(self.github.writes), 2)
+
+    def test_recovers_exact_merge_after_the_remote_response_is_lost(self):
+        waiting = self.run_queue()
+        head = waiting['members'][0]['identity']['head']
+        self.github.green.add(head)
+        self.github.lose_merge_response = True
+        lost = self.run_queue()
+        self.assertEqual(lost['status'], 'blocked')
+        self.assertIn('response lost', lost['members'][0]['reason'])
+        self.assertEqual(self.github.writes[-1], ('merge', head))
+        recovered = self.run_queue()
+        self.assertEqual(recovered['status'], 'complete', recovered)
+        self.assertEqual(self.github.writes[-2:], [('merge', head), ('close', 42)])
+        self.assertEqual(len(self.github.writes), 4)
+
+    def test_retains_failed_new_head_ci_without_merging(self):
+        waiting = self.run_queue()
+        head = waiting['members'][0]['identity']['head']
+
+        def fail_ci(task, repo, pr, current, **kwargs):
+            self.assertEqual((repo, pr, current), ('example/fork', 9, head))
+            raise autopilot.CIFailure({'workflow': 'CI', 'head': current, 'attempt': 1})
+
+        blocked = self.run_queue(ci=fail_ci)['members'][0]
+        self.assertEqual(blocked['status'], 'blocked')
+        self.assertEqual(json.loads(Path(blocked['failure']).read_bytes())['head'], head)
+        self.assertEqual(len(self.github.writes), 2)
 
 
 if __name__ == '__main__':

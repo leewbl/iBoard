@@ -28,7 +28,7 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/
 
 [`workbench.autonomous_run`](../skills/autonomous-run/SKILL.md) 固定选定任务的验收、发布或合并目标，沿用原输入、预算和交付授权。CI 未结束时保留 PR、候选和基线，释放任务执行锁。下一次观察只查询该检查点，发现明确结果后再交给原有验收或修复流程。工作台保留每次重新启动、等待及最终证据。
 
-[`workbench.autopilot_full`](../skills/autopilot-full/SKILL.md) 把已冻结的独立任务加入队列，并发推进各自的验收、PR 或合并目标。整组暂停在下一次操作前生效，正在执行的步骤可留下提交和检查点，解除后按各任务的原预算恢复。队列保留每项结果，同一仓库的写入按顺序通过原门禁。对于基线前移，可用 `--reverify-stale-main` 触发任务重放和复验。状态回执绑定远端 `main`、原任务、补丁和新的独立报告。通过后仍保留待交付状态，复验回执接入原 PR 的发布与合并仍待完成。
+[`workbench.autopilot_full`](../skills/autopilot-full/SKILL.md) 把已冻结的独立任务加入队列，并发推进各自的验收、PR 或合并目标。整组暂停在下一次操作前生效，正在执行的步骤可留下提交和检查点，解除后按各任务的原预算恢复。队列保留每项结果，同一仓库的写入按顺序通过原门禁。对于基线前移，可用 `--reverify-stale-main` 触发任务重放和复验。状态回执绑定远端 `main`、原任务、补丁和新的独立报告。使用 `--deliver-replayed` 可按原授权创建 PR 或更新原 PR，通过绑定到新提交的 CI 或原 OpenClaw 本地门禁后再合并。重启时用交付日志核对远端结果。发布后若主分支再次前移，队列暂停该项。
 
 长任务的阶段决定保存在任务目录的 `decisions.tsv`。每行记录时间、阶段、决定、理由、证据和结果。[`workbench.decisions audit`](../skills/show-me-your-work/SKILL.md) 核对保留文件的哈希和 Git 提交，显示哪些链接仍需在线查看。新的运行会列出继承记录的时间范围，人工可追加说明或纠正。
 

@@ -140,7 +140,8 @@ def release(plan, sha256):
 
 def _snapshot(result):
     return {key: result[key] for key in ('status', 'attempts', 'proof', 'identity', 'reason',
-                                        'request', 'journal', 'iterations', 'reverification') if key in result}
+                                        'request', 'journal', 'iterations', 'reverification', 'delivery_journal',
+                                        'issue', 'failure') if key in result}
 
 
 def _journal(path, sha256):
@@ -161,9 +162,14 @@ def show(plan, sha256):
                         for row in queue['members']]}
 
 
-def run(plan, sha256, *, once=False, reverify_stale_main=False, drive=autonomous_run.run, sleep=time.sleep,
-        observe_base=None):
+def run(plan, sha256, *, once=False, reverify_stale_main=False, deliver_replayed=False,
+        drive=autonomous_run.run, sleep=time.sleep, observe_base=None, advance_delivery=None):
     path, queue = _load(plan, sha256)
+    if deliver_replayed:
+        reverify_stale_main = True
+        if advance_delivery is None:
+            from workbench import task_replay_delivery
+            advance_delivery = task_replay_delivery.advance
     if reverify_stale_main and observe_base is None:
         from workbench import task_replay
         observe_base = task_replay.observe
@@ -188,6 +194,11 @@ def run(plan, sha256, *, once=False, reverify_stale_main=False, drive=autonomous
                     return {'status': 'held', 'request': control['request']}
                 if cli.digest(path) != sha256 or run_control.group(row['task']) != path:
                     raise QueueError('queue approval changed before the task took its slot')
+                if deliver_replayed:
+                    retained = advance_delivery(path, sha256, row)
+                    if retained:
+                        previous = journal['members'].get(row['task'], {}).get('reverification')
+                        return {**({'reverification': previous} if previous else {}), **retained}
                 result = drive(row['plan'], row['sha256'], once=True)
                 if reverify_stale_main and result['status'] == 'blocked':
                     replay = observe_base(path, sha256, row)
@@ -196,6 +207,8 @@ def run(plan, sha256, *, once=False, reverify_stale_main=False, drive=autonomous
                         if replay['status'] == 'held':
                             result['status'] = 'held'
                         elif replay['status'] == 'verified':
+                            if deliver_replayed:
+                                return {'reverification': replay, **advance_delivery(path, sha256, row, replay)}
                             result['reason'] = 'candidate reverified on current main; original PR delivery is pending'
                 return result
             except TaskBusy:
@@ -242,6 +255,7 @@ def main(argv=None):
         if action == 'run':
             command.add_argument('--once', action='store_true')
             command.add_argument('--reverify-stale-main', action='store_true')
+            command.add_argument('--deliver-replayed', action='store_true')
         if action == 'hold':
             command.add_argument('--reason', required=True)
     args = vars(parser.parse_args(argv))

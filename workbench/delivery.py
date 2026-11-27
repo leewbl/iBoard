@@ -175,6 +175,15 @@ def require_local_write(task_path, expected, head, github, repo):
     verify()
 
 
+def require_replay_write(task_path, data, repo, authority, action, *, number=None, previous=None):
+    if 'baseline_replay' not in data and authority is None:
+        return
+    from workbench.task_replay_delivery import ReplayAuthority
+    if 'baseline_replay' not in data or not isinstance(authority, ReplayAuthority):
+        raise DeliveryError('verification-only task requires an approved queue replay for remote writes')
+    authority.check(task_path, repo, action, number, previous)
+
+
 def _fast_forward_push(workspace, remote, base, head, *, timeout=120):
     """Update only an unchanged base, and only to a descendant commit."""
     if not all(re.fullmatch(r'[0-9a-f]{40}', value) for value in (base, head)) or base == head:
@@ -217,13 +226,14 @@ def own_issue_number(source, repo):
 
 
 @locked_task('task_path')
-def close_verified_issue(task_path, repo, pr_number, github=None):
+def close_verified_issue(task_path, repo, pr_number, github=None, *, replay_authority=None):
     """Close a specified issue only after its exact candidate PR is merged."""
     run_control.admit(task_path, DeliveryError)
     github = github or GitHub()
     data = cli.read(Path(task_path))
-    if 'verification_target' in data or 'baseline_replay' in data:
+    if 'verification_target' in data:
         raise DeliveryError('verification-only task does not authorize issue closure')
+    require_replay_write(task_path, data, repo, replay_authority, 'close', number=pr_number)
     issue = own_issue_number(data.get('source'), repo) if data.get('kind') == 'bug' else None
     if issue is None:
         return {'closed': False, 'reason': 'task does not name an issue in the destination repository'}
@@ -257,6 +267,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
         raise DeliveryError('issue closure blocked before write: ' + '; '.join(errors))
     require_local_write(task_path, data, head, github, repo)
     run_control.admit(task_path, DeliveryError)
+    require_replay_write(task_path, data, repo, replay_authority, 'close', number=pr_number)
     updated = github.close_issue(repo, issue)
     if updated.get('number') != issue or updated.get('state') != 'closed':
         raise DeliveryError('issue close result was not confirmed; inspect before retrying')
@@ -950,8 +961,8 @@ def _required_workflows_pass(github, repo, number, pull, data, head, required, *
 
 
 @locked_task('task_path')
-def guarded_merge(task_path, repo, number, github=None):
-    return _guarded_merge(task_path, repo, number, github)
+def guarded_merge(task_path, repo, number, github=None, *, replay_authority=None):
+    return _guarded_merge(task_path, repo, number, github, replay_authority=replay_authority)
 
 
 def _merge_workflows(data, selected):
@@ -965,15 +976,17 @@ def _merge_workflows(data, selected):
         raise DeliveryError(str(error)) from error
 
 
-def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, revalidate=None, deadline=None):
+def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, revalidate=None, deadline=None,
+                   replay_authority=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or int(number) < 1:
         raise DeliveryError('invalid repository or pull request number')
     github = github or GitHub()
     data = cli.read(Path(task_path))
     require_refactor_intake(task_path, data)
     run_control.admit(task_path, DeliveryError)
-    if 'baseline_replay' in data or ('verification_target' in data and stack_binding is None):
+    if 'verification_target' in data and stack_binding is None:
         raise DeliveryError('verification-only task does not authorize merging')
+    require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)
     if stack_binding is not None and (not isinstance(stack_binding, dict) or not callable(revalidate)
                                       or not {'head', 'base', 'head_branch'} <= stack_binding.keys()):
         raise DeliveryError('a stack write requires a pinned member and an evidence recheck')
@@ -1075,6 +1088,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         recheck_phase()
         recheck_visual_write(task_path, data, head, repo)
         recheck_refactor_write(task_path, data, head, repo, review)
+        require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)
         github.merge(repo, number, head)
     else:
         # Do not use an indirect merge if protection appeared while validating.
@@ -1094,6 +1108,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         recheck_phase()
         recheck_visual_write(task_path, data, head, repo)
         recheck_refactor_write(task_path, data, head, repo, review)
+        require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)
         github.fast_forward(data['repo'], repo, data['base_commit'], head)
     try:
         final = github.pull(repo, number)
