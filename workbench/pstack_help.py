@@ -318,9 +318,9 @@ SCENARIOS = {
         'Frozen task plans, an independent outcome per task, and a queue journal',
         'Requires separate worktrees and existing delivery authorization. An operator can hold the entire queue.'),
     'catch-up': Scenario(
-        'See progress since a selected time', 'skills/ketchup/SKILL.md',
-        'skills/pickup/SKILL.md', 'pickup', 'Task events, supporting artifacts and optional live PR state',
-        'Pass the task record and a timestamp with --since. The command does not read the chat transcript.'),
+        'Catch up from the last human message', 'skills/ketchup/SKILL.md',
+        'skills/ketchup/SKILL.md', 'ketchup', 'Exact chat window, selected task and PR state, visuals and waiting decisions',
+        'Select the Claude Code command line and existing evidence. The skill writes the reply in the current chat.'),
     'ketchup-video': Scenario(
         'Make a verified silent briefing from existing evidence', 'skills/ketchup-video/SKILL.md',
         'skills/ketchup-video/SKILL.md', 'ketchup_video collect',

@@ -13,14 +13,13 @@ import time
 
 from model import codex_review
 from runner.sandbox import MAX_SCREENSHOT, SandboxError, _validated_png
-from workbench import cli, delivery, ketchup_render, pickup, recall_sessions
+from workbench import cli, delivery, ketchup_render, pickup, recall, recall_sessions
 from workbench.automate_me import _date, _digest, _file, _keep, _read, _require
 from workbench.intent_review import _ref
 from workbench.prompt_profiles import PSTACK_COMMIT
 
 
 SOURCE = 'skills/ketchup-video/SKILL.md'
-INVOKED = re.compile(r'/(?:agent-workbench:)?ketchup-video(?:\b|$)')
 NODE = re.compile(r'[a-z][a-z0-9-]{0,36}')
 NUMBER = re.compile(r'(?<![\w.])[-+]?\d+(?:[.,]\d+)*(?!\w|[.,]\d)')
 ERRORS = (OSError, ValueError, KeyError, TypeError, SandboxError, cli.WorkbenchError, delivery.DeliveryError,
@@ -66,19 +65,22 @@ def _when(value):
     return _date(value)
 
 
-def _anchor(repo, transcript, invocation_line):
+def _anchor(repo, transcript, invocation_line, *, command='ketchup-video', context_limit=8):
     path = _file(transcript)
     content = _read(path, recall_sessions.MAX_BYTES)
     rows = content.splitlines()
     _require(type(invocation_line) is int and 1 < invocation_line <= len(rows), 'select the exact command line')
     row = json.loads(rows[invocation_line - 1])
     message = row['message']
-    invocation = message['content']
-    if isinstance(invocation, list):
-        invocation = '\n'.join(block['text'] for block in invocation if block.get('type') == 'text')
+    content_blocks = message['content']
+    invocation = '\n'.join(recall_sessions._blocks(content_blocks, 'text')).strip()
+    slash = rf'/(?:agent-workbench:)?{re.escape(command)}'
+    invoked = re.match(rf'(?:{slash}(?:\s|$)|<command-name>{slash}</command-name>)', invocation)
+    tool_reply = isinstance(content_blocks, list) and any(isinstance(block, dict) and block.get('type') == 'tool_result'
+                                                          for block in content_blocks)
     _require(row.get('type') == message.get('role') == 'user' and not row.get('isMeta') and not row.get('isSidechain')
-             and Path(row['cwd']).resolve() == repo and isinstance(invocation, str) and INVOKED.search(invocation),
-             'select the actual ketchup-video invocation in the same workspace')
+             and recall_sessions._workspace(row.get('cwd'), repo) and invoked and not tool_reply,
+             f'select the actual {command} invocation in the same workspace')
     end = _date(row['timestamp'])
     session, turns, _, digest = recall_sessions.transcript(path, repo, None, end, None)
     _require(session == row['sessionId'] and digest == _digest(content), 'chat changed during evidence collection')
@@ -86,11 +88,12 @@ def _anchor(repo, transcript, invocation_line):
     human = [turn for turn in preceding if turn['role'] == 'user' and not re.match(r'^/(?:[\w-]+:)?[\w-]+(?:\s|$)', turn['text'])]
     _require(human, 'the selected command has no preceding human message')
     last = human[-1]
+    later = [turn for turn in preceding if turn['line'] > last['line']]
     return {
         'transcript': {'path': str(path), 'sha256': digest}, 'session': session,
         'last_user_line': last['line'], 'since': last['at'], 'invocation_line': invocation_line,
         'until': end.isoformat(), 'request_context': last['text'],
-        'later_turn_context': [turn for turn in preceding if turn['line'] > last['line']][-8:],
+        'later_turn_context': later[-context_limit:] if context_limit is not None else later,
     }
 
 
@@ -172,10 +175,7 @@ def _numbers(text, ids, sources):
     _require(set(NUMBER.findall(text)) <= expected, 'a visible number lacks an exact cited fact')
 
 
-def collect(*, repo, transcript, invocation_line, manifest, out, reader=None):
-    repo = Path(repo).expanduser().resolve(strict=True)
-    _require(not Path(out).expanduser().resolve().is_relative_to(repo), 'write video evidence outside the project')
-    window = _anchor(repo, transcript, invocation_line)
+def _collect_sources(*, window, manifest, reader, include_task_events=False):
     specification = json.loads(_read(manifest, 60_000))
     _require(isinstance(specification, dict) and 'evidence' in specification
              and specification.keys() <= {'evidence', 'pending', 'task', 'pull_requests'}
@@ -187,25 +187,41 @@ def collect(*, repo, transcript, invocation_line, manifest, out, reader=None):
     _require(isinstance(tasks, list) and isinstance(prs, list) and len(tasks) <= 8 and len(prs) <= 8,
              'select up to eight explicit task and PR records')
     for index, path in enumerate(tasks, 1):
-        record = pickup.inspect(path, since=window['since'])
+        end = window['until'] if include_task_events else None
+        record = pickup.inspect(path, since=window['since'], until=end)
         sources[f'T{index}'] = {'kind': 'live-task', 'facts': {key: record[key] for key in
                                   ('id', 'recorded_status', 'execution', 'next', 'phase') if key in record},
                                'observed_at': record['observed_at']}
+        if include_task_events:
+            sources[f'T{index}']['events'] = record['events']
     if prs and reader is None:
         reader = delivery.GitHub()
     for index, selector in enumerate(prs, 1):
-        _require(set(selector) == {'repo', 'number'} and re.fullmatch(recall.REPO_NAME, selector['repo'])
+        _require(isinstance(selector, dict) and set(selector) == {'repo', 'number'}
+                 and isinstance(selector['repo'], str) and re.fullmatch(recall.REPO_NAME, selector['repo'])
+                 and all(part not in ('.', '..') for part in selector['repo'].split('/'))
                  and type(selector['number']) is int and selector['number'] >= 1, 'select a named GitHub PR')
         try:
             snapshot = reader.pull(selector['repo'], selector['number'])
-        except (OSError, delivery.DeliveryError):
+            if snapshot.get('number') != selector['number'] or snapshot.get('state') not in ('OPEN', 'CLOSED', 'MERGED'):
+                raise delivery.DeliveryError('GitHub did not confirm the requested PR')
+            snapshot = {**snapshot, 'url': f"https://github.com/{selector['repo']}/pull/{selector['number']}"}
+        except (OSError, AttributeError, delivery.DeliveryError):
             snapshot = {'state': 'unknown'}
         sources[f'P{index}'] = {'kind': 'live-pr', 'selector': selector, 'observed_at': cli.now(),
                                'facts': {key: snapshot[key] for key in
                                          ('state', 'isDraft', 'mergeStateStatus', 'url') if key in snapshot},
                                'checks': pickup._checks(snapshot.get('statusCheckRollup'))}
+    return sources, _decisions(specification.get('pending', []), sources)
+
+
+def collect(*, repo, transcript, invocation_line, manifest, out, reader=None):
+    repo = Path(repo).expanduser().resolve(strict=True)
+    _require(not Path(out).expanduser().resolve().is_relative_to(repo), 'write video evidence outside the project')
+    window = _anchor(repo, transcript, invocation_line)
+    sources, pending = _collect_sources(window=window, manifest=manifest, reader=reader)
     body = _record('video-evidence', repo=str(repo), window=window, evidence=sources,
-                   pending=_decisions(specification.get('pending', []), sources))
+                   pending=pending)
     return {**_keep(out, body), 'last_user_line': window['last_user_line'], 'evidence': len(sources),
             'waiting': len(body['pending'])}
 

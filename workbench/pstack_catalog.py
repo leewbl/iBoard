@@ -12,6 +12,7 @@ from workbench.feature_context import PSTACK_SOURCE as FEATURE_SOURCE
 from workbench.hillclimb import PSTACK_SOURCE as HILLCLIMB_SOURCE
 from workbench.interrogate import PSTACK_SOURCE as INTERROGATE_SOURCE
 from workbench.investigate import SOURCES as INVESTIGATION_SOURCES
+from workbench.ketchup import SOURCE as KETCHUP_SOURCE
 from workbench.multiphase import PSTACK_SOURCE as MULTIPHASE_SOURCE
 from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
 from workbench.project_verify import PSTACK_COMMANDS as PROJECT_VERIFICATION_COMMANDS
@@ -79,6 +80,7 @@ def main():
                                 (['python3 -m workbench.start --kind feature', 'python3 -m workbench.feature_arena']
                                  if source == FEATURE_SOURCE else []) +
                                 (['python3 -m workbench.interrogate'] if source == INTERROGATE_SOURCE else []) +
+                                (['python3 -m workbench.ketchup'] if source == KETCHUP_SOURCE else []) +
                                 ([f'python3 -m workbench.project_verify {PROJECT_VERIFICATION_COMMANDS[source]}']
                                  if source in PROJECT_VERIFICATION_COMMANDS else []) +
                                 (['python3 -m workbench.project_verify discover', 'python3 -m workbench.project_triage']

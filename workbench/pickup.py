@@ -14,7 +14,6 @@ from workbench.task_lock import observe_task_lock
 
 PSTACK_SOURCES = {
     'skills/poteto-mode/playbooks/session-pickup.md': 'python3 -m workbench.pickup',
-    'skills/ketchup/SKILL.md': 'python3 -m workbench.pickup --check-pr',
 }
 INTERRUPTED = {'implementing', 'repairing', 'adopting'}
 BASELINE = {'plan', 'reproduce', 'implement'}
@@ -61,7 +60,7 @@ def _evidence(task, data, head, workspace):
     return {'retained':valid, 'invalid':invalid}
 
 
-def _timeline(data, since):
+def _timeline(data, since, until=None):
     def parse(value):
         stamp = datetime.fromisoformat(value.removesuffix('Z') + ('+00:00' if value.endswith('Z') else ''))
         if stamp.tzinfo is None:
@@ -69,6 +68,7 @@ def _timeline(data, since):
         return stamp
 
     cutoff = parse(since) if since is not None else None
+    end = parse(until) if until is not None else None
     events = []
     for item in (*data.get('events', []), *data.get('criterion_changes', [])):
         if not isinstance(item, dict) or not isinstance(item.get('at'), str):
@@ -78,6 +78,8 @@ def _timeline(data, since):
         except ValueError:
             continue
         if cutoff is not None and when <= cutoff:
+            continue
+        if end is not None and when > end:
             continue
         events.append((when, {k:item[k] for k in ('at', 'type', 'action', 'id', 'number', 'reason', 'failure')
                               if k in item}))
@@ -116,10 +118,10 @@ def _checks(rollup):
     return counts
 
 
-def _inspect(task, lock, since):
+def _inspect(task, lock, since, until=None):
     data = cli.read(task)
     report = {'id':data.get('id'), 'base':data['base_commit'], 'recorded_status':data['status'],
-              'lock':lock, 'observed_at':cli.now(), 'events':_timeline(data, since)}
+              'lock':lock, 'observed_at':cli.now(), 'events':_timeline(data, since, until)}
     if lock == 'held':
         return {**report, 'execution':'active', 'next':'wait-for-current-operation'}
 
@@ -207,10 +209,10 @@ def _inspect(task, lock, since):
     return report
 
 
-def inspect(task_path, *, since=None, check_pr=False, github=None):
+def inspect(task_path, *, since=None, until=None, check_pr=False, github=None):
     task = Path(task_path).expanduser().resolve(strict=True)
     with observe_task_lock(task) as lock:
-        report = _inspect(task, lock, since)
+        report = _inspect(task, lock, since, until)
         try:
             control = run_control.read(task)
         except (OSError, run_control.ControlError) as error:
