@@ -446,6 +446,15 @@ def _pr_body(data, head):
                  f'{measurement["baseline_ms"]:.3f} ms → {measurement["candidate_ms"]:.3f} ms '
                  f'({measurement["delta_pct"]:.2f}% lower median). '
                  f'Evidence SHA-256 `{measurement["artifact"]["sha256"]}`.\n')
+    if 'blast_radius' in data:
+        from workbench import blast_radius
+        impact = blast_radius.require(data, head)
+        facts = impact['facts'].values()
+        proven = sum(row['status'] == 'proven' for row in facts)
+        body += (f'\n## Blast-radius verification\n\n'
+                 f'{proven} facts proved with paired runs and independent reviews. '
+                 f'{len(facts) - proven} facts remain unproven. '
+                 f'Evidence SHA-256 `{data["blast_radius"]["report"]["sha256"]}`.\n')
     if data.get('kind') == 'refactor':
         from workbench import refactor, refactor_delivery
         try:
@@ -687,6 +696,11 @@ def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=
         if any(latest.get(key) != data.get(key) for key in ('performance_contract', 'performance_result')):
             raise PublishError('the performance proof changed before GitHub write')
         perf_issue.require(latest, head)
+    if latest.get('blast_radius') != data.get('blast_radius'):
+        raise PublishError('the blast-radius proof changed before GitHub write')
+    if 'blast_radius' in latest:
+        from workbench import blast_radius
+        blast_radius.require(latest, head, Path(task_path).parent / 'issue.txt')
     if data.get('phase_binding'):
         if latest.get('phase_binding') != data['phase_binding']:
             raise PublishError('approved phase changed before GitHub write')

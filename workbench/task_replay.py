@@ -61,7 +61,8 @@ def _snapshot(task, data, stage, state, member):
     model_profiles.intake(task, data, stage)
     if (data['kind'] not in ('bug', 'feature') or any(data.get(key) for key in (
             'verification_target', 'adoption', 'phase_binding', 'feature_context', 'refactor_contract',
-            'visual_baseline', 'ci_skip_policy', 'baseline_replay', 'local_gate_reverify', 'performance_contract'))
+            'visual_baseline', 'ci_skip_policy', 'baseline_replay', 'local_gate_reverify', 'performance_contract',
+            'blast_radius'))
             or settings['candidate_image'] or (settings['source_mode'] == 'image' and not settings['build_source_image'])
             or not member['destination'] or member['predicate'] not in ('published', 'merged')):
         raise ReplayError('this task needs an explicit replay adapter for its existing gates')

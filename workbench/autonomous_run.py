@@ -24,7 +24,7 @@ SNAPSHOT_FIELDS = (
     'id', 'repo', 'kind', 'surface', 'source', 'original_source', 'base_commit', 'started_at', 'limits',
     'publish_only', 'required_ci_workflows', 'ci_skip_policy', 'local_gate', 'impact_review',
     'verification_target', 'feature_context', 'phase_binding', 'visual_baseline', 'refactor_contract',
-    'criterion_changes', 'performance_contract',
+    'criterion_changes', 'performance_contract', 'blast_radius',
 )
 ERRORS = (RunError, cli.WorkbenchError, start.StartError, autopilot.AutopilotError,
           delivery.DeliveryError, pr_watch.WatchError, OSError, KeyError, TypeError, ValueError)

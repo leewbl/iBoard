@@ -41,11 +41,13 @@ def _config_digest(config):
 
 def settings(config, *, directory='.'):
     required = {'image', 'probes'}
-    optional = {'source_mode', 'seconds', 'memory_mb', 'model_profile', 'review_model'}
+    optional = {'source_mode', 'seconds', 'memory_mb', 'model_profile', 'review_model', 'strict_evidence'}
     if (not isinstance(config, dict) or required - config.keys() or config.keys() - required - optional
             or ('review_model' in config) == ('model_profile' in config)):
         raise InterrogateError('Interrogate configuration has missing or unknown fields')
     spec = {'source_mode': 'workspace', 'seconds': 300, 'memory_mb': 768, **config}
+    if 'strict_evidence' in spec and type(spec['strict_evidence']) is not bool:
+        raise InterrogateError('strict evidence must be a Boolean')
     arena._limit(spec['seconds'], 1, 3600, 'Interrogate seconds')
     arena._limit(spec['memory_mb'], 128, 8192, 'Interrogate memory')
     if spec['source_mode'] not in ('workspace', 'image'):
@@ -395,7 +397,7 @@ def run(*, repo, baseline, candidate, request_sha256, intent, config, out, secon
               'config_sha256': _config_digest(config), 'seconds_used_limit': seconds,
               'source': PSTACK_SOURCE, 'probes': {}, 'reviews': {}, 'worktree_cleanup': {}}
     observations = {probe['id']: {} for probe in config['probes']}
-    containers = set() if 'model_profile' in config else None
+    containers = set() if 'model_profile' in config or config.get('strict_evidence') else None
     worktrees = {}
     if discovery is not None:
         report['discovery'] = discovery
@@ -521,7 +523,7 @@ def _validate_receipt(path, receipt, repo, baseline, candidate, request_sha256, 
     if set(receipt['probes']) != set(sources):
         raise InterrogateError('Interrogate probe set changed')
     observations = {}
-    containers = set() if profiled else None
+    containers = set() if profiled or config.get('strict_evidence') else None
     root = path.resolve().parent
     for probe in config['probes']:
         ident = probe['id']
@@ -539,7 +541,7 @@ def _validate_receipt(path, receipt, repo, baseline, candidate, request_sha256, 
             outcome = _outcome(execution, probe, config, receipt['image'], root / f'probe-{side}', containers)
             if outcome != 'matched' or rows[side]['outcome'] != outcome:
                 raise InterrogateError('Interrogate independent observation does not clear the probe')
-            observations[ident][side] = _excerpt(execution, outcome, probe['marker'], strict=profiled)
+            observations[ident][side] = _excerpt(execution, outcome, probe['marker'], strict=containers is not None)
     roles = _routes(config) if profiled else REVIEWERS
     if set(receipt['reviews']) != set(roles):
         raise InterrogateError('Interrogate is missing an independent reviewer')

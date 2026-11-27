@@ -38,6 +38,11 @@ SCENARIOS = {
     'how': Scenario(
         'Explain how code works', 'skills/how/SKILL.md', 'skills/investigate/SKILL.md',
         'investigate how', 'A source-backed explanation for an exact repository revision'),
+    'blast-radius': Scenario(
+        'Find and prove downstream behavior that a change could break', 'skills/blast-radius/SKILL.md',
+        'skills/blast-radius/SKILL.md', 'blast_radius analyze',
+        'Source-anchored impact facts, reproducible mismatches, paired runtime evidence and a publication gate',
+        'Select exact downstream source and approved existing probes. Unsupported facts remain visibly unproven.'),
     'why': Scenario(
         'Explain why a design was chosen', 'skills/why/SKILL.md', 'skills/investigate/SKILL.md',
         'investigate why', 'Source and commit history that support the explanation',

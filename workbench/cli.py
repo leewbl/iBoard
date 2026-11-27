@@ -287,6 +287,12 @@ def evidence_gate(data, expected):
             perf_issue.require(data, target)
         except WorkbenchError as error:
             issues.append(str(error))
+    if 'blast_radius' in data:
+        from workbench import blast_radius
+        try:
+            blast_radius.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
     if data.get('regression_test') is not None:
         required.update(('tdd-red', 'tdd-green'))
     required.add('screenshot' if data['surface'] == 'ui' else 'runtime-log')
