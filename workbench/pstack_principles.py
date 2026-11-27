@@ -2,7 +2,7 @@
 
 PRINCIPLES = {
     'skills/principle-attack-the-premise/SKILL.md': (
-        ('repair',),
+        ('repair', 'premise-diagnosis'),
         'When two fixes based on the same assumption fail the same gate, record the assumption and make an '
         'observation that would distinguish it from a competing explanation before making the next edit.',
     ),

@@ -24,8 +24,14 @@ class PstackGuidanceTests(unittest.TestCase):
                     self.assertIn({'sources': [source], 'sha256': digest(text)}, receipt['sections'])
                     self.assertEqual(receipt['guidance_sha256'], digest(guidance))
                 lookup = pstack_help._show(source, catalog)
-                self.assertEqual(lookup['status'], 'guidance-only')
-                self.assertEqual(lookup['native_routes'], [])
+                if source == 'skills/principle-attack-the-premise/SKILL.md':
+                    self.assertEqual(lookup['status'], 'native-entry')
+                    self.assertEqual([route['scenario'] for route in lookup['native_routes']],
+                                     ['diagnose-repeated-failure'])
+                    self.assertIn('premise-diagnosis/*', lookup['guidance_stages'])
+                else:
+                    self.assertEqual(lookup['status'], 'guidance-only')
+                    self.assertEqual(lookup['native_routes'], [])
                 self.assertTrue(set(phases) <= {stage.split('/')[0] for stage in lookup['guidance_stages']})
 
     def test_roles_apply_only_to_their_execution_paths(self):
