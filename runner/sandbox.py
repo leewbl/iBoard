@@ -212,12 +212,13 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
                 workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None,
                 statechart_output=None, pids_limit=256, capture_failure_screenshot=False,
-                recording_output=None, browser_maps_output=None):
+                recording_output=None, browser_maps_output=None, pin_image=False):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
     relative workdirs must still exist inside the host workspace. Set
     workspace_read_only when the command must not modify the mounted files.
+    Pin the locally resolved image when the caller needs a stable runtime identity.
     After the attached command returns, each untruncated output stream includes
     a SHA-256 digest of the original bytes, before UTF-8 decoding.
     Profile collection uses a scoped helper and copies its artifact out of a
@@ -318,7 +319,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
 
     # An image's VOLUME directive could add unrequested mounts. Reject such images.
     image_format = "{{json .Config.Volumes}}"
-    pin_image = regression or profile is not None
+    pin_image = pin_image or regression or profile is not None
     if pin_image:
         image_format = '{{.Id}}{{println}}{{json (index .Config "Volumes")}}'
     try:

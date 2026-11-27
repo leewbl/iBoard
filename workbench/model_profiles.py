@@ -260,6 +260,8 @@ def for_stage(profile, phase, kind):
         role = 'planning'
     elif phase == 'implementation':
         role = 'bug-fix' if kind == 'bug' else 'feature-refactoring'
+    elif phase.startswith('premise-'):
+        role = 'baseline-review'
     elif phase in ('baseline-review', 'final-review'):
         role = phase
     elif phase.startswith(('repair-', 'ci-repair-')):

@@ -23,7 +23,7 @@ from model.claude_glm import reported_model_id
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
 from workbench import (bug_cause, cli, decisions, delivery, feature_context, model_profiles, prompt_profiles, publish,
-                       run_control, tdd, verify_openclaw, workflow)
+                       repair_premise, run_control, tdd, verify_openclaw, workflow)
 from workbench.task_lock import task_lock
 
 
@@ -773,13 +773,14 @@ def _commit_changes(workspace, *, scope=None):
     workflow._git(workspace, 'commit', '-m', msg)
 
 
-def _failure_details(task, error):
+def _failure_details(task, error, head):
     """Include the actual saved sandbox report if the check produced one."""
     message = str(error)
     content = ''
     execution_blocked = False
     diagnostics = ''
     runtime = None
+    observation = None
     match = re.search(r'raw report saved at (.+)$', message)
     if match:
         try:
@@ -793,6 +794,8 @@ def _failure_details(task, error):
                     runtime = report.get('runtime_diagnostics')
                     execution_blocked = bool(report.get('error') or report.get('timed_out') or
                                              not report.get('cleanup_confirmed') or workflow.docker_oom(report))
+                    if message.startswith('check failed; raw report saved at '):
+                        observation = repair_premise.failure(task, path, report, head)
                 except (ValueError, AttributeError):
                     execution_blocked = True
         except (OSError, UnicodeError):
@@ -800,6 +803,8 @@ def _failure_details(task, error):
     result = {'reason': message, 'report': content, 'diagnostics': diagnostics, 'execution_blocked': execution_blocked}
     if isinstance(runtime, dict):
         result['runtime_diagnostics'] = runtime
+    if observation is not None:
+        result['premise_observation'] = observation
     return result
 
 
@@ -1979,12 +1984,12 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 with phase_verification():
                     _verify_once()
             except workflow.WorkflowError as error:
-                failure = _failure_details(task, error)
+                failure = _failure_details(task, error, state['candidate_commit'])
             except AutopilotError as error:
                 if not (isinstance(error, VerificationFailure) or str(error).startswith('model reported blocker:') or
                         str(error) == 'independent verifier did not confirm every criterion'):
                     raise
-                failure = _failure_details(task, error)
+                failure = _failure_details(task, error, state['candidate_commit'])
                 prior = task.parent / 'final-review-model.json'
                 if prior.exists():
                     failure['review'] = prior.read_text(encoding='utf-8')[:100000]
@@ -2017,6 +2022,31 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 raise AutopilotError('candidate changed or workspace is dirty; preserve it for inspection')
             require_active()
             admit_benny_edit(data)
+            premise_context = ''
+            prior_failure = failure.get('premise_observation')
+            if prior_failure is not None:
+                pair = repair_premise.retain(state, prior_failure)
+                cli.write(state_path, state)
+                if pair:
+                    remaining = lambda: _remaining(cli.read(task))
+                    diagnosis_prompt = repair_premise.prompt(task, data, pair, remaining)
+                    outcome = _result(_model(task, f'premise-{data["iterations"]}', diagnosis_prompt,
+                                             read_only=True, model=model, journal=journal))
+                    with phase_verification():
+                        require_active()
+                        proof, conclusion = repair_premise.diagnose(
+                            task, data, pair, outcome, memory_mb=memory_mb, remaining=remaining, admit=require_active)
+                    append_decision('repair', 'Checked the assumptions of the failed fixes.',
+                                    'Two committed candidates failed the same check.',
+                                    decisions.artifact(task, proof), conclusion['outcome'])
+                    premise_context = ('\nBEFORE EDITING, use this independently executed diagnostic finding. '
+                                       'When the premise was refuted, choose a repair that does not assume it. '
+                                       'Preserve the original checks and acceptance conditions.\n'
+                                       + json.dumps(conclusion, ensure_ascii=False))
+                    require_active()
+                    data = cli.read(task)
+                    _remaining(data)
+                    admit_benny_edit(data)
             data['iterations'] += 1
             data['events'].append({'at': cli.now(), 'type': 'repair-iteration',
                                    'number': data['iterations'], 'failure': str(failure_path)})
@@ -2030,7 +2060,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       f'ISSUE DATA:\n{issue}\nACCEPTANCE:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'FAILURE REASON: {failure["reason"]}\n'
                       f'FAILURE DIAGNOSTICS:\n{failure.get("diagnostics", "")}\n'
-                      f'REVIEW FEEDBACK:\n{str(failure.get("review", ""))[:4000]}')
+                      f'REVIEW FEEDBACK:\n{str(failure.get("review", ""))[:4000]}' + premise_context)
             _model(task, f'repair-{data["iterations"]}', prompt, read_only=False, model=model, journal=journal)
             _remaining(cli.read(task))
             if _clean(workspace):

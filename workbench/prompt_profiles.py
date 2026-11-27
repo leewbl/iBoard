@@ -103,6 +103,9 @@ def _bundle(phase, kind, sections):
 
 
 def guidance(phase, kind, *, delegated=False, benny=False):
+    if phase.startswith('premise-'):
+        path = 'skills/principle-attack-the-premise/SKILL.md'
+        return _bundle('premise-diagnosis', kind, [((path,), PRINCIPLES[path][1])])
     if phase.startswith(('repair-', 'ci-repair-')):
         phase = 'repair'
     profile = PROFILES.get((phase, kind)) or PROFILES.get((phase, '*'))

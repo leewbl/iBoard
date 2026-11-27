@@ -63,6 +63,7 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual(model['routes']['baseline-review']['effort'], 'low')
         self.assertEqual(model_profiles.select(model, 'arena-cross-judge-pool', other_than='glm')['provider'], 'openai')
         self.assertEqual(model_profiles.for_stage(model, 'ci-repair-2', 'bug')['role'], 'repair')
+        self.assertEqual(model_profiles.for_stage(model, 'premise-2', 'bug')['role'], 'baseline-review')
 
     def test_provider_mismatch_closes_only_its_remaining_probes(self):
         def wrong(*args, **kwargs):

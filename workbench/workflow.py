@@ -415,6 +415,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     report_path = task.parent / f'{kind}-{uuid.uuid4().hex}.json'
     screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' else None
     runner_options = {'source_root': '/app'} if source_mode == 'image' else {}
+    if runner is run_sandbox:
+        runner_options['pin_image'] = True
     if regression is not None:
         runner_options['workspace_read_only'] = True
         if native:
