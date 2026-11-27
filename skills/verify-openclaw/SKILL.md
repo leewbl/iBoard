@@ -57,7 +57,11 @@ The isolated filter Gateway uses Node's `--max-semi-space-size=4` to limit young
 
 ### Session archive and restore
 
-Run `control-ui-session-archive-restore` with the compiled image and a screenshot path. The Gateway seeds two idle rows. In Chromium, open the selected row menu and click **Archive session**. Require one accepted `sessions.patch` using the original ID and the expected archived state. Restart the Gateway with the same disposable state, then authenticate in a fresh browser at Archived and verify the same row and ID. Click **Restore session** and require a second accepted patch. Restart again and verify both original rows in Active. Retain all three list request IDs, both write request IDs, and the chain of graceful restarts. The fixture covers an idle leaf session. Use a task-specific journey for Undo or confirmation dialogs. The verified run used `--memory-mb 3584`. Allow up to 600 seconds per run and run serially.
+Run `control-ui-session-archive-restore` with the compiled image and a screenshot path. The Gateway seeds two idle rows. In Chromium, open the selected row menu and click **Archive session**. Require one accepted `sessions.patch` using the original ID and the expected archived state. Restart the Gateway with the same disposable state, then authenticate in a fresh browser at Archived and verify the same row and ID. Click **Restore session** and require a second accepted patch. Restart again and verify both original rows in Active. Retain all three list request IDs, both write request IDs, and the chain of graceful restarts. The fixture covers an idle leaf session. The verified run used `--memory-mb 3584`. Allow up to 600 seconds per run and run serially.
+
+### Nested session archive and Undo
+
+Run `control-ui-session-archive-subtree-undo` for the conditional confirmation. Seed a parent, one real nested session, and an unrelated session. From the parent row menu in All Sessions, cancel **Also archive nested sessions?**. Check for zero mutation and a fresh authenticated read of the three unchanged sessions. Open the dialog again, click **Archive all (2)**, and require a single accepted `sessions.patchMany` for the original parent and child. The All view must show exactly those two as archived. Click **Undo** in the success notification and require one accepted batch for the same IDs. A fresh browser after a Gateway restart must show all three active. Keep the read and write request IDs, the verified screenshot, and the restart and cleanup receipts.
 
 ## Evidence
 
@@ -73,7 +77,7 @@ The helper stops only the child it started and deletes only its own temporary st
 
 `python3 -m workbench.verify_openclaw --help` lists the supported journeys and resource options. Run the helper through that command, never on the host.
 
-Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) checks all ten mapped journeys, including the connected browser and the four Sessions journeys. Use the compiled Chromium-enabled image and a total timeout that covers the whole pass.
+Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) checks all eleven mapped journeys, including the connected browser and the five Sessions journeys. Use the compiled Chromium-enabled image and a total timeout that covers the whole pass.
 
 
 ## Browser recordings

@@ -12,12 +12,17 @@ const origin = 'http://127.0.0.1:18789';
 const socketOrigin = 'ws://127.0.0.1:18789';
 const token = 'iboard-disposable-local-ui-token';
 const [journey = 'connected', ...extra] = process.argv.slice(2);
-assert.ok(['connected', 'session-rename', 'session-delete', 'session-status-filter', 'session-archive-restore'].includes(journey),
+assert.ok(['connected', 'session-rename', 'session-delete', 'session-status-filter', 'session-archive-restore',
+  'session-archive-subtree-undo'].includes(journey),
   'Unknown Control UI journey');
 const rename = journey === 'session-rename';
 const deleting = journey === 'session-delete';
 const filtering = journey === 'session-status-filter';
 const archiving = journey === 'session-archive-restore';
+const archiveTree = journey === 'session-archive-subtree-undo';
+const tracksArchiveWrites = archiving || archiveTree;
+const tracksListReads = filtering || archiveTree;
+const defaultStatus = deleting || archiveTree ? 'all' : undefined;
 const visualState = extra[1];
 assert.ok(!extra.length || (
   extra.length === 2 && extra[0] === '--visual-state' &&
@@ -31,6 +36,8 @@ const survivorKey = 'agent:main:iboard-browser-survivor';
 const survivorLabel = 'iBoard unselected fixture';
 const archivedKey = 'agent:main:iboard-browser-archived';
 const archivedLabel = 'iBoard archived fixture';
+const nestedKey = 'agent:main:iboard-browser-nested';
+const nestedLabel = 'iBoard nested fixture';
 const sessionReadMethods = new Set([
   'sessions.list', 'sessions.subscribe', 'sessions.groups.list', 'sessions.groups.defaults',
   'sessions.describe', 'sessions.resolve', 'sessions.usage', 'sessions.catalog.list', 'sessions.catalog.read',
@@ -171,7 +178,7 @@ async function prepareFixture() {
   await writeFile(config, JSON.stringify({
     plugins: { enabled: false },
     cron: { enabled: false },
-    ...(deleting || archiving ? { update: { checkOnStart: false } } : {}),
+    ...(deleting || tracksArchiveWrites ? { update: { checkOnStart: false } } : {}),
     gateway: {
       mode: 'local',
       auth: { mode: 'token', token },
@@ -193,7 +200,7 @@ async function launchGateway() {
       cwd: '/app',
       // The archived fixture loads multiple Gateway workers before Chromium.
       // Smaller young generations leave room for both in the same container.
-      env: filtering || archiving ? { ...fixtureEnv, NODE_OPTIONS: '--max-semi-space-size=4' } : fixtureEnv,
+      env: filtering || tracksArchiveWrites ? { ...fixtureEnv, NODE_OPTIONS: '--max-semi-space-size=4' } : fixtureEnv,
       stdio: ['ignore', stream.fd, stream.fd],
     });
     child.once('error', error => { launchError = error; });
@@ -241,7 +248,7 @@ async function observe(read, message, timeout = 30_000) {
   throw new Error(message);
 }
 
-async function prepareSessions(fixtures = [], archiveKey = null, status = deleting ? 'all' : undefined) {
+async function prepareSessions(fixtures = [], archiveKey = null, status = defaultStatus) {
   // Start the Gateway's session-list workers before Chromium's initial parallel reads.
   // Only Chromium performs the mutation being checked.
   const program = `
@@ -260,8 +267,9 @@ async function prepareSessions(fixtures = [], archiveKey = null, status = deleti
       client.start();
       await connected;
       const fixtures = [];
-      for (const [key, label] of seeds) {
-        const result = await client.request('sessions.create', { agentId: 'main', key, label }, { timeoutMs: 45_000 });
+      for (const [key, label, parentSessionKey] of seeds) {
+        const result = await client.request('sessions.create', { agentId: 'main', key, label,
+          ...(parentSessionKey ? { parentSessionKey } : {}) }, { timeoutMs: 45_000 });
         fixtures.push({ key: result.key, sessionId: result.sessionId, label });
       }
       if (archiveKey !== null) {
@@ -286,18 +294,35 @@ async function prepareSessions(fixtures = [], archiveKey = null, status = deleti
     ...(status ? { archived: status === 'archived' ? true : status } : {}) };
   const proc = await promisify(execFile)(process.execPath, [
     '--max-old-space-size=256', ...nodeSource, '--input-type=module', '-e', program,
-    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, warmUpdateStatus: deleting || archiving }),
+    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, warmUpdateStatus: deleting || tracksArchiveWrites }),
   ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 140_000 });
   const seeded = JSON.parse(proc.stdout.trim().split('\n').at(-1));
-  assert.deepEqual(seeded.map(({ key, label }) => [key, label]), fixtures);
+  assert.deepEqual(seeded.map(({ key, label }) => [key, label]), fixtures.map(([key, label]) => [key, label]));
   for (const { sessionId } of seeded) assert.ok(typeof sessionId === 'string' && sessionId, 'Fixture has no session ID');
   return seeded;
 }
 
+function expandSessionRows(sessions, sharedFacts) {
+  return sessions.map(row => {
+    const { sharedFacts: indexes, ...fields } = row;
+    if (indexes === undefined) return row;
+    assert.ok(Array.isArray(indexes) && Array.isArray(sharedFacts), 'Invalid Gateway session row facts');
+    const expanded = {};
+    for (const index of indexes) {
+      const fact = sharedFacts[index];
+      assert.ok(Number.isInteger(index) && index >= 0 && index < sharedFacts.length &&
+        fact && typeof fact === 'object' && !Array.isArray(fact), 'Unknown Gateway session row fact');
+      Object.assign(expanded, fact);
+    }
+    return { ...expanded, ...fields };
+  });
+}
+
 function filterRows(request, payload, cache) {
-  const { sessions, rowsRevision, rowsUnchanged, rowsDelta } = payload;
+  const { sessions, sharedFacts, rowsRevision, rowsUnchanged, rowsDelta } = payload;
   const previous = cache.get(request.membership);
-  let rows = sessions;
+  // Resolve shared fields before caching rows or applying the delta order.
+  let rows = expandSessionRows(sessions, sharedFacts);
   if (rowsUnchanged || rowsDelta) {
     assert.ok(previous && request.ifRowsRevision === `delta:${previous.revision}`,
       'Gateway returned a conditional session list for an unknown query revision');
@@ -307,7 +332,7 @@ function filterRows(request, payload, cache) {
       rows = previous.rows;
     } else {
       assert.equal(rowsDelta.baseRevision, previous.revision);
-      const available = [...previous.rows, ...sessions];
+      const available = [...previous.rows, ...rows];
       rows = rowsDelta.order.map(index => {
         assert.ok(Number.isInteger(index) && index >= 0 && index < available.length,
           'Gateway returned an incomplete session list delta');
@@ -321,7 +346,7 @@ function filterRows(request, payload, cache) {
   return rows;
 }
 
-async function openSessions(status = deleting ? 'all' : undefined) {
+async function openSessions(status = defaultStatus) {
   const scope = status === 'archived' ? true : status;
   const context = await browser.newContext({
     viewport, colorScheme: 'light', reducedMotion: 'reduce',
@@ -372,9 +397,9 @@ async function openSessions(status = deleting ? 'all' : undefined) {
           !sessionReadMethods.has(frame.method)) writes.push({ method: frame.method });
       if (frame.method === 'connect' ||
           (frame.method === 'sessions.list' && frame.params?.source === 'sessions-page'
-           && (!(deleting || archiving) || frame.params.archived === scope))) {
+           && (!(deleting || tracksArchiveWrites) || frame.params.archived === scope))) {
         const request = { method: frame.method, archived: frame.params?.archived, requestId: frame.id };
-        if (filtering && request.method === 'sessions.list') {
+        if (tracksListReads && request.method === 'sessions.list') {
           if (!handshake) return;
           const { ifRowsRevision, ...query } = frame.params;
           Object.assign(request, { ifRowsRevision, source: query.source, requestId: frame.id,
@@ -384,7 +409,7 @@ async function openSessions(status = deleting ? 'all' : undefined) {
       } else if (handshake && (
         (rename && frame.method === 'sessions.patch' && frame.params?.key === fixtureKey)
         || (deleting && ['sessions.delete', 'sessions.deleteMany'].includes(frame.method))
-        || (archiving && typeof frame.method === 'string' && frame.method.startsWith('sessions.') &&
+        || (tracksArchiveWrites && typeof frame.method === 'string' && frame.method.startsWith('sessions.') &&
           !sessionReadMethods.has(frame.method))
       )) {
         const write = { method: frame.method, params: frame.params, socket, accepted: false,
@@ -405,6 +430,9 @@ async function openSessions(status = deleting ? 'all' : undefined) {
         request.responseKey = frame.payload?.key;
         request.responseSessionId = frame.payload?.entry?.sessionId;
         request.responseArchived = typeof frame.payload?.entry?.archivedAt === 'number';
+        if (archiveTree && Array.isArray(frame.payload?.outcomes)) {
+          request.outcomes = frame.payload.outcomes.map(({ key, agentId, ok }) => ({ key, agentId, ok }));
+        }
         if (typeof frame.error?.code === 'string' && /^[A-Z_]{1,64}$/u.test(frame.error.code)) {
           request.errorCode = frame.error.code;
         }
@@ -421,7 +449,7 @@ async function openSessions(status = deleting ? 'all' : undefined) {
         if (identity.method === 'token' && identity.role === 'operator') handshake = identity;
       }
       if (handshake && request.method === 'sessions.list' && Array.isArray(frame.payload?.sessions)) {
-        if (filtering) {
+        if (tracksListReads) {
           try {
             const sessions = filterRows(request, frame.payload, filterCache);
             sessionProof = { socket, handshake, archived: request.archived, sessions, source: request.source,
@@ -535,7 +563,7 @@ async function assertSession(view, fixture, label = fixture.label) {
   await rowFor(view, fixture.key).getByText(label, { exact: true }).waitFor({ state: 'visible' });
 }
 
-async function restartSessions(status = deleting ? 'all' : undefined) {
+async function restartSessions(status = defaultStatus) {
   // Keep only the disposable on-disk state while replacing both application processes.
   await recorder?.stop({ finalFrame: true });
   await browser.close();
@@ -605,6 +633,98 @@ async function verifyArchiveRestore(target, survivor, active) {
   await roster(restored, 'active', [target, survivor]);
   await capture(restored, { mutation: { key: target.key, sessionId: target.sessionId,
     writes: [archive, restore], steps, survivor: { key: survivor.key, sessionId: survivor.sessionId } } });
+}
+
+async function verifyArchiveSubtreeUndo(parent, nested, survivor, view) {
+  const fixtures = [parent, nested, survivor];
+  const targetIdentity = ({ key, sessionId }) => ({ key, expectedSessionId: sessionId, agentId: 'main' });
+  const targets = [parent, nested].map(targetIdentity);
+  const steps = [];
+  const readIds = new Set();
+  const refresh = view.page.getByRole('button', { name: 'Refresh', exact: true })
+    .and(view.page.locator('.sessions-toolbar__refresh'));
+
+  async function roster(browserView, proof, stage, archived) {
+    browserView.assertConnectedPage();
+    assert.equal(proof.socket, browserView.proof.socket);
+    assert.equal(proof.archived, 'all');
+    assert.equal(proof.source, 'sessions-page');
+    assert.ok(typeof proof.requestId === 'string' && proof.requestId && !readIds.has(proof.requestId));
+    readIds.add(proof.requestId);
+    assert.deepEqual(proof.sessions.map(row => row.key).sort(), fixtures.map(row => row.key).sort());
+    const rows = [];
+    for (const fixture of fixtures) {
+      const expected = archived && fixture !== survivor;
+      const row = proof.sessions.find(entry => entry.key === fixture.key);
+      assert.equal(row?.sessionId, fixture.sessionId);
+      assert.equal(row.archived === true, expected, `${stage}: unexpected Gateway archive state for ${fixture.key}`);
+      const visible = rowFor(browserView, fixture.key);
+      await visible.getByText(fixture.label, { exact: true }).waitFor({ state: 'visible' });
+      await observe(() => visible.evaluate(element => element.classList.contains('session-data-row--archived'))
+        .then(value => value === expected), `Visible archive state did not match Gateway for ${fixture.key}`);
+      rows.push({ key: row.key, sessionId: row.sessionId, archived: expected });
+    }
+    steps.push({ stage, gatewayPid: child.pid, requestId: proof.requestId, rows });
+    await recorder?.checkpoint();
+  }
+
+  async function freshRead(stage, flags) {
+    const sequence = view.latestFilterSequence();
+    // Keep the pointer over the Undo toast while pressing the real refresh control.
+    await refresh.press('Enter');
+    const result = await observe(() => view.filterProofAfter(sequence, 'all'),
+      'Sessions did not return a fresh authenticated roster', 90_000);
+    await roster(view, result, stage, flags);
+  }
+
+  async function dialog() {
+    await rowFor(view, parent.key).getByRole('button', { name: `Open session menu: ${parent.key}`, exact: true }).click();
+    await view.page.getByRole('menuitem', { name: 'Archive session', exact: true }).click();
+    const modal = view.page.locator('openclaw-modal-dialog dialog[open]').filter({ hasText: 'Also archive nested sessions?' });
+    await modal.waitFor({ state: 'visible' });
+    await modal.getByRole('button', { name: 'Archive all (2)', exact: true }).waitFor({ state: 'visible' });
+    return modal;
+  }
+
+  async function batch(index, archived) {
+    const write = await observe(() => view.writes[index]?.received && view.writes[index],
+      `Gateway did not acknowledge the ${archived ? 'archive' : 'Undo'} batch`, 90_000);
+    assert.equal(view.writes.length, index + 1, 'Unexpected session mutation count');
+    assert.equal(write.socket, view.proof.socket);
+    assert.equal(write.method, 'sessions.patchMany');
+    assert.equal(write.accepted, true);
+    assert.equal(write.params.patch?.archived, archived);
+    const actual = write.params.targets.map(({ key, expectedSessionId, agentId }) => ({ key, expectedSessionId, agentId }));
+    const byKey = (a, b) => a.key.localeCompare(b.key);
+    assert.deepEqual(actual.toSorted(byKey), targets.toSorted(byKey));
+    const outcomes = targets.map(({ key, agentId }) => ({ key, agentId, ok: true }));
+    assert.deepEqual(write.outcomes?.toSorted(byKey), outcomes.toSorted(byKey));
+    return { method: write.method, requestId: write.requestId, archived, accepted: true, targets: actual, outcomes: write.outcomes };
+  }
+
+  await roster(view, view.proof, 'initial', false);
+  const canceled = await dialog();
+  await recorder?.checkpoint();
+  await canceled.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await canceled.waitFor({ state: 'hidden' });
+  await freshRead('after-cancel', false);
+  assert.equal(view.writes.length, 0, 'Cancel submitted a session mutation');
+  const confirmed = await dialog();
+  await confirmed.getByRole('button', { name: 'Archive all (2)', exact: true }).click();
+  const archive = await batch(0, true);
+  const undo = view.page.getByRole('status').filter({ hasText: 'Archived 2 sessions' })
+    .getByRole('button', { name: 'Undo', exact: true });
+  await undo.hover();
+  await freshRead('after-archive', true);
+  await undo.click();
+  const restore = await batch(1, false);
+  const fresh = await restartSessions();
+  await roster(fresh, fresh.proof, 'after-undo-restart', false);
+  assert.equal(view.writes.length, 2, 'A late mutation followed Undo');
+  assert.equal(fresh.writes.length, 0, 'Fresh browser mutated the verified roster');
+  await capture(fresh, { mutation: { key: parent.key, sessionId: parent.sessionId,
+    nested: { key: nested.key, sessionId: nested.sessionId }, survivor: { key: survivor.key, sessionId: survivor.sessionId },
+    writes: [archive, restore], steps, canceledWithoutWrite: true } });
 }
 
 async function verifyRename(fixture, view) {
@@ -827,7 +947,8 @@ async function launchBrowser() {
 
 async function drive() {
   if (deleteTrace) deleteTrace.step = 'prepare-fixtures';
-  const seeds = deleting || archiving ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
+  const seeds = archiveTree ? [[fixtureKey, originalLabel], [nestedKey, nestedLabel, fixtureKey], [survivorKey, survivorLabel]]
+    : deleting || archiving ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
     : filtering ? [[fixtureKey, originalLabel], [archivedKey, archivedLabel]]
       : rename ? [[fixtureKey, originalLabel]] : [];
   const fixtures = seeds.length ? await prepareSessions(seeds, filtering ? archivedKey : null) : [];
@@ -842,6 +963,8 @@ async function drive() {
     await verifySessionStatusFilter(...fixtures, view);
   } else if (archiving) {
     await verifyArchiveRestore(...fixtures, view);
+  } else if (archiveTree) {
+    await verifyArchiveSubtreeUndo(...fixtures, view);
   } else {
     assert.equal(view.proof.sessions.length, 0, 'Fresh Gateway state unexpectedly contains sessions');
     await view.page.getByText('No active sessions.', { exact: true }).waitFor({ state: 'visible' });

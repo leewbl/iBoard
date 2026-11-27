@@ -25,7 +25,8 @@ SESSION_RENAME = 'control-ui-session-rename'
 SESSION_DELETE = 'control-ui-session-delete'
 SESSION_FILTER = 'control-ui-session-status-filter'
 SESSION_ARCHIVE = 'control-ui-session-archive-restore'
-SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE, SESSION_ARCHIVE)
+SESSION_ARCHIVE_TREE = 'control-ui-session-archive-subtree-undo'
+SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE, SESSION_ARCHIVE, SESSION_ARCHIVE_TREE)
 SESSION_JOURNEYS = (*SESSION_WRITES, SESSION_FILTER)
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
@@ -33,12 +34,13 @@ BROWSER_JOURNEYS = {
     SESSION_DELETE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_DELETE_PASS'),
     SESSION_FILTER: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_STATUS_FILTER_PASS'),
     SESSION_ARCHIVE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RESTORE_PASS'),
+    SESSION_ARCHIVE_TREE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_SUBTREE_UNDO_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
 def _timeout(journey):
-    if journey == SESSION_ARCHIVE:
+    if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE):
         return 600
     return 480 if journey in SESSION_JOURNEYS else 320
 
@@ -116,6 +118,45 @@ def _archive_evidence(mutation, readback, pids):
                for step, (state, rows), pid in zip(steps, expected, pids))
 
 
+def _archive_tree_evidence(mutation, readback, pids):
+    parent = {key: mutation[key] for key in ('key', 'sessionId')}
+    nested, survivor = mutation['nested'], mutation['survivor']
+    fixtures = (parent, nested, survivor)
+    if (readback['count'] != 3 or readback['archived'] != 'all' or mutation['canceledWithoutWrite'] is not True
+            or nested['key'] != 'agent:main:iboard-browser-nested' or survivor['key'] != 'agent:main:iboard-browser-survivor'
+            or not all(isinstance(row['sessionId'], str) and row['sessionId'].strip() for row in fixtures)
+            or len({row['sessionId'] for row in fixtures}) != 3):
+        return False
+    writes, steps = mutation['writes'], mutation['steps']
+    if not isinstance(writes, list) or len(writes) != 2 or not isinstance(steps, list) or len(steps) != 4:
+        return False
+    requests = [row['requestId'] for row in [*writes, *steps]]
+    if not all(isinstance(request, str) and request.strip() for request in requests) or len(set(requests)) != 6:
+        return False
+    targets = sorted((dict(key=row['key'], expectedSessionId=row['sessionId'], agentId='main')
+                      for row in (parent, nested)), key=lambda row: row['key'])
+    for write, archived in zip(writes, (True, False)):
+        if write['method'] != 'sessions.patchMany' or write['accepted'] is not True or write['archived'] is not archived:
+            return False
+        if not isinstance(write['targets'], list) or sorted(write['targets'], key=lambda row: row['key']) != targets:
+            return False
+        outcomes = write['outcomes']
+        if (not isinstance(outcomes, list) or len(outcomes) != 2
+                or sorted(row['key'] for row in outcomes) != [row['key'] for row in targets]
+                or not all(row['ok'] is True and row['agentId'] == 'main' for row in outcomes)):
+            return False
+    stages = ('initial', 'after-cancel', 'after-archive', 'after-undo-restart')
+    for index, (step, stage) in enumerate(zip(steps, stages)):
+        if (step['stage'] != stage or step['gatewayPid'] != pids[int(index == 3)]
+                or not isinstance(step['rows'], list) or len(step['rows']) != len(fixtures)):
+            return False
+        for row, fixture in zip(step['rows'], fixtures):
+            if (row['key'] != fixture['key'] or row['sessionId'] != fixture['sessionId']
+                    or row['archived'] is not (index == 2 and fixture != survivor)):
+                return False
+    return True
+
+
 def _browser_evidence(report, screenshot):
     """Check the artifact attachment and the observed session behavior."""
     try:
@@ -163,6 +204,8 @@ def _browser_evidence(report, screenshot):
             return False
         if report['journey'] == SESSION_ARCHIVE:
             return _archive_evidence(mutation, readback, pids)
+        if report['journey'] == SESSION_ARCHIVE_TREE:
+            return _archive_tree_evidence(mutation, readback, pids)
         if report['journey'] == SESSION_DELETE:
             survivor = mutation['survivor']
             return (readback['count'] == 1 and readback.get('archived') == 'all'
@@ -302,19 +345,28 @@ def required_journeys(data, head):
         selected.append(SESSION_RENAME)
     if sessions_ui or 'src/gateway/server-methods/sessions-delete.ts' in paths:
         selected.append(SESSION_DELETE)
-    if sessions_ui or any(path in ('ui/src/components/solid/settings-ui.tsx',
-                                   'src/gateway/server-methods/sessions-read.ts',
-                                   'src/gateway/server-methods/sessions-patch-archive.ts')
-                          for path in paths):
+    session_roster = sessions_ui or any(path in (
+        'packages/gateway-protocol/src/session-row-fields.ts',
+        'src/gateway/session-list-view-cache.ts',
+        'src/gateway/session-row-presentation.ts',
+        'src/gateway/server-methods/sessions-read.ts',
+        'src/gateway/server-methods/sessions-patch-archive.ts',
+    ) for path in paths)
+    if session_roster or 'ui/src/components/solid/settings-ui.tsx' in paths:
         selected.append(SESSION_FILTER)
-    if sessions_ui or any(path.startswith(('ui/src/components/session-organizer-archive',
+    archive_paths = session_roster or any(path.startswith(('ui/src/components/session-organizer-archive',
                                           'ui/src/components/session-menu-',
                                           'src/gateway/server-methods/sessions-patch-archive'))
                           or path in ('src/gateway/server-methods/sessions-mutations.ts',
-                                      'src/gateway/server-methods/sessions-patch-engine.ts',
-                                      'src/gateway/server-methods/sessions-read.ts')
-                          for path in paths):
+                                      'src/gateway/server-methods/sessions-patch-engine.ts')
+                          for path in paths)
+    if archive_paths:
         selected.append(SESSION_ARCHIVE)
+    if archive_paths or any(path in ('packages/gateway-protocol/src/schema/sessions-create.ts',
+                                     'ui/src/components/session-organizer-batch-mutations.ts',
+                                     'ui/src/components/confirm-dialog-view.tsx', 'ui/src/lib/toast.ts')
+                            for path in paths):
+        selected.append(SESSION_ARCHIVE_TREE)
     return selected
 
 

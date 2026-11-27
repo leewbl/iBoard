@@ -299,6 +299,26 @@
         {"path": "ui/src/pages/sessions/list-query.ts", "contains": "source: \"sessions-page\""},
         {"path": "src/gateway/server-methods/sessions-patch-archive.ts", "contains": "\"archivedAt\""}
       ]
+    },
+    {
+      "id": "control-ui-session-archive-subtree-undo",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_SUBTREE_UNDO_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-archive-subtree-undo"],
+      "reach": "From the parent row menu in the All Sessions view, open the nested-session archive confirmation.",
+      "drive": "Cancel once, then confirm Archive all for the parent and its child. Click the successful batch's Undo action and restart the Gateway with the same disposable state.",
+      "observe": "Cancel sends no mutation. Archive all and Undo each receive one accepted batch patch for the exact original parent and child. Gateway and visible rows agree after each read. The third, unselected session stays active. A fresh browser confirms both restored IDs after restart.",
+      "gotchas": "Use the prepared Chromium image and serial execution. Use persistent idle fixture rows with no pins, automations or running jobs.",
+      "source": [
+        {"path": "ui/src/pages/sessions/sessions-page-menu.ts", "contains": "host.archive(row, hasSessionArchiveDescendants(row, rows))"},
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "export async function archiveConfirmedSessionsWithUndo"},
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "restoreArchivedSessions(undoHost, archived, scope)"},
+        {"path": "ui/src/pages/sessions/session-row.tsx", "contains": "session-data-row--archived"},
+        {"path": "packages/gateway-protocol/src/session-row-fields.ts", "contains": "export function expandSessionRowFacts"},
+        {"path": "packages/gateway-protocol/src/schema/sessions-create.ts", "contains": "parentSessionKey: Type.Optional(NonEmptyString)"}
+      ]
     }
   ]
 }
