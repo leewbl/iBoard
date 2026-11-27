@@ -24,18 +24,22 @@ JOURNEYS = {
 SESSION_RENAME = 'control-ui-session-rename'
 SESSION_DELETE = 'control-ui-session-delete'
 SESSION_FILTER = 'control-ui-session-status-filter'
-SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE)
+SESSION_ARCHIVE = 'control-ui-session-archive-restore'
+SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE, SESSION_ARCHIVE)
 SESSION_JOURNEYS = (*SESSION_WRITES, SESSION_FILTER)
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
     SESSION_RENAME: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS'),
     SESSION_DELETE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_DELETE_PASS'),
     SESSION_FILTER: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_STATUS_FILTER_PASS'),
+    SESSION_ARCHIVE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RESTORE_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
 def _timeout(journey):
+    if journey == SESSION_ARCHIVE:
+        return 600
     return 480 if journey in SESSION_JOURNEYS else 320
 
 
@@ -88,6 +92,30 @@ def _filter_evidence(ui, readback):
     return True
 
 
+def _archive_evidence(mutation, readback, pids):
+    target = {key: mutation[key] for key in ('key', 'sessionId')}
+    survivor = mutation['survivor']
+    if (readback['count'] != 2 or 'archived' in readback or survivor['key'] != 'agent:main:iboard-browser-survivor'
+            or not isinstance(survivor['sessionId'], str) or not survivor['sessionId'].strip()
+            or survivor['sessionId'] == target['sessionId']):
+        return False
+    writes, steps = mutation['writes'], mutation['steps']
+    if not isinstance(writes, list) or len(writes) != 2 or not isinstance(steps, list) or len(steps) != 3:
+        return False
+    requests = [row['requestId'] for row in [*writes, *steps]]
+    if not all(isinstance(request, str) and request.strip() for request in requests) or len(set(requests)) != 5:
+        return False
+    for write, archived in zip(writes, (True, False)):
+        if (write['method'] != 'sessions.patch' or write['accepted'] is not True
+                or write['archived'] is not archived or write['responseArchived'] is not archived
+                or write['key'] != target['key'] or write['responseKey'] != target['key']
+                or write['expectedSessionId'] != target['sessionId'] or write['responseSessionId'] != target['sessionId']):
+            return False
+    expected = (('active', [target, survivor]), ('archived', [target]), ('active', [target, survivor]))
+    return all(step['state'] == state and step['gatewayPid'] == pid and step['rows'] == rows
+               for step, (state, rows), pid in zip(steps, expected, pids))
+
+
 def _browser_evidence(report, screenshot):
     """Check the artifact attachment and the observed session behavior."""
     try:
@@ -95,9 +123,9 @@ def _browser_evidence(report, screenshot):
                 or cli.digest(screenshot) != report.get('screenshot_sha256')):
             return False
         marker = _journey(report['journey'])[1]
-        restart_required = report['journey'] in SESSION_WRITES
+        restarts = 2 if report['journey'] == SESSION_ARCHIVE else int(report['journey'] in SESSION_WRITES)
         lines = report['stdout'].splitlines()
-        if report.get('stdout_truncated') or len(lines) != (5 if restart_required else 4) or lines[-1] != marker:
+        if report.get('stdout_truncated') or len(lines) != 4 + restarts or lines[-1] != marker:
             return False
         doctor, *activity, ui, cleanup = map(json.loads, lines[:-1])
         initial_pid = doctor['gatewayPid']
@@ -112,24 +140,29 @@ def _browser_evidence(report, screenshot):
                 and readback.get('method') == 'sessions.list' and type(readback.get('count')) is int
                 and cleanup == {'phase': 'cleanup', 'exit': clean_exit, 'scratchRemoved': True}):
             return False
-        if not restart_required:
+        if not restarts:
             if 'mutation' in ui or ui.get('gatewayPid') != initial_pid:
                 return False
             if report['journey'] == SESSION_FILTER:
                 return _filter_evidence(ui, readback)
             return readback['count'] == 0
-        restart = activity[0]
-        restarted_pid = restart['gatewayPid']
-        if not (restart.get('phase') == 'restart' and restart.get('origin') == doctor['origin']
-                and restart.get('ready') is True and restart.get('live') is True and restart.get('portClosed') is True
-                and restart.get('previousPid') == initial_pid and restart.get('previousExit') == clean_exit
-                and type(restarted_pid) is int and restarted_pid > 1 and restarted_pid != initial_pid
-                and ui.get('gatewayPid') == restarted_pid):
+        pids = [initial_pid]
+        for restart in activity:
+            restarted_pid = restart['gatewayPid']
+            if not (restart.get('phase') == 'restart' and restart.get('origin') == doctor['origin']
+                    and restart.get('ready') is True and restart.get('live') is True and restart.get('portClosed') is True
+                    and restart.get('previousPid') == pids[-1] and restart.get('previousExit') == clean_exit
+                    and type(restarted_pid) is int and restarted_pid > 1 and restarted_pid not in pids):
+                return False
+            pids.append(restarted_pid)
+        if ui.get('gatewayPid') != pids[-1]:
             return False
         mutation = ui['mutation']
         if not (mutation.get('key') == 'agent:main:iboard-browser-verification'
                 and isinstance(mutation.get('sessionId'), str) and mutation['sessionId'].strip()):
             return False
+        if report['journey'] == SESSION_ARCHIVE:
+            return _archive_evidence(mutation, readback, pids)
         if report['journey'] == SESSION_DELETE:
             survivor = mutation['survivor']
             return (readback['count'] == 1 and readback.get('archived') == 'all'
@@ -274,6 +307,14 @@ def required_journeys(data, head):
                                    'src/gateway/server-methods/sessions-patch-archive.ts')
                           for path in paths):
         selected.append(SESSION_FILTER)
+    if sessions_ui or any(path.startswith(('ui/src/components/session-organizer-archive',
+                                          'ui/src/components/session-menu-',
+                                          'src/gateway/server-methods/sessions-patch-archive'))
+                          or path in ('src/gateway/server-methods/sessions-mutations.ts',
+                                      'src/gateway/server-methods/sessions-patch-engine.ts',
+                                      'src/gateway/server-methods/sessions-read.ts')
+                          for path in paths):
+        selected.append(SESSION_ARCHIVE)
     return selected
 
 
@@ -391,7 +432,7 @@ def main(argv=None):
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument('--screenshot', type=Path, help='PNG evidence path for a Control UI browser journey')
     parser.add_argument('--recording', type=Path, help='JSONL recording path for a Control UI browser journey')
-    parser.add_argument("--timeout", type=int, help='seconds (default: 480 for Sessions journeys, otherwise 320)')
+    parser.add_argument("--timeout", type=int, help='seconds (600 for archive/restore, 480 for other Sessions journeys, otherwise 320)')
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
     if (args.journey in BROWSER_JOURNEYS) != (args.screenshot is not None):

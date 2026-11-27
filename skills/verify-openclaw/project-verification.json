@@ -280,6 +280,25 @@
         {"path": "ui/src/lib/sessions/session-requests.ts", "contains": "params.archived = \"all\""},
         {"path": "src/gateway/server-methods/sessions-read.ts", "contains": "\"sessions.list\": createPreparedReadHandler"}
       ]
+    },
+    {
+      "id": "control-ui-session-archive-restore",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RESTORE_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-archive-restore"],
+      "reach": "Use the row menu to archive an idle disposable session. Open the Archived Sessions view to restore it.",
+      "drive": "Archive the selected row, then restart the Gateway and authenticate in a fresh browser. Restore the same row from Archived. Restart the Gateway again and open Active in a fresh browser.",
+      "observe": "One accepted patch per action carries the same exact session ID and expected archive state. Both writes survive separate Gateway restarts. The unselected row never leaves Active. Authenticated reads and visible rows agree, and cleanup closes the Gateway and removes the disposable state.",
+      "gotchas": "Use a commit-attested Chromium image and run serially. The fixture has no descendants, automations or active work. Confirmation and Undo need task-specific verification.",
+      "source": [
+        {"path": "ui/src/pages/sessions/archive-actions.ts", "contains": "return await host.patch(row.key, { archived: true }"},
+        {"path": "ui/src/pages/sessions/sessions-page-menu.ts", "contains": "{ archived: false }"},
+        {"path": "ui/src/components/session-menu-view.tsx", "contains": "sessionsView.restoreSession"},
+        {"path": "ui/src/pages/sessions/list-query.ts", "contains": "source: \"sessions-page\""},
+        {"path": "src/gateway/server-methods/sessions-patch-archive.ts", "contains": "\"archivedAt\""}
+      ]
     }
   ]
 }

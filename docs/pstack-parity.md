@@ -84,7 +84,7 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 通过 [多阶段派发](../skills/multi-phase-plan/SKILL.md) 显式授权计划后，iBoard 先测原始主线，再按依赖创建各自的任务和工作树。计划可授权最多四个阶段并发实现。每个阶段保留独立的记录，基线测量和候选验证逐项运行。同一阶段的单元测试、真实入口和候选性能绑定到同一个镜像。交互改动需要对具体提交和证据审批，才能释放依赖阶段。`workbench.phase_ship` 核对声明的个人 fork、具体 PR 和前一阶段落地提交后，继续交付下一阶段。需要更新基线时，`workbench.phase_reverify` 保留补丁和原验收条件，在独立工作树重新取证。交互审批随候选提交重新确认。
 
-[`workbench.project_verify create`](../skills/create-verification-skill/SKILL.md) 从源码锚点、用户路径和现有驱动生成项目验证技能与功能地图。固定 Git 版本和本地镜像，启动 doctor 和一条真实场景后才导出可交接的技能。[维护入口](../skills/maintain-verification-skill/SKILL.md) 核对地图与源码，逐项推动真实场景，发现失败后重新运行 doctor。修订版要经过全图复验才导出差异。OpenClaw 地图收录五条 CLI 路径和四条真实浏览器路径。浏览器巡检从运行中的页面核对编译版本，并将截图绑定到报告。配置相关代码变更还要求将配置验证的双份断网证据纳入终审。
+[`workbench.project_verify create`](../skills/create-verification-skill/SKILL.md) 从源码锚点、用户路径和现有驱动生成项目验证技能与功能地图。固定 Git 版本和本地镜像，启动 doctor 和一条真实场景后才导出可交接的技能。[维护入口](../skills/maintain-verification-skill/SKILL.md) 核对地图与源码，逐项推动真实场景，发现失败后重新运行 doctor。修订版要经过全图复验才导出差异。OpenClaw 地图收录五条 CLI 路径和五条真实浏览器路径。浏览器巡检从运行中的页面核对编译版本，并将截图绑定到报告。配置相关代码变更还要求将配置验证的双份断网证据纳入终审。
 
 [`workbench.formal_verify create`](../skills/create-formal-verification-skill/SKILL.md) 可生成绑定源码提交、属性、验证工具、探索边界和反例的项目技能。创建和[维护](../skills/maintain-formal-verification-skill/SKILL.md)都会在临时工作树故意打破一项属性，检查验证器能否抓到反例，随后复验未改动的源码。维护保留旧验证器结果、变更与移动记录。修改已确认的属性和边界需要明确的意图与批准证据。OpenClaw [队列示例](../examples/formal/openclaw-command-lane/README.md) 穷举容量为一时三条命令的 40 种调度，并提供同一属性的有限 TLA+ 模型。
 
@@ -92,9 +92,11 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [OpenClaw 连接态验证](../skills/verify-openclaw/SKILL.md) 从固定镜像启动临时 Gateway，用浏览器登录 Control UI，再核对 `sessions.list` 与截图。会话改名场景还检查取消时没有写入、保存时 Gateway 确认写入，以及 Gateway 重启后从新浏览器读回同一会话的新名称。会话删除场景先取消并由新的浏览器上下文确认两条会话都还在，再确认删除其中一条。Gateway 重启后重新登录，查询活动与归档会话，确认只剩原 ID 的未选中会话。涉及会话界面的改动必须提交两套通过证据。发出 PR 前，门禁会再次核对镜像、提交、独立执行身份、Gateway 重启记录和截图哈希。
 
+[会话归档与恢复](../skills/verify-openclaw/SKILL.md#session-archive-and-restore) 由浏览器对选中的空闲会话执行两次真实写入。每次都核对 Gateway 的成功响应，重启后通过新浏览器确认会话 ID 和列表状态。未选中的会话保留原 ID 与活动状态。归档路径、共享会话菜单和相关 Gateway 文件变更触发该门禁。
+
 | 能力 | iBoard 状态 | 等效能力的验收条件 |
 | --- | --- | --- |
-| 项目验证和功能地图 | 可按源码和驱动生成项目验证技能。OpenClaw 覆盖 Gateway、技能资格、配置校验，以及 Control UI 会话的读取、活动和归档状态筛选、改名和单选删除。写入场景均覆盖取消和重启后读回。 | 扩到其他界面动作、PTY 和其他项目。对每条用户路径验证可见结果、必要副作用和清理。 |
+| 项目验证和功能地图 | 可按源码和驱动生成项目验证技能。OpenClaw 覆盖 Gateway、技能资格、配置校验，以及 Control UI 会话的读取、状态筛选、改名、单选删除、归档和恢复。改名与删除检查取消，所有写入场景都检查重启后读回。 | 扩到其他界面动作、PTY 和其他项目。对每条用户路径验证可见结果、必要副作用和清理。 |
 | 功能地图维护 | [并行源码审查](../skills/maintain-verification-skill/SKILL.md#review-the-feature-source) 为每个功能生成有源码引用的说明与运行建议。巡检逐条核对来源与实际运行，可发现已绑定命令和 JSX 控件选项的漏项或过时项。固定数组中的 Commander 注册可展开为具体命令，无法解析的注册保留源码位置并阻断绿色结论。OpenClaw 的 Workshop 归档恢复与会话状态筛选均有独立运行路径。对声明了失败信号的场景可用双驱动和同一运行时区分脚本与产品问题。 | [维护交付入口](../skills/maintain-verification-skill/SKILL.md#ship-a-verified-correction) 将已提交的单技能修订与全图证据绑定到现有 PR 门禁。真实账号的维护 PR、间接注册、更多界面控件和路由仍待验证。 |
 | Bug 修复 | 有双份基线复现、修复、候选复验及 PR 门禁。 | 用同一场景复现并对照候选，确认故障机制，检查影响范围，缺失复现或必要证据时暂停。 |
 | 需求、原型与架构 | 可把选定设计及原型结论绑定到正式 Feature 任务。两种方案可独立实现和盲评，胜出提交纳入静态评审、断网验收和边界探针。可按多阶段计划派发本地任务。 | 串联多阶段验收与远端 PR 栈落地，让评审能主动提出新的功能边界，并覆盖更多实际用户入口和副作用。 |

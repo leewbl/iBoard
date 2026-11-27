@@ -12,11 +12,12 @@ const origin = 'http://127.0.0.1:18789';
 const socketOrigin = 'ws://127.0.0.1:18789';
 const token = 'iboard-disposable-local-ui-token';
 const [journey = 'connected', ...extra] = process.argv.slice(2);
-assert.ok(['connected', 'session-rename', 'session-delete', 'session-status-filter'].includes(journey),
+assert.ok(['connected', 'session-rename', 'session-delete', 'session-status-filter', 'session-archive-restore'].includes(journey),
   'Unknown Control UI journey');
 const rename = journey === 'session-rename';
 const deleting = journey === 'session-delete';
 const filtering = journey === 'session-status-filter';
+const archiving = journey === 'session-archive-restore';
 const visualState = extra[1];
 assert.ok(!extra.length || (
   extra.length === 2 && extra[0] === '--visual-state' &&
@@ -170,7 +171,7 @@ async function prepareFixture() {
   await writeFile(config, JSON.stringify({
     plugins: { enabled: false },
     cron: { enabled: false },
-    ...(deleting ? { update: { checkOnStart: false } } : {}),
+    ...(deleting || archiving ? { update: { checkOnStart: false } } : {}),
     gateway: {
       mode: 'local',
       auth: { mode: 'token', token },
@@ -192,7 +193,7 @@ async function launchGateway() {
       cwd: '/app',
       // The archived fixture loads multiple Gateway workers before Chromium.
       // Smaller young generations leave room for both in the same container.
-      env: filtering ? { ...fixtureEnv, NODE_OPTIONS: '--max-semi-space-size=4' } : fixtureEnv,
+      env: filtering || archiving ? { ...fixtureEnv, NODE_OPTIONS: '--max-semi-space-size=4' } : fixtureEnv,
       stdio: ['ignore', stream.fd, stream.fd],
     });
     child.once('error', error => { launchError = error; });
@@ -240,7 +241,7 @@ async function observe(read, message, timeout = 30_000) {
   throw new Error(message);
 }
 
-async function prepareSessions(fixtures = [], archiveKey = null) {
+async function prepareSessions(fixtures = [], archiveKey = null, status = deleting ? 'all' : undefined) {
   // Start the Gateway's session-list workers before Chromium's initial parallel reads.
   // Only Chromium performs the mutation being checked.
   const program = `
@@ -282,10 +283,10 @@ async function prepareSessions(fixtures = [], archiveKey = null) {
     }`;
   const query = { source: 'sessions-page', rowMode: 'compact', agentId: 'main', configuredAgentsOnly: true,
     includeGlobal: true, includeUnknown: true, excludeDock: true, limit: 50,
-    ...(deleting ? { archived: 'all' } : {}) };
+    ...(status ? { archived: status === 'archived' ? true : status } : {}) };
   const proc = await promisify(execFile)(process.execPath, [
     '--max-old-space-size=256', ...nodeSource, '--input-type=module', '-e', program,
-    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, warmUpdateStatus: deleting }),
+    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, warmUpdateStatus: deleting || archiving }),
   ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 140_000 });
   const seeded = JSON.parse(proc.stdout.trim().split('\n').at(-1));
   assert.deepEqual(seeded.map(({ key, label }) => [key, label]), fixtures);
@@ -320,7 +321,8 @@ function filterRows(request, payload, cache) {
   return rows;
 }
 
-async function openSessions() {
+async function openSessions(status = deleting ? 'all' : undefined) {
+  const scope = status === 'archived' ? true : status;
   const context = await browser.newContext({
     viewport, colorScheme: 'light', reducedMotion: 'reduce',
     locale: 'en-US', timezoneId: 'UTC', serviceWorkers: 'block', acceptDownloads: false,
@@ -370,8 +372,8 @@ async function openSessions() {
           !sessionReadMethods.has(frame.method)) writes.push({ method: frame.method });
       if (frame.method === 'connect' ||
           (frame.method === 'sessions.list' && frame.params?.source === 'sessions-page'
-           && (!deleting || frame.params.archived === 'all'))) {
-        const request = { method: frame.method, archived: frame.params?.archived };
+           && (!(deleting || archiving) || frame.params.archived === scope))) {
+        const request = { method: frame.method, archived: frame.params?.archived, requestId: frame.id };
         if (filtering && request.method === 'sessions.list') {
           if (!handshake) return;
           const { ifRowsRevision, ...query } = frame.params;
@@ -382,6 +384,8 @@ async function openSessions() {
       } else if (handshake && (
         (rename && frame.method === 'sessions.patch' && frame.params?.key === fixtureKey)
         || (deleting && ['sessions.delete', 'sessions.deleteMany'].includes(frame.method))
+        || (archiving && typeof frame.method === 'string' && frame.method.startsWith('sessions.') &&
+          !sessionReadMethods.has(frame.method))
       )) {
         const write = { method: frame.method, params: frame.params, socket, accepted: false,
           requestId: frame.id, startedAt: performance.now() };
@@ -399,6 +403,8 @@ async function openSessions() {
         request.accepted = frame.ok === true;
         request.deleted = frame.payload?.deleted === true;
         request.responseKey = frame.payload?.key;
+        request.responseSessionId = frame.payload?.entry?.sessionId;
+        request.responseArchived = typeof frame.payload?.entry?.archivedAt === 'number';
         if (typeof frame.error?.code === 'string' && /^[A-Z_]{1,64}$/u.test(frame.error.code)) {
           request.errorCode = frame.error.code;
         }
@@ -427,11 +433,12 @@ async function openSessions() {
           }
           return;
         }
-        sessionProof = { socket, handshake, archived: request.archived, sessions: frame.payload.sessions };
+        sessionProof = { socket, handshake, archived: request.archived, sessions: frame.payload.sessions,
+          requestId: request.requestId };
       }
     });
   });
-  const route = deleting ? '/sessions?status=all' : '/sessions';
+  const route = status ? '/sessions?status=' + status : '/sessions';
   assert.equal((await page.goto(origin + route, { waitUntil: 'domcontentloaded' }))?.status(), 200);
   const servedCommit = await page.evaluate(() => globalThis.OPENCLAW_CONTROL_UI_BUILD_INFO?.commit);
   assert.equal(servedCommit, expectedCommit, 'Served UI bundle does not identify the verified commit');
@@ -528,7 +535,7 @@ async function assertSession(view, fixture, label = fixture.label) {
   await rowFor(view, fixture.key).getByText(label, { exact: true }).waitFor({ state: 'visible' });
 }
 
-async function restartSessions() {
+async function restartSessions(status = deleting ? 'all' : undefined) {
   // Keep only the disposable on-disk state while replacing both application processes.
   await recorder?.stop({ finalFrame: true });
   await browser.close();
@@ -540,9 +547,64 @@ async function restartSessions() {
   const restarted = await launchGateway();
   assert.notEqual(restarted.gatewayPid, previousPid, 'Gateway process was not replaced');
   emit('restart', { ...restarted, previousPid, previousExit, portClosed: true });
-  await prepareSessions();
+  await prepareSessions([], null, status);
   await launchBrowser();
-  return openSessions();
+  return openSessions(status);
+}
+
+async function verifyArchiveRestore(target, survivor, active) {
+  const steps = [];
+  async function roster(view, state, expected) {
+    view.assertConnectedPage();
+    const archived = state === 'archived';
+    assert.equal(new URL(view.page.url()).searchParams.get('status'), archived ? 'archived' : null);
+    assert.equal(view.proof.archived, archived ? true : undefined);
+    assert.ok(typeof view.proof.requestId === 'string' && view.proof.requestId, 'Missing authenticated list request ID');
+    assert.equal(view.writes.length, 0, 'Opening a fresh Sessions page sent a write');
+    const row = view.proof.sessions.find(entry => entry.key === target.key);
+    assert.equal(row?.archived === true, archived);
+    assert.deepEqual(view.proof.sessions.map(entry => entry.key).sort(), expected.map(entry => entry.key).sort());
+    for (const fixture of expected) await assertSession(view, fixture);
+    if (archived) assert.equal(await rowFor(view, survivor.key).count(), 0, 'Unselected session was archived');
+    steps.push({ state, gatewayPid: child.pid, requestId: view.proof.requestId,
+      rows: expected.map(({ key, sessionId }) => ({ key, sessionId })) });
+    await recorder?.checkpoint();
+  }
+
+  async function change(view, archived) {
+    const row = rowFor(view, target.key);
+    await row.getByRole('button', { name: `Open session menu: ${target.key}`, exact: true }).click();
+    const action = archived ? 'Archive session' : 'Restore session';
+    await view.page.getByRole('menuitem', { name: action, exact: true }).click();
+    const write = await observe(() => view.writes.find(item => item.received),
+      `Gateway did not answer the ${action} write`, 90_000);
+    assert.equal(view.writes.length, 1, 'Expected one browser mutation for the selected row');
+    assert.equal(write.socket, view.proof.socket);
+    assert.equal(write.method, 'sessions.patch');
+    assert.equal(write.params.key, target.key);
+    assert.equal(write.params.expectedSessionId, target.sessionId);
+    assert.equal(write.params.archived, archived);
+    assert.equal(write.accepted, true, 'Gateway rejected archive or restore');
+    assert.equal(write.responseKey, target.key);
+    assert.equal(write.responseSessionId, target.sessionId);
+    assert.equal(write.responseArchived, archived);
+    await row.waitFor({ state: 'hidden' });
+    await recorder?.checkpoint();
+    return { method: write.method, requestId: write.requestId, key: write.params.key,
+      expectedSessionId: write.params.expectedSessionId, archived, accepted: write.accepted,
+      responseSessionId: write.responseSessionId, responseKey: write.responseKey,
+      responseArchived: write.responseArchived };
+  }
+
+  await roster(active, 'active', [target, survivor]);
+  const archive = await change(active, true);
+  const archived = await restartSessions('archived');
+  await roster(archived, 'archived', [target]);
+  const restore = await change(archived, false);
+  const restored = await restartSessions();
+  await roster(restored, 'active', [target, survivor]);
+  await capture(restored, { mutation: { key: target.key, sessionId: target.sessionId,
+    writes: [archive, restore], steps, survivor: { key: survivor.key, sessionId: survivor.sessionId } } });
 }
 
 async function verifyRename(fixture, view) {
@@ -765,7 +827,7 @@ async function launchBrowser() {
 
 async function drive() {
   if (deleteTrace) deleteTrace.step = 'prepare-fixtures';
-  const seeds = deleting ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
+  const seeds = deleting || archiving ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
     : filtering ? [[fixtureKey, originalLabel], [archivedKey, archivedLabel]]
       : rename ? [[fixtureKey, originalLabel]] : [];
   const fixtures = seeds.length ? await prepareSessions(seeds, filtering ? archivedKey : null) : [];
@@ -778,6 +840,8 @@ async function drive() {
     await verifyDelete(...fixtures, view);
   } else if (filtering) {
     await verifySessionStatusFilter(...fixtures, view);
+  } else if (archiving) {
+    await verifyArchiveRestore(...fixtures, view);
   } else {
     assert.equal(view.proof.sessions.length, 0, 'Fresh Gateway state unexpectedly contains sessions');
     await view.page.getByText('No active sessions.', { exact: true }).waitFor({ state: 'visible' });

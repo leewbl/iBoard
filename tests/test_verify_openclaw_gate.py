@@ -26,7 +26,7 @@ class GatewayGateTests(unittest.TestCase):
     def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None,
                 skills_inspect_image=None, config_image=None, workshop_image=None, rename=False, delete=False, status_filter=False,
                 browser_receipt=True, same_container=False, restart=None, deletion=None, list_scope='all',
-                filter_fault=None, rename_fields=None):
+                filter_fault=None, rename_fields=None, archive=False, archive_fault=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -45,6 +45,8 @@ class GatewayGateTests(unittest.TestCase):
             journeys[verify_openclaw.SESSION_DELETE] = gateway_image
         if status_filter:
             journeys[verify_openclaw.SESSION_FILTER] = gateway_image
+        if archive:
+            journeys[verify_openclaw.SESSION_ARCHIVE] = gateway_image
         for journey, image in journeys.items():
             helper, marker, command = verify_openclaw._journey(journey)
             for actor in ('builder', 'independent-verifier'):
@@ -58,7 +60,8 @@ class GatewayGateTests(unittest.TestCase):
                     rename_evidence = journey == verify_openclaw.SESSION_RENAME
                     stdout = self.browser_stdout(journey, fresh=browser_receipt if rename_evidence else True,
                                                  restart=restart if rename_evidence else None, deletion=deletion,
-                                                 list_scope=list_scope, filter_fault=filter_fault, rename_fields=rename_fields)
+                                                 list_scope=list_scope, filter_fault=filter_fault, rename_fields=rename_fields,
+                                                 archive_fault=archive_fault)
                     extra.update(stdout=stdout, screenshot_path=str(png.resolve()), screenshot_sha256=cli.digest(png))
                 cli.write(path, {
                     'journey': journey, 'actor': actor, 'commit': report_head or self.head,
@@ -81,7 +84,7 @@ class GatewayGateTests(unittest.TestCase):
         })
 
     def browser_stdout(self, journey, *, fresh=True, restart=None, deletion=None, list_scope='all', filter_fault=None,
-                       rename_fields=None):
+                       rename_fields=None, archive_fault=None):
         writing = journey in verify_openclaw.SESSION_WRITES
         healthy = {'ready': True, 'live': True, 'origin': 'http://127.0.0.1:18789'}
         clean_exit = {'code': 0, 'signal': None}
@@ -134,6 +137,25 @@ class GatewayGateTests(unittest.TestCase):
         if writing and restart is not False:
             events.insert(1, {'phase': 'restart', **healthy, 'gatewayPid': 71,
                               'previousPid': 19, 'previousExit': clean_exit, 'portClosed': True, **(restart or {})})
+        if journey == verify_openclaw.SESSION_ARCHIVE:
+            target = {'key': 'agent:main:iboard-browser-verification', 'sessionId': 'fixture-session-id'}
+            survivor = {'key': 'agent:main:iboard-browser-survivor', 'sessionId': 'other-id'}
+            ui = events[-2]
+            ui['gatewayPid'] = 93
+            ui['readback']['count'] = 2
+            ui['mutation'] = {**target, 'survivor': survivor, 'writes': [
+                {'method': 'sessions.patch', 'requestId': f'write-{index}', 'key': target['key'],
+                 'expectedSessionId': target['sessionId'], 'archived': archived, 'accepted': True,
+                 'responseSessionId': target['sessionId'], 'responseKey': target['key'], 'responseArchived': archived}
+                for index, archived in enumerate((True, False))], 'steps': [
+                {'state': state, 'requestId': f'read-{index}', 'gatewayPid': pid, 'rows': rows}
+                for index, (state, pid, rows) in enumerate((
+                    ('active', 19, [target, survivor]), ('archived', 71, [target]), ('active', 93, [target, survivor])))
+            ]}
+            events.insert(2, {'phase': 'restart', **healthy, 'gatewayPid': 93,
+                              'previousPid': 71, 'previousExit': clean_exit, 'portClosed': True})
+            if archive_fault:
+                archive_fault(events, ui['mutation'])
         return '\n'.join([*(json.dumps(event) for event in events), verify_openclaw._journey(journey)[1], ''])
 
     def test_publish_and_republish_block_before_any_github_call(self):
@@ -270,7 +292,7 @@ class GatewayGateTests(unittest.TestCase):
                     with self.assertRaisesRegex(publish.PublishError, 'control-ui-session-rename'):
                         publish.publish(self.task, self.destination, github=github)
         self.assertEqual(github.mock_calls, [])
-        self.reports(rename=True, delete=True, status_filter=True)
+        self.reports(rename=True, delete=True, status_filter=True, archive=True)
         receipts = verify_openclaw.require(self.data, self.head, self.destination)
         _, verifier = receipts['control-ui-session-rename']
         self.data.update(kind='feature', delivery_repo=self.destination)
@@ -314,7 +336,8 @@ class GatewayGateTests(unittest.TestCase):
     def test_status_filter_gate_requires_real_read_scopes_and_visible_rows(self):
         self.changed_paths.return_value = 'src/gateway/server-methods/sessions-read.ts\0'
         journey = verify_openclaw.SESSION_FILTER
-        self.assertEqual(verify_openclaw.required_journeys(self.data, self.head), ['gateway-health', journey])
+        self.assertEqual(verify_openclaw.required_journeys(self.data, self.head),
+                         ['gateway-health', journey, verify_openclaw.SESSION_ARCHIVE])
         github = Mock()
         faults = (
             lambda evidence: evidence['steps'].pop(),
@@ -338,7 +361,30 @@ class GatewayGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(publish.PublishError, journey):
                     publish.publish(self.task, self.destination, github=github)
         self.assertEqual(github.mock_calls, [])
-        self.reports(status_filter=True)
+        self.reports(status_filter=True, archive=True)
+        self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
+
+    def test_archive_gate_requires_both_writes_and_both_graceful_restarts(self):
+        self.changed_paths.return_value = 'ui/src/components/session-organizer-archive.runtime.ts\0'
+        journey = verify_openclaw.SESSION_ARCHIVE
+        self.assertEqual(verify_openclaw.required_journeys(self.data, self.head), ['gateway-health', journey])
+        self.assertTrue(verify_openclaw.needs_browser(self.data, self.head))
+        faults = (
+            lambda events, mutation: events.pop(2),
+            lambda events, mutation: events[2].update(previousPid=19),
+            lambda events, mutation: mutation['writes'][0].update(responseSessionId='replaced'),
+            lambda events, mutation: mutation['writes'][1].update(archived=True),
+            lambda events, mutation: mutation['writes'][1].update(responseArchived=True),
+            lambda events, mutation: mutation['steps'][1].update(gatewayPid=19),
+            lambda events, mutation: mutation['steps'][1]['rows'].append(mutation['survivor']),
+            lambda events, mutation: mutation['steps'][2].update(rows=[]),
+            lambda events, mutation: mutation['steps'][2].update(requestId=mutation['writes'][1]['requestId']),
+        )
+        for fault in faults:
+            self.reports(archive=True, archive_fault=fault)
+            with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
+                verify_openclaw.require(self.data, self.head, self.destination)
+        self.reports(archive=True)
         self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
 
     def test_collect_keeps_failed_browser_run_for_task_recovery(self):
