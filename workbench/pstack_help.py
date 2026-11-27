@@ -83,6 +83,11 @@ SCENARIOS = {
         'skills/automate-me/SKILL.md', 'automate_me collect',
         'Workspace-scoped text evidence, cross-session proposals and a draft of the confirmed rules',
         'Select transcripts explicitly. Approve the evidence digest before the read-only model call.'),
+    'reflect': Scenario(
+        'Learn from a session and update selected local skills', 'skills/reflect/SKILL.md',
+        'skills/reflect/SKILL.md', 'reflect collect',
+        'Cited edits, rejected findings, an executable-check backlog and a local application receipt',
+        'Review the destinations and select the exact edit IDs before applying them.'),
     'review-worktree': Scenario(
         'Review uncommitted changes in independent sandboxes', 'skills/interrogate/SKILL.md',
         'skills/interrogate/SKILL.md', 'interrogate_snapshot',
