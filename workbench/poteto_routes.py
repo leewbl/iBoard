@@ -82,8 +82,11 @@ PLAYBOOKS = {
         {'inspect': Action('trace_forensics', effect='observe')}),
     'visual-parity': Playbook('Compare real baseline and candidate screenshots for pixel-exact states.',
         'prove-visual-parity', stages('visual_parity', baseline='local', compare='local')),
-    'worktree-cleanup': Playbook('Inventory disposable Git worktrees and remove only an approved clean subset.',
-        'worktree-cleanup', stages('worktree_cleanup', inventory='observe', freeze='local', apply='approved-cleanup')),
+    'worktree-cleanup': Playbook('Inventory Git worktrees, simulator resources and developer caches before approved removal.',
+        'worktree-cleanup', {**stages('worktree_cleanup', inventory='observe', freeze='local', apply='approved-cleanup'),
+         'resource-inventory': Action('resource_cleanup', ('inventory',), effect='observe'),
+         'resource-freeze': Action('resource_cleanup', ('freeze',)),
+         'resource-apply': Action('resource_cleanup', ('apply',), effect='approved-cleanup')}),
     'figure-it-out': Playbook('Specify a verifiable exit condition for broad work without a suitable existing playbook.',
         'figure-it-out', stages('figure_it_out', freeze='local', run='local', audit='observe')),
 }

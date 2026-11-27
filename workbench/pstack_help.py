@@ -307,6 +307,11 @@ SCENARIOS = {
         'skills/worktree-cleanup/SKILL.md', 'worktree_cleanup inventory --inspect-recent-chats',
         'Registered paths, Git state, live occupancy, recent chat evidence and optional Codex desktop pins',
         'Removal requires exact selected paths and refreshed host holds. When supplied, refresh --codex-pins after approval.'),
+    'developer-resources': Scenario(
+        'Inventory Simulator resources and selected Xcode or Cursor caches', 'skills/poteto-mode/playbooks/worktree-cleanup.md',
+        'skills/worktree-cleanup/SKILL.md', 'resource_cleanup inventory',
+        'Native resource IDs, observed usage, exact cleanup approval and confirmed disk changes',
+        'Select individual resources. Simulator coverage depends on the selected Xcode installation.'),
     'autonomous-run': Scenario(
         'Drive an approved task to a frozen outcome', 'skills/poteto-mode/playbooks/autonomous-run.md',
         'skills/autonomous-run/SKILL.md', 'autonomous_run freeze',
