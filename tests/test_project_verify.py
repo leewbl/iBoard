@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from workbench import cli, project_verify
+from workbench import cli, project_verify, verify_openclaw
 
 
 IMAGE = 'sha256:' + 'a' * 64
@@ -133,6 +133,68 @@ class ProjectVerificationTests(unittest.TestCase):
         failed = cli.read(self.root / 'missing-helper' / 'first.json')
         self.assertEqual(failed['diagnostic'], 'harness-input')
         self.assertTrue(result['features']['second'] == 'passed')
+
+    def test_browser_journey_is_reusable_and_rejects_a_stale_served_build(self):
+        check = self.contract['features'][1]
+        check.update(browser=True, screenshot=True, args=['one selection'])
+        self.manifest.write_text(json.dumps(self.contract))
+        served = self.revision
+        recorded_path = None
+
+        cli_sandbox = self.sandbox
+
+        def sandbox(scratch, image, command, timeout, **opts):
+            if command[1] != '/workspace/second.sh':
+                return cli_sandbox(scratch, image, command, timeout, **opts)
+            self.assertEqual(command, ['sh', '/workspace/second.sh', 'one selection'])
+            scratch = Path(scratch)
+            self.assertEqual({p.name for p in scratch.iterdir()}, {'second.sh', 'expected-commit.txt'})
+            self.assertEqual((scratch / 'expected-commit.txt').read_text(), self.revision + '\n')
+            self.assertEqual(opts['pids_limit'], 384)
+            picture = opts['screenshot_output']
+            picture.write_bytes(b'captured screenshot fixture')
+            receipt = {'phase': 'ui', 'servedCommit': served, 'screenshot': True}
+            return {'image': image, 'command': command, 'workspace_read_only': True,
+                    'container_created': True, 'cleanup_confirmed': True, 'exit_code': 0,
+                    'screenshot_path': recorded_path or str(picture), 'screenshot_sha256': cli.digest(picture),
+                    'stdout': json.dumps(receipt) + '\n' + check['marker'] + '\n'}
+
+        self.sandbox = sandbox
+        result = self.run_mode('create', 'created-browser', manifest=self.manifest, helpers=self.helpers, journey='second')
+        self.assertEqual(result['outcome'], 'verified')
+        bundle = self.root / 'created-browser' / result['bundle']
+        self.assertIn('second.png', (bundle / 'features' / 'second.md').read_text())
+        self.assertIn("sh /workspace/second.sh 'one selection'", (bundle / 'SKILL.md').read_text())
+        maintained = self.run_mode('maintain', 'browser-audit', skill=bundle)
+        self.assertEqual(maintained['features'], {'first': 'passed', 'second': 'passed'})
+        self.assertEqual(maintained['outcome'], 'clean')
+        served = 'f' * 40
+        blocked = self.run_mode('drive', 'stale-browser', skill=bundle, journey='second')
+        self.assertEqual(blocked['outcome'], 'blocked')
+        self.assertEqual(blocked['features'], {'second': 'behavior-unverified'})
+        self.assertEqual([row['check'] for row in blocked['runs']], ['doctor', 'second', 'doctor'])
+        served = self.revision
+        recorded_path = str(self.root / 'an-unrelated.png')
+        wrong_picture = self.run_mode('drive', 'wrong-picture', skill=bundle, journey='second')
+        self.assertEqual(wrong_picture['outcome'], 'blocked')
+
+    def test_browser_contract_and_openclaw_gate_share_the_three_entrypoints(self):
+        check = self.contract['features'][1]
+        check['browser'] = True
+        self.manifest.write_text(json.dumps(self.contract))
+        with self.assertRaisesRegex(ValueError, 'requires a screenshot'):
+            project_verify._load_contract(self.manifest)
+        check.update(screenshot=True, args='not an argv array')
+        self.manifest.write_text(json.dumps(self.contract))
+        with self.assertRaisesRegex(ValueError, 'literal helper arguments'):
+            project_verify._load_contract(self.manifest)
+        contract = project_verify._load_contract(verify_openclaw.SKILL / 'project-verification.json')
+        browser = {entry['id']: entry for entry in contract['features'] if entry.get('browser')}
+        self.assertEqual(set(browser), set(verify_openclaw.BROWSER_JOURNEYS))
+        for key, entry in browser.items():
+            helper, marker, command = verify_openclaw._journey(key)
+            self.assertEqual((entry['helper'], entry['marker'], project_verify._command(entry)),
+                             (helper, marker, command))
 
     def test_discovery_uses_committed_source_and_detects_missing_and_stale_commands(self):
         path = self.repo / 'register.ts'

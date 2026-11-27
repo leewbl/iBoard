@@ -10,6 +10,8 @@ Read the target repository first. Locate the user entry point, its documented la
 
 Write a verification contract following [OpenClaw's example](../verify-openclaw/project-verification.json). Include a read-only doctor and one record per journey, starting with the primary user actions. Anchor each record to relevant text in tracked source. Describe the actual drive, expected state, cleanup and any prerequisites. Supply each helper as a standalone Node, Python or shell script that exits unsuccessfully when an assertion fails. A separate line ending in `_PASS` signals that the helper finished all assertions and cleanup. If the journey requires a screenshot, set `screenshot` to `true` and have the helper write its PNG to the path in `WORKBENCH_SCREENSHOT_PATH`.
 
+Use an `args` array for literal positional arguments to a shared helper. The runner invokes it directly. For browser journeys, set both `browser` and `screenshot` to `true`. Prepare the image with the built UI and its browser dependencies. The driver gets the pinned revision in `/workspace/expected-commit.txt` and prints one JSON line with `"phase":"ui"`, `"servedCommit"` set to the commit read from the running page, and `"screenshot":true` after capture. It verifies the user-visible behavior and any side effects before printing the pass marker.
+
 For a CLI with literal Commander registrations, set `entrypoint_inventory` to the command namespaces and their tracked JavaScript or TypeScript bindings. Associate discovered commands with journeys using each feature's `entrypoints`. Record out-of-scope direct commands in `excluded` with the missing prerequisite. An unresolved entry in the declared scope blocks export even when the selected smoke journey passes.
 
 ```sh
@@ -18,6 +20,6 @@ python3 -m workbench.project_verify create --repo "$TARGET_REPO" --revision "$RE
   --out "$EVIDENCE_DIR" --journey "$JOURNEY"
 ```
 
-Use a local image with tracked code under `/app` and its test dependencies already installed. iBoard resolves the selected Git commit, binds the image to its tracked source, checks each source anchor, runs doctor and exercises the selected real journey. Each command gets a fresh offline container and a read-only copy of the helper. The runtime only mounts that helper. The evidence includes the image, source paths and lines, logs or screenshots, exit status and container cleanup.
+Use a local image with tracked code under `/app` and its test dependencies already installed. iBoard resolves the selected Git commit, binds the image to its tracked source, checks each source anchor, runs doctor and exercises the selected real journey. Each command gets a fresh offline container and a read-only copy of the helper. Browser drives also receive the revision file. The evidence includes the image, source paths and lines, logs or screenshots, exit status and container cleanup.
 
 Use the generated `verify-<project>` directory as a candidate project-local skill after `result.json` reports `verified`. It includes the map, contract and executable helpers. A blocked run keeps the candidate in `draft` and retains its failure evidence. Repeat the run with a new evidence directory after correcting the setup or proof. Invoke [maintain-verification-skill](../maintain-verification-skill/SKILL.md) to prove the remaining mapped journeys and keep the bundle current.

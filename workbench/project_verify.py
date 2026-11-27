@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 from tempfile import TemporaryDirectory
 import time
@@ -59,8 +60,8 @@ def _load_contract(path):
     ids, markers = set(), set()
     for check in [raw["doctor"], *features]:
         fields = {"id", "helper", "marker", "reach", "drive", "observe", "gotchas", "source"}
-        if (not isinstance(check, dict) or set(check) - fields - {"screenshot", "entrypoints", "failure_marker"}
-                or not fields <= set(check)):
+        optional = {"screenshot", "entrypoints", "failure_marker", "args", "browser"}
+        if (not isinstance(check, dict) or set(check) - fields - optional or not fields <= set(check)):
             raise ValueError("each check needs id, helper, marker, reach, drive, observe, gotchas and source")
         check_id = _slug(check["id"])
         marker = _text(check["marker"], "marker", 100)
@@ -77,6 +78,13 @@ def _load_contract(path):
         if (not re.fullmatch(r"[a-zA-Z0-9_-]+\.(mjs|py|sh)", helper)
                 or type(check.get("screenshot", False)) is not bool):
             raise ValueError("helpers must be standalone .mjs, .py or .sh files")
+        args = check.get("args", [])
+        if not isinstance(args, list) or len(args) > 16:
+            raise ValueError("declare at most sixteen literal helper arguments")
+        for arg in args:
+            _text(arg, "helper argument", 128)
+        if type(check.get("browser", False)) is not bool or (check.get("browser") and not check.get("screenshot")):
+            raise ValueError("a browser journey requires a screenshot")
         for key in ("reach", "drive", "observe", "gotchas"):
             _text(check[key], key)
         sources = check["source"]
@@ -104,6 +112,29 @@ def _helper(directory, name):
     return data
 
 
+def _command(check):
+    helper = check["helper"]
+    return [ENGINES[Path(helper).suffix], f"/workspace/{helper}", *check.get("args", [])]
+
+
+def _browser_receipt(run, screenshot, revision):
+    if (run.get("stdout_truncated") or screenshot.is_symlink()
+            or run.get("screenshot_path") != str(screenshot.resolve())):
+        return False
+    observations = []
+    for line in run.get("stdout", "").splitlines():
+        if not line.lstrip().startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("phase") == "ui":
+            observations.append(event)
+    return (len(observations) == 1 and observations[0].get("servedCommit") == revision
+            and observations[0].get("screenshot") is True)
+
+
 def _artifacts(contract, helpers):
     slug, doctor = contract["project"], contract["doctor"]
     maps = {}
@@ -111,11 +142,12 @@ def _artifacts(contract, helpers):
         key = feature["id"]
         commands = "\n".join(f"- `{command}`" for command in feature.get("entrypoints", []))
         entrypoints = f"\n{commands}\n" if commands else ""
+        evidence = f"`{key}.json` and `{key}.png`" if feature.get("browser") else f"`{key}.json`"
         maps[f"features/{key}.md"] = (
             f"# {key}\n\n## Sub-features\n\n{feature['observe']}\n\n"
             f"## How to get to it (user POV)\n\n{feature['reach']}\n{entrypoints}\n"
             f"## Driving it with iBoard\n\n{feature['drive']}\n\n"
-            f"Run the generated skill with journey `{key}`. Evidence: `{key}.json`.\n\n"
+            f"Run the generated skill with journey `{key}`. Evidence: {evidence}.\n\n"
             f"## Gotchas\n\n{feature['gotchas']}\n"
         )
     links = "\n".join(f"- [{entry['id']}]({entry['id']}.md)" for entry in contract["features"])
@@ -139,7 +171,7 @@ def _artifacts(contract, helpers):
         f"## Cleanup\n\n{contract['cleanup']} The runner removes the container and retains evidence.\n\n"
         "## Helpers\n\nUse the commands above to execute helpers offline.\n\n"
         + "\n".join(
-            f"- `{check['id']}` runs `{ENGINES[Path(check['helper']).suffix]} /workspace/{check['helper']}`."
+            f"- `{check['id']}` runs `{shlex.join(_command(check))}`."
             for check in [doctor, *contract["features"]]
         ) + "\n"
     )
@@ -226,7 +258,8 @@ class Verification:
     def drive(self, bundle, check, attempt):
         key, helper = check["id"], check["helper"]
         basename = key + attempt
-        command = [ENGINES[Path(helper).suffix], f"/workspace/{helper}"]
+        command = _command(check)
+        browser = check.get("browser", False)
         screenshot = self.output / f"{basename}.png" if check.get("screenshot") else None
         helper_sha = None
         # Use a private frozen copy of the explicit helper. No host project, credentials,
@@ -240,15 +273,19 @@ class Verification:
             try:
                 with TemporaryDirectory(prefix="iboard-verify-skill-") as scratch:
                     (Path(scratch) / helper).write_bytes(data)
+                    if browser:
+                        (Path(scratch) / "expected-commit.txt").write_text(self.revision + "\n", encoding="utf-8")
                     run = self.sandbox(scratch, self.report["verified_image_id"], command, self.remaining(),
                                        memory_mb=self.memory_mb, workspace_read_only=True,
-                                       source_root="/app", screenshot_output=screenshot)
+                                       source_root="/app", screenshot_output=screenshot,
+                                       **({"pids_limit": 384} if browser else {}))
             except (ValueError, OSError, SandboxError) as error:
                 run = {"error": str(error), "diagnostic": "sandbox"}
         passed = (run.get("container_created") is True and run.get("cleanup_confirmed") is True
                   and run.get("workspace_read_only") is True and run.get("image") == self.report["verified_image_id"]
                   and run.get("command") == command and run.get("exit_code") == 0 and not run.get("error")
                   and not run.get("timed_out") and check["marker"] in run.get("stdout", "").splitlines()
+                  and (not browser or _browser_receipt(run, screenshot, self.revision))
                   and (screenshot is None or screenshot.is_file() and cli.digest(screenshot) == run.get("screenshot_sha256")))
         path = self.output / f"{basename}.json"
         run.update(schema=cli.SCHEMA, commit=self.revision, check=key, passed=passed,

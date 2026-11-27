@@ -1,7 +1,7 @@
 {
   "project": "openclaw",
-  "surface": "OpenClaw CLI and its local Gateway runtime.",
-  "launch": "The launch scripts use the CLI entry at /app/src/entry.ts with the image's tsx loader. The Gateway starts on loopback with an empty temporary state directory and requires both readiness and liveness before use.",
+  "surface": "OpenClaw CLI and the browser Control UI served by its local Gateway.",
+  "launch": "The launch scripts use the CLI entry at /app/src/entry.ts with the image's tsx loader. The Gateway starts on loopback with an empty temporary state directory and requires both readiness and liveness before use. Browser journeys also need the matching compiled Control UI and preinstalled Chromium in the source image.",
   "cleanup": "Helpers remove their temporary state. Gateway shuts down only the child it launched and checks that its loopback endpoint is closed.",
   "entrypoint_inventory": [
     {
@@ -99,6 +99,87 @@
       "observe": "The first invocation exits zero. The second exits one and identifies gateway.port. Both fixture files are unchanged.",
       "gotchas": "Use the isolated state directory. The validation command does not launch a Gateway.",
       "source": [{"path": "docs/cli/config.md", "contains": "openclaw config validate --json"}, {"path": "src/cli/config-cli.ts", "contains": ".command(\"validate\")"}, {"path": "src/config/zod-schema.gateway.ts", "contains": "port: z.number().int()"}]
+    },
+    {
+      "id": "control-ui-connected",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS",
+      "browser": true,
+      "screenshot": true,
+      "reach": "Open the Gateway Control UI and choose Sessions.",
+      "drive": "Open the real Control UI with Chromium, authenticate to a fresh Gateway, and load the Sessions page.",
+      "observe": "The connected browser reads an empty list through the authenticated Gateway socket and captures the rendered empty state.",
+      "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. Only disposable Gateway state and test credentials are used.",
+      "source": [
+        {
+          "path": "ui/src/build-info.ts",
+          "contains": "OPENCLAW_CONTROL_UI_BUILD_INFO"
+        },
+        {
+          "path": "ui/src/pages/sessions/list-query.ts",
+          "contains": "source: \"sessions-page\""
+        }
+      ]
+    },
+    {
+      "id": "control-ui-session-rename",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": [
+        "session-rename"
+      ],
+      "reach": "Open the Sessions row menu and choose Rename.",
+      "drive": "Cancel one edit, save a second edit, and restart the Gateway with the same temporary state.",
+      "observe": "Cancel sends no mutation. The one accepted rename matches the original session ID. A fresh authenticated browser sees the updated label after restart.",
+      "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. Only disposable Gateway state and test credentials are used.",
+      "source": [
+        {
+          "path": "ui/src/build-info.ts",
+          "contains": "OPENCLAW_CONTROL_UI_BUILD_INFO"
+        },
+        {
+          "path": "ui/src/pages/sessions/list-query.ts",
+          "contains": "source: \"sessions-page\""
+        },
+        {
+          "path": "ui/src/lib/session-rename.ts",
+          "contains": "function resolveSessionRenamePatch"
+        }
+      ]
+    },
+    {
+      "id": "control-ui-session-delete",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_DELETE_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": [
+        "session-delete"
+      ],
+      "reach": "Select one row on the Sessions page and choose Delete.",
+      "drive": "Cancel one deletion, then confirm deletion of the selected row and restart the Gateway.",
+      "observe": "Cancel preserves both rows. One Gateway-accepted deletion removes only the selected session. After restart an authenticated all-status list contains the unselected session under its original ID.",
+      "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. Only disposable Gateway state and test credentials are used.",
+      "source": [
+        {
+          "path": "ui/src/build-info.ts",
+          "contains": "OPENCLAW_CONTROL_UI_BUILD_INFO"
+        },
+        {
+          "path": "ui/src/pages/sessions/list-query.ts",
+          "contains": "source: \"sessions-page\""
+        },
+        {
+          "path": "ui/src/pages/sessions/sessions-page-mutations.ts",
+          "contains": "return deleteSessions(rows.filter"
+        },
+        {
+          "path": "src/gateway/server-methods/sessions-delete.ts",
+          "contains": "\"sessions.delete\": async"
+        }
+      ]
     }
   ]
 }

@@ -125,8 +125,8 @@ def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, orac
     inputs = {doctor["helper"]: project_verify._helper(source, doctor["helper"]),
               primary["helper"]: primary_input, oracle_name: oracle_input}
     digests = {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
-    alternate = {**primary, "helper": oracle_name, "marker": oracle_marker,
-                 "failure_marker": oracle_failure_marker, "screenshot": False}
+    alternate = {key: value for key, value in primary.items() if key not in ("args", "browser", "screenshot")}
+    alternate.update(helper=oracle_name, marker=oracle_marker, failure_marker=oracle_failure_marker, screenshot=False)
     output.mkdir(mode=0o700, parents=True)
     bundle = output / "frozen"
     bundle.mkdir(mode=0o700)
