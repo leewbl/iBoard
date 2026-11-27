@@ -20,10 +20,10 @@ class ReviewError(Exception):
     pass
 
 
-def _result(stdout, status):
+def _result(stdout, status, *, search=False):
     if status != 0:
         raise ReviewError(f'Codex reviewer exited with status {status}')
-    answer, completed = None, False
+    answer, completed, searches = None, False, []
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -33,7 +33,15 @@ def _result(stdout, status):
             raise ReviewError('Codex reviewer reported a failed turn')
         if kind.startswith('item.'):
             item = event['item']
-            if item['type'] not in {'agent_message', 'reasoning'}:
+            if search and item['type'] == 'web_search':
+                if kind == 'item.completed' and item.get('action', {}).get('type') == 'search':
+                    query = item.get('query')
+                    if isinstance(query, str) and 0 < len(query) <= 500 and len(searches) < 16:
+                        urls = [row['url'] for row in item.get('results', []) or []
+                                if isinstance(row, dict) and isinstance(row.get('url'), str)
+                                and len(row['url']) <= 2400]
+                        searches.append({'query': query, 'urls': list(dict.fromkeys(urls))[:40]})
+            elif item['type'] not in {'agent_message', 'reasoning'}:
                 raise ReviewError('Codex reviewer emitted an unexpected item')
             if item['type'] == 'agent_message' and kind == 'item.completed':
                 answer = item.get('text')
@@ -41,20 +49,38 @@ def _result(stdout, status):
             completed = True
     if not completed or not isinstance(answer, str) or not answer.strip() or len(answer) > 30_000:
         raise ReviewError('Codex reviewer did not return a bounded final answer')
-    return json.loads(answer)
+    result = json.loads(answer)
+    if search:
+        if not searches:
+            raise ReviewError('Codex reference discovery did not run a web search')
+        return {'answer': result, 'searches': searches}
+    return result
 
 
 def review(prompt, model, timeout, *, images=(), effort='low'):
+    return _run(prompt, model, timeout, images=images, effort=effort)
+
+
+def search(prompt, model, timeout):
+    """Run public reference discovery with web search as the only enabled tool."""
+    return _run(prompt, model, timeout, images=(), effort='low', search=True)
+
+
+def _run(prompt, model, timeout, *, images, effort, search=False):
     if (not re.fullmatch(r'gpt-[a-z0-9][a-z0-9.-]{0,64}', model) or not 1 <= timeout <= 300
             or not prompt or len(prompt.encode('utf-8')) > 90_000 or effort not in ('low', 'medium', 'high', 'xhigh')):
         raise ReviewError('invalid OpenAI model, prompt size, or review timeout')
     with tempfile.TemporaryDirectory(prefix='iboard-decision-review-') as workspace:
         cmd = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check',
                '--sandbox', 'read-only', '-C', workspace, '-c', 'model_provider="openai"',
-               '-c', 'approval_policy="never"', '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
+               '-c', 'approval_policy="never"', '-c', 'web_search="live"' if search else 'web_search="disabled"',
+               '-c', 'project_doc_max_bytes=0',
                '-c', 'model_reasoning_effort=' + json.dumps(effort), '-c', 'mcp_servers={}', '--model', model]
         for flag in FEATURES:
-            cmd.extend(('--disable', flag))
+            if not search or flag != 'standalone_web_search':
+                cmd.extend(('--disable', flag))
+        if search:
+            cmd.extend(('--disable', 'browser_use_external', '--disable', 'view_image'))
         if not isinstance(images, (tuple, list)) or len(images) > 4:
             raise ReviewError('provide at most four validated PNG attachments')
         for index, value in enumerate(images, 1):
@@ -85,6 +111,6 @@ def review(prompt, model, timeout, *, images=(), effort='low'):
                 raise ReviewError('Codex reviewer exceeded its time limit') from None
             raise
     try:
-        return _result(output, proc.returncode)
+        return _result(output, proc.returncode, search=search)
     except (ValueError, KeyError, TypeError) as error:
         raise ReviewError('Codex reviewer returned invalid JSON') from error
