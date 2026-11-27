@@ -24,6 +24,8 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)将 24 条工�
 
 只读调研可用 [`workbench.investigate`](../skills/investigate/SKILL.md) 或 Claude Code 的 `/agent-workbench:investigate` 启动。指定提交和文件即可运行 `how`、`why`、`teach` 或 `investigation`。合成模式分别向源码与历史阶段提供证据，再汇总为统一说明，保留两边的未知项。报告记录实际引用的源码行和提交、模型调用时间及提示词哈希。历史阶段可用 `--pr` 纳入用户明确选定、能与所选 Git 历史关联的 PR 正文和有界讨论摘录。
 
+[`teach`](../skills/teach/SKILL.md) 也可以用 `--lesson` 输出离线 HTML。OpenClaw 会话投递恢复实例用 Claude Code 和 GLM 生成四幅逐步展开的图，逐图对照固定提交中的投递、标记、重启扫描和结算代码。没有相关 Git 历史可说明作者动机时，报告保留该缺口。实际浏览器在断网下复验了桌面、手机宽度和深色主题的展开操作及图中文字。
+
 接续或查看已留存任务时，使用 [`workbench.pickup`](../skills/pickup/SKILL.md) 或 `workbench.resume --inspect`。工具观察现有任务锁，核对工作树、输入和证据哈希，区分已记录的发布与合并结果。可用 `--since` 查看指定时间后的事件，用 `--check-pr` 查询对应 PR 的当前提交和检查状态。该入口提供接续判断，执行仍经过原有恢复和交付门禁。
 
 [`workbench.run_control hold`](../skills/pause-safely/SKILL.md) 可在另一进程暂停指定任务。已经开始的编辑步骤可以留下正常提交和检查点，后续验证、依赖派发和 GitHub 写入会检查暂停记录。查看确认停点后，显式解除才能按原任务预算恢复。

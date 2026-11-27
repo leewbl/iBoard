@@ -30,3 +30,5 @@ are recorded separately. Use the upstream repository name when examining a
 fork for upstream design history.
 
 The selected committed text, history and requested discussion are sent to the configured GLM provider. The model cannot modify the repository or execute project commands. Read the report's final stage, resolve the cited evidence IDs to source lines, commits or discussion URLs, and state any limitations that affect the answer. A blocked report is a blocked investigation.
+
+For a subsystem lesson, add `--lesson /path/to/reports/request-flow.html` to `teach`. Give the question a concrete user action or input and tell the workflow what the reader already knows when that matters. The lesson opens with a plain explanation. Its first figure shows two connected parts. Each later step keeps the earlier figure and adds one connection or one connected part. The underlying how and why findings are available with their evidence. Simple explanations can omit the figures. The HTML opens offline. Use a new output path outside the source repository.

@@ -84,9 +84,9 @@ SCENARIOS = {
         'investigate why', 'Source and commit history that support the explanation',
         'Pass a PR explicitly to include its discussion.'),
     'teach': Scenario(
-        'Learn how a subsystem works and why', 'skills/teach/SKILL.md', 'skills/investigate/SKILL.md',
-        'investigate teach', 'An explanation that combines verified source and history findings',
-        'The CLI writes a report. Interactive lessons and progressive diagrams are outside this entry.'),
+        'Learn how a subsystem works and why', 'skills/teach/SKILL.md', 'skills/teach/SKILL.md',
+        'investigate teach', 'A source and history explanation with an optional progressive offline lesson',
+        'Use --lesson with a new HTML path outside the source repository to include progressive diagrams.'),
     'investigate': Scenario(
         'Investigate a question without editing the repository', 'skills/poteto-mode/playbooks/investigation.md',
         'skills/investigate/SKILL.md', 'investigate investigation', 'A report with source and history citations'),
