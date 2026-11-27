@@ -11,7 +11,7 @@ import socket
 import time
 
 from workbench import (autopilot, benny, benny_correction, benny_deploy, benny_draft, benny_events, benny_handoff,
-                       benny_notice, benny_operations, benny_repair, benny_reproduce, benny_triage, cli, delivery,
+                       benny_notice, benny_operations, benny_ops_followup, benny_repair, benny_reproduce, benny_triage, cli, delivery,
                        project_verify, publish, start)
 from workbench.benny_slack import CHANNEL, STAMP, USER, Slack, SlackWriter
 from workbench.task_lock import TaskBusy, task_lock
@@ -147,8 +147,10 @@ def _policy(path, role):
             or not isinstance(repair.get('fix_search'), list) or type(repair.get('draft', False)) is not bool):
         raise ValueError('Benny repair requires explicit searches and draft permission')
     operations = own.get('operations')
-    if 'operations' in own and (not isinstance(operations, dict) or operations.keys() != {'channel', 'identity'}
-            or not benny._matches(CHANNEL, operations['channel']) or not benny._matches(USER, operations['identity'])):
+    if 'operations' in own and (not isinstance(operations, dict)
+            or operations.keys() - {'channel', 'identity', 'followup_seconds'}
+            or not benny._matches(CHANNEL, operations.get('channel')) or not benny._matches(USER, operations.get('identity'))
+            or type(operations.get('followup_seconds', 0)) is not int or not 0 <= operations.get('followup_seconds', 0) <= 3600):
         raise ValueError('Benny operations needs an explicit Slack channel and writer identity')
     if 'source_notice_identity' in own and not benny._matches(USER, own['source_notice_identity']):
         raise ValueError('Benny source notice needs an explicit Slack writer identity')
@@ -395,6 +397,25 @@ def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, 
                                 prior=prior, operations=operations)
 
 
+def _arm_operations_followup(out, result, seconds):
+    try:
+        evidence = {}
+        if result['status'] == 'draft':
+            journal = Path(result['task']).with_name('benny-draft.json')
+            if journal.is_symlink() or str(journal) != result['repair']['receipt']:
+                raise ValueError('Benny follow-up needs the confirmed native draft journal')
+            evidence['draft_journal'] = _ref(journal)
+        if 'existing' in result:
+            verification = out/'existing/verification/result.json'
+            if verification.is_file() and not verification.is_symlink():
+                evidence['existing_verification'] = _ref(verification)
+        plan = benny_ops_followup.arm(out/'operations-followup.json', operations=result['operations'],
+                                       outcome={**result, **evidence}, seconds=seconds)
+    except (*ERRORS, KeyError) as error:
+        return {'operations_followup_status': 'blocked:' + type(error).__name__}
+    return {'operations_followup': plan}
+
+
 def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, source_writer, out, checkpoint, prior=None):
     opening = OPERATIONS_START.get(route['status'])
     if opening is None:
@@ -408,7 +429,7 @@ def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, source
     operation_path = out/'operations.json'
     operations = (benny_operations.Operations(operation_path, workspace=rules['workspace'],
                   source_channel=rules['channel'], source_root=route['root'], repository=rules['repository'],
-                  slack=slack, writer=writer, **config) if config else None)
+                  slack=slack, writer=writer, channel=config['channel'], identity=config['identity']) if config else None)
     phase = prior.get('phase') if prior else None
     if phase == 'reporting-operations':
         result = prior['outcome']
@@ -429,10 +450,13 @@ def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, source
         else:
             operations.status(OPERATIONS_RESULT.get(result['status'], 'Blocked'))
         result = {**result, 'operations': _ref(operation_path)}
+        if (followup_seconds := config.get('followup_seconds', 0)) and result['status'] != 'waiting-claim':
+            result = {**result, **_arm_operations_followup(out, result, followup_seconds)}
     return result
 
 
-def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations_writer=None, source_notice_writer=None):
+def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations_writer=None, source_notice_writer=None,
+         settled_followup=None):
     """Run the named event against the frozen project and operator policy once."""
     rules = benny._rules(rules)
     project, deployment = _binding(repo, rules)
@@ -460,6 +484,17 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations
         if record_path.is_symlink():
             raise ValueError('Benny dispatch receipt must be a regular file')
         expected = {'schema': cli.SCHEMA, 'deployment': deployment, 'policy_sha256': policy_digest, 'role': role}
+        if settled_followup is not None:
+            if not record_path.is_file():
+                raise ValueError('Benny follow-up lost the original settled event')
+            retained = cli.read(record_path)
+            fields = ('event', 'status', 'operations_followup')
+            if (any(retained.get(key) != value for key, value in expected.items())
+                    or retained.get('event') != event_id or retained.get('status') in ('running', 'waiting-claim')
+                    or not retained.get('operations_followup')
+                    or any(retained.get(key) != settled_followup.get(key) for key in fields)):
+                raise ValueError('Benny follow-up no longer matches the original settled event')
+            return retained
         prior = None
         if record_path.exists():
             prior = cli.read(record_path)
@@ -520,7 +555,9 @@ def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=N
     store = _state(state, project['repo'])
     inbox = _private_directory(store/'events')
     settled = _private_directory(store/'processed')
-    next_check, reports = {}, {}
+    next_check, reports, followups = {}, {}, {}
+    worker = {'repo': repo, 'rules': rules, 'state': store, 'policy': policy, 'slack': slack, 'writer': writer,
+              'operations_writer': operations_writer, 'source_notice_writer': source_notice_writer}
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         for path in sorted(inbox.glob('Ev*.json')):
@@ -528,19 +565,39 @@ def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=N
                 break
             ident = path.stem
             acknowledgement = settled/path.name
-            if acknowledgement.is_file() and not acknowledgement.is_symlink():
+            ack = cli.read(acknowledgement) if acknowledgement.is_file() and not acknowledgement.is_symlink() else None
+            if ack and (not ack.get('operations_followup') or 'followup_status' in ack):
                 continue
             if ident not in reports and len(reports) >= max_events:
                 continue
             if ident in reports and (ident not in next_check or time.time() < next_check[ident]):
                 continue
             try:
-                result = work(repo=repo, rules=rules, state=store, policy=policy, event_id=ident,
-                              slack=slack, writer=writer, operations_writer=operations_writer,
-                              source_notice_writer=source_notice_writer)
+                result = work(event_id=ident, settled_followup=ack, **worker)
+                if ack:
+                    seconds_left = int(end - time.monotonic())
+                    if seconds_left < 1:
+                        break
+                    followed = benny_ops_followup.step(ack['operations_followup'], slack=slack,
+                                                       writer=operations_writer or writer, seconds=min(30, seconds_left))
+                    reports[ident] = ack['status']
+                    followups[ident] = followed['status']
+                    if followed['status'] in benny_ops_followup.TERMINAL:
+                        next_check.pop(ident, None)
+                        cli.write(acknowledgement, {**ack, 'followup_status': followed['status']})
+                    else:
+                        next_check[ident] = time.time() + max(poll_seconds, followed.get('retry_after', 0))
+                    continue
             except TaskBusy:
                 continue
             except ERRORS as error:
+                if ack:
+                    status = 'blocked:' + type(error).__name__
+                    followups[ident] = status
+                    reports[ident] = ack['status']
+                    next_check.pop(ident, None)
+                    cli.write(acknowledgement, {**ack, 'followup_status': status})
+                    continue
                 reports[ident] = 'blocked:' + type(error).__name__
                 next_check.pop(ident, None)
                 cli.write(acknowledgement, {'schema': cli.SCHEMA, 'event': ident, 'status': reports[ident]})
@@ -549,14 +606,24 @@ def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=N
             if result['status'] == 'waiting-claim' and result['event'] == ident:
                 next_check[ident] = datetime.fromisoformat(result['ready_at']).timestamp()
             else:
-                next_check.pop(ident, None)
-                cli.write(acknowledgement, {'schema': cli.SCHEMA, 'event': ident, 'status': reports[ident]})
+                ack = {'schema': cli.SCHEMA, 'event': ident, 'status': reports[ident]}
+                if result['event'] == ident and 'operations_followup' in result:
+                    ack['operations_followup'] = result['operations_followup']
+                    next_check[ident] = time.time()
+                else:
+                    next_check.pop(ident, None)
+                    if result['event'] == ident and 'operations_followup_status' in result:
+                        followups[ident] = ack['followup_status'] = result['operations_followup_status']
+                cli.write(acknowledgement, ack)
         if len(reports) >= max_events and not next_check:
             break
         remaining = end - time.monotonic()
         if remaining > 0:
             time.sleep(min(poll_seconds, remaining))
-    return {'status': 'finished', 'events': reports}
+    summary = {'status': 'finished', 'events': reports}
+    if followups:
+        summary['followups'] = followups
+    return summary
 
 
 def main(argv=None):

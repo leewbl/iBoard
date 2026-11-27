@@ -39,6 +39,10 @@ In the worker policy, add `"operations": {"channel": "G0123456789", "identity": 
 
 The coordinator creates one status message per approved report in the operations channel and updates it as the run progresses. After the verified draft is confirmed, the coordinator adds its GitHub link as a reply to that message. The event retains `operations.json` with the root, updates, reply and pending write intent. Restarting after an uncertain response reconciles that intent against Slack. A missing or ambiguous create receipt stops automatic posting and preserves the journal. Without an operations channel, the CLI and event receipts carry the status.
 
+Set `operations.followup_seconds` to a positive duration up to 3,600 seconds to keep watching the exact operations thread after the run settles. Direct mentions can ask about the checks, revisions or verified draft. Claude Code with GLM selects relevant excerpts from a fixed evidence packet. The coordinator checks those excerpts against the packet and posts the supporting facts in the same thread. Questions without supporting evidence and ordinary conversation receive no automatic reply. A human can end the window by posting `Stop Benny`.
+
+The follow-up window resumes through `watch` using the original deadline and receipt. An ambiguous reply is checked against the thread before any further answer. The operational reply status is stored separately from the settled reproduction, repair or draft result.
+
 ### Optional reproduction reply in the report thread
 
 Set `source_notice_identity` inside the `reproduce` worker policy to an approved Slack user ID. Pass the corresponding owner-only credential file with `--source-notice-writer-token-file`, or reuse `--writer-token-file` for the same identity. The coordinator posts one concise reply only after both offline probes confirm the report. When the operations thread is enabled, the coordinator updates it first and then includes its link in the reply. A trusted tracker issue is linked when present.

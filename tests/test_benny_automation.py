@@ -74,6 +74,42 @@ class BennyAutomationTests(unittest.TestCase):
                     slack=self.source.fixture.slack)
         return benny_automation.work(**(args | overrides))
 
+    def test_operations_followup_resumes_without_overwriting_a_settled_event(self):
+        event = 'Ev087FOLLOWUP'
+        marker = reply(1, '[benny:bug]', user=TRIAGE)
+        self.source.fixture.pages[0].append(marker)
+        self.assertEqual(self.receive(self.payload(event, marker))[0], 200)
+        settings = {'repo': self.source.repo, 'rules': RULES, 'state': self.store, 'policy': self.policy,
+                    'slack': self.source.fixture.slack, 'operations_writer': self.source.fixture.writer,
+                    'seconds': 3, 'max_events': 1, 'poll_seconds': 1}
+        plan = {'path': str(self.root/'followup.json'), 'sha256': 'a'*64}
+        outcome = {'event': event, 'status': 'draft', 'operations_followup': plan}
+        processed = self.store/'processed'/f'{event}.json'
+        with patch.object(benny_automation, 'work', return_value=outcome), \
+             patch.object(benny_automation.benny_ops_followup, 'step', side_effect=[
+                 {'status': 'reply-unconfirmed', 'retry_after': 30},
+                 benny_automation.TaskBusy('another watcher is reconciling the reply'), {'status': 'stopped'}]) as observer:
+            first = benny_automation.watch(**settings)
+            self.assertEqual(first['followups'], {event: 'reply-unconfirmed'})
+            self.assertEqual(cli.read(processed)['status'], 'draft')
+            resumed = benny_automation.watch(**settings)
+            self.assertEqual(resumed['events'], {event: 'draft'})
+            self.assertEqual(resumed['followups'], {event: 'stopped'})
+            self.assertEqual(cli.read(processed)['followup_status'], 'stopped')
+            self.assertEqual(benny_automation.watch(**(settings | {'seconds': 1}))['events'], {})
+        self.assertEqual(observer.call_count, 3)
+        self.assertTrue(all(call.args == (plan,) for call in observer.call_args_list))
+
+    def test_missing_settled_event_blocks_followup_without_restarting_the_work(self):
+        event = 'Ev088FOLLOWUP'
+        marker = reply(1, '[benny:bug]', user=TRIAGE)
+        self.source.fixture.pages[0].append(marker)
+        self.assertEqual(self.receive(self.payload(event, marker))[0], 200)
+        ack = {'event': event, 'status': 'draft', 'operations_followup': {'path': '/missing', 'sha256': 'a'*64}}
+        with self.assertRaisesRegex(ValueError, 'lost the original settled event'):
+            self.work(event, settled_followup=ack)
+        self.assertEqual(self.source.fixture.calls, [])
+
     def queue_repair(self, event, *, claim_seconds=0):
         marker = reply(1, '[benny:bug]', user=TRIAGE)
         self.source.fixture.pages[0].append(marker)
