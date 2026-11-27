@@ -19,7 +19,7 @@ python3 -m workbench.benny_triage --token-file "$SLACK_KEY" --receipt "$ROUTE" \
 
 The local packet contains the original thread text, the committed source excerpts and recent history, bounded [GitHub search results](https://docs.github.com/en/rest/search/search#search-issues-and-pull-requests), any unread attachment count, and the proposal. If the source changes between intake and the verdict, the proposal is withheld. Missing evidence, incomplete deduplication, or unclear behavior also withholds a new-issue draft.
 
-The recommendation may identify an already linked issue, a live or historical match, a plausible existing fix to verify, a configured destination, or a new local draft. An ambiguous report can retain one focused question. The configured verdict marker is a proposal for a coordinator. This command does not post it, issue pings, or write to the tracker. The separate verification entry still requires a trusted verdict from the live source thread.
+The recommendation may identify an already linked issue, a live or historical match, a plausible existing fix to verify, a configured destination, or a new local draft. An ambiguous report can retain one focused question. The configured verdict marker is a proposal. The handoff below applies a reviewed proposal. The separate verification entry still requires a trusted verdict from the live source thread.
 
 ## Attachments
 
@@ -28,3 +28,23 @@ Add `--attachments` to read the file IDs in the selected thread. Text logs and J
 Add `--inspect-media` to send supported screenshots and MP4 frame samples to the configured GLM vision model. This includes the attachment read. Supported pictures are PNG, JPEG and WebP. With FFmpeg and FFprobe installed, MP4 clips up to 90 seconds can supply three timestamped samples. The notes refer to the retained frame bytes and the requested sampling times. A sampled clip remains partial evidence. File collection reads up to eight unique attachments, up to 32 MB total, with a separate limit per file type.
 
 Review media notes together with the original screenshot or frame. They cannot substantiate a verbatim fact about the report. Incomplete, oversized, unsupported or uninspected attachments still count as unread for the draft decision. Provider failure stops further model calls and preserves the files already read. The runner checks attachment hashes again before confirming the proposal.
+
+## Apply a reviewed handoff
+
+Prepare from the exact approved `result.json` and its SHA-256. Use one private shared `STATE_DIR` for the coordinator. The source workspace, channel and root timestamp choose the journal directory, so repeated attempts use the same plan. Choose any configured GitHub issue labels at preparation time.
+
+```sh
+python3 -m workbench.benny_handoff prepare --triage "$RESULT" \
+  --sha256 "$RESULT_SHA" --state-dir "$STATE_DIR"
+```
+
+Read the returned preview and approve the exact plan digest for the selected repository and thread. Run `apply` only when authorized to create or comment on the issue and send the Slack reply. Supply the read credential and a separate owner-only writer credential for the configured triage identity. The local GitHub CLI account must be authorized for the tracker. Before a new issue, the tracker must confirm access to the labels and permission to close the issue if handoff fails.
+
+```sh
+python3 -m workbench.benny_handoff apply --plan "$PLAN" --sha256 "$PLAN_SHA" \
+  --read-token-file "$SLACK_READ_KEY" --write-token-file "$SLACK_WRITE_KEY"
+```
+
+New issues carry the original Slack link and an exact run marker. A confirmed duplicate gets a recurrence comment, preserving the issue body and state. The coordinator rereads the source immediately before a reply, sends only via Slack's [thread reply parameters](https://docs.slack.dev/reference/methods/chat.postMessage/), then checks the same thread for the posted verdict. Resume with the same plan to reconcile a lost acknowledgement. A request with an unknown outcome is not sent again. An explicit reply rejection and a fresh complete thread read can close an issue created by this run with `not_planned`. The run rereads the issue and checks that state. A source change before sending can also trigger that same scoped compensation. An existing issue is never closed by the handoff.
+
+The local journal records every stage and whether GitHub or Slack needs reconciliation. Attachments remain local. Live tenant validation, attachment publishing and the later follow-up window are separate.

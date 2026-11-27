@@ -214,6 +214,11 @@ SCENARIOS = {
         'skills/triage-issue-reports/SKILL.md', 'benny_triage',
         'An unchanged source thread, quoted facts, selected code and history, and a bounded tracker recommendation',
         'Uses only the selected report and tracker searches. Produces a local verdict proposal without external writes.'),
+    'benny-handoff': Scenario(
+        'Review and apply the source-thread verdict and tracker handoff',
+        'automations/benny/templates/triage-automation-prompt.md', 'skills/triage-issue-reports/SKILL.md',
+        'benny_handoff prepare', 'Exact planned payloads, tracker evidence and a verified original-thread reply',
+        'Apply is separately authorized. It uses the journal to avoid repeated writes and can close only a new issue it created.'),
     'benny-reproduce': Scenario(
         'Recheck the Slack report and verify the existing fix',
         'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',

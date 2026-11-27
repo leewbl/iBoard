@@ -280,7 +280,7 @@ def triage(*, slack, receipt, sha256, out, repo=None, revision=None, selections=
     missing_media = sum(item['status'] != 'read' for item in attachments)
     packet = {'schema': cli.SCHEMA, 'source': snapshot['permalink'], 'evidence': evidence, 'routes': routes,
               'searches': searches, 'tracker_read': reading, 'attachments': attachments,
-              'unread_media_count': missing_media}
+              'tracker_repository': tracker_repo, 'unread_media_count': missing_media}
     cli.write(destination/'evidence.json', packet)
     report['evidence_sha256'] = cli.digest(destination/'evidence.json')
     if linked:

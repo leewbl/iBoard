@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
 from workbench import benny, cli
-from workbench.benny_slack import Slack, SlackError
+from workbench.benny_slack import Slack, SlackError, SlackWriter
 
 
 CHANNEL = 'C123REPORT'
@@ -39,6 +39,9 @@ class Fixture:
         self.rate_limit = False
         self.repeat_cursor = False
         self.files = {}
+        self.reply_behavior = None
+        self.sent = []
+        self.user = TRIAGE
         token_file = root / 'fixture-key'
         token_file.write_text(TOKEN)
         token_file.chmod(0o600)
@@ -82,7 +85,28 @@ class Fixture:
                     self.wfile.write(content)
                     return
                 if endpoint == 'auth.test' and self.command == 'POST':
-                    result = {'team_id': fixture.team}
+                    result = {'team_id': fixture.team, 'user_id': fixture.user}
+                elif endpoint == 'chat.postMessage' and self.command == 'POST' and fixture.reply_behavior:
+                    payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                    fixture.sent.append(payload)
+                    if payload.get('channel') != CHANNEL or payload.get('thread_ts') != ROOT:
+                        self.send_error(400)
+                        return
+                    behavior = fixture.reply_behavior
+                    if behavior == 'reject':
+                        result = {'ok': False, 'error': 'not_in_channel'}
+                    elif behavior == 'uncertain':
+                        self.send_error(503)
+                        return
+                    else:
+                        row = reply(80 + len(fixture.sent), payload['text'], user=fixture.user)
+                        fixture.pages[-1].append(row)
+                        if 'reply_count' in fixture.root:
+                            fixture.root['reply_count'] += 1
+                        if behavior == 'lost':
+                            self.send_error(503)
+                            return
+                        result = {'channel': CHANNEL, 'ts': row['ts'], 'message': row}
                 elif endpoint == 'files.info' and self.command == 'GET':
                     item = fixture.files.get(query.get('file'))
                     result = {'file': item[0]} if item else {'ok': False, 'error': 'file_not_found'}
@@ -125,6 +149,7 @@ class Fixture:
             return HTTPConnection('127.0.0.1', self.server.server_address[1], timeout=timeout)
 
         self.slack = Slack(self.token_file, connection=connect)
+        self.writer = SlackWriter(self.token_file, connection=connect)
         return self
 
     def __exit__(self, *_):

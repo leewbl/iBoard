@@ -33,6 +33,7 @@ class PstackHelpTests(unittest.TestCase):
             'verify-existing-fix': 'verify_existing_fix',
             'setup-benny': 'benny freeze',
             'triage-issue-reports': 'benny_triage',
+            'benny-handoff': 'benny_handoff prepare',
             'benny-reproduce': 'benny verify',
             'review-pr': 'interrogate',
             'ship-stack': 'stack_ship plan',
@@ -69,7 +70,7 @@ class PstackHelpTests(unittest.TestCase):
 
     def test_catalog_only_and_prompt_guidance_have_no_runnable_route(self):
         for name, expected_status in (
-            ('automations/benny/templates/triage-automation-prompt.md', 'catalog-only'),
+            ('automations/benny/templates/configuration.example.yaml', 'catalog-only'),
             ('principle-prove-it-works', 'guidance-only'),
         ):
             with self.subTest(name=name):

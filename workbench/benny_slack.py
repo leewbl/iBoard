@@ -30,6 +30,10 @@ class RetryAfter(SlackError):
         self.seconds = seconds
 
 
+class SlackRejected(SlackError):
+    """Slack replied that the particular write was rejected."""
+
+
 def _token(path):
     flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0)
     with os.fdopen(os.open(Path(path).expanduser(), flags), 'r', encoding='ascii') as stream:
@@ -49,13 +53,16 @@ class Slack:
         self.token = _token(token_file)
         self.connection = connection
 
-    def _request(self, host, method, path, deadline, limit, endpoint):
+    def _request(self, host, method, path, deadline, limit, endpoint, *, payload=None):
         left = deadline - time.monotonic()
         if left <= 0:
             raise SlackError('Benny report read exceeded its deadline')
         client = self.connection(host, timeout=min(left, 12))
         try:
-            client.request(method, path, headers={'Authorization': 'Bearer ' + self.token, 'Accept-Encoding': 'identity'})
+            headers = {'Authorization': 'Bearer ' + self.token, 'Accept-Encoding': 'identity'}
+            if payload is not None:
+                headers['Content-Type'] = 'application/json; charset=utf-8'
+            client.request(method, path, body=payload, headers=headers)
             response = client.getresponse()
             if response.status == 429:
                 retry = response.getheader('Retry-After', '60')
@@ -156,3 +163,31 @@ class Slack:
                 or url.path != f'/archives/{channel}/p{root.replace(".", "")}' or url.query or url.fragment):
             raise SlackError('Slack returned a permalink for different source coordinates')
         return link
+
+
+class SlackWriter(Slack):
+    """A separate credential can reply in one exact source thread."""
+
+    def identity(self, team, user, deadline):
+        info = self.call('auth.test', deadline)
+        if (info.get('team_id'), info.get('user_id')) != (team, user):
+            raise SlackError('Slack writer is not the configured triage identity')
+
+    def reply(self, *, channel, root, text, deadline):
+        if (not CHANNEL.fullmatch(channel) or not STAMP.fullmatch(root) or not isinstance(text, str)
+                or not 1 <= len(text) <= 3500):
+            raise ValueError('Slack reply needs a nonempty exact source thread and bounded text')
+        payload = json.dumps({'channel': channel, 'thread_ts': root, 'text': text, 'mrkdwn': False, 'parse': 'none',
+                              'unfurl_links': False, 'unfurl_media': False}, ensure_ascii=False).encode()
+        raw, _ = self._request('slack.com', 'POST', '/api/chat.postMessage', deadline, MAX_PAGE,
+                               'chat.postMessage', payload=payload)
+        data = json.loads(raw)
+        if not isinstance(data, dict) or type(data.get('ok')) is not bool:
+            raise SlackError('Slack did not confirm the reply')
+        if data['ok'] is False:
+            raise SlackRejected('Slack rejected the source-thread reply')
+        message, timestamp = data.get('message'), data.get('ts')
+        if (data.get('channel') != channel or not isinstance(timestamp, str) or not STAMP.fullmatch(timestamp)
+                or timestamp == root or not isinstance(message, dict) or message.get('thread_ts') != root):
+            raise SlackError('Slack did not confirm reply coordinates')
+        return timestamp
