@@ -1,9 +1,12 @@
 """Read selected host transcripts with exact workspace scope and line provenance."""
 
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
+import stat
 
 from workbench.automate_me import UUIDISH, _date, _digest, _file, _read, _require
 from workbench.reflect import _scrub
@@ -31,12 +34,51 @@ def _workspace(value, repo):
     return isinstance(value, str) and Path(value).is_absolute() and Path(value).resolve() == repo
 
 
-def _rows(raw):
-    for line, data in enumerate(raw.splitlines(), 1):
+def _rows(records):
+    for line, data in enumerate(records, 1):
         if data.strip():
             row = json.loads(data)
             _require(isinstance(row, dict), 'transcript rows must be JSON objects')
             yield line, row
+
+
+class _SessionSnapshot:
+    """Read the same initial byte range even when the host appends during collection."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.before = os.fstat(stream.fileno())
+        _require(stat.S_ISREG(self.before.st_mode), 'select a regular transcript file')
+        self.digest = None
+
+    def records(self):
+        self.stream.seek(0)
+        remaining = self.before.st_size
+        digest = sha256()
+        while remaining:
+            data = self.stream.readline(remaining)
+            _require(data, 'transcript became shorter while reading its snapshot')
+            remaining -= len(data)
+            digest.update(data)
+            yield data
+        observed = digest.hexdigest()
+        _require(self.digest in (None, observed), 'transcript bytes changed within the captured snapshot')
+        self.digest = observed
+
+    def rows(self):
+        return _rows(self.records())
+
+    def reference(self, path):
+        observed = path.stat()
+        _require((observed.st_dev, observed.st_ino) == (self.before.st_dev, self.before.st_ino)
+                 and observed.st_size >= self.before.st_size, 'transcript was replaced or shortened during collection')
+        if observed.st_size == self.before.st_size:
+            _require(observed.st_mtime_ns == self.before.st_mtime_ns, 'transcript changed during collection')
+        if self.digest is None or observed.st_size > self.before.st_size:
+            # A pure append is fine. Verify the initial bytes still match the parsed snapshot.
+            for _ in self.records():
+                pass
+        return {'path': str(path), 'sha256': self.digest, 'bytes': self.before.st_size}
 
 
 def _blocks(content, text_type):
@@ -62,16 +104,17 @@ def _conversation_text(message, role, *, include_commands=False):
 
 
 def _turn(line, role, stamp, uid, text, *, inferred=False):
+    clean = BEARER.sub(r'\1[omitted]', CREDENTIAL.sub('[omitted]', _scrub(text)))
     # The timestamp flag is recorded only when the host does not supply one.
-    fields = {'line': line, 'role': role, 'at': stamp.isoformat(), 'text': text}
+    fields = {'line': line, 'role': role, 'at': stamp.isoformat(), 'text': clean[:MAX_EXCERPT]}
     if inferred:
         fields['time_source'] = 'file-mtime'
-    return uid, stamp, fields
+    return uid, stamp, fields, len(clean) > MAX_EXCERPT
 
 
-def _claude(raw, repo, *, include_commands=False):
+def _claude(rows, repo, *, include_commands=False):
     ident, turns = None, []
-    for line, row in _rows(raw):
+    for line, row in rows():
         role = row.get('type')
         if role not in ROLES or row.get('isMeta') or row.get('isSidechain') or not _workspace(row.get('cwd'), repo):
             continue
@@ -121,9 +164,9 @@ def cursor_identity(path, repo):
     return path.stem
 
 
-def _cursor(raw, ident, repo, mtime, *, include_commands=False):
+def _cursor(rows, ident, repo, mtime, *, include_commands=False):
     turns = []
-    for line, row in _rows(raw):
+    for line, row in rows():
         role = row.get('role')
         message = row.get('message')
         if (role not in ROLES or not isinstance(message, dict) or row.get('isMeta') or row.get('isSidechain')):
@@ -180,25 +223,23 @@ def codex_scope(payload, repo, current=None):
             and _workspace(payload.get('cwd'), repo))
 
 
-def _codex(raw, repo):
-    rows = list(_rows(raw))
-    metadata = next((row.get('payload') for _, row in rows if row.get('type') == 'session_meta'), None)
-    _require(isinstance(metadata, dict), 'Codex transcript requires a session header')
-    ident = metadata.get('id')
-    _require(isinstance(ident, str) and UUIDISH.fullmatch(ident), 'Codex transcript lacks a stable session ID')
-    if not codex_scope(metadata, repo):
-        return None, []
-
+def _codex(rows, repo):
+    metadata, ident, in_scope = None, None, False
     contexts = {}
     other_workspace = False
-    has_header = False
-    for _, row in rows:
+    for _, row in rows():
         payload = row.get('payload')
         if row.get('type') == 'session_meta':
-            _require(isinstance(payload, dict) and payload.get('id') == ident and _workspace(payload.get('cwd'), repo),
-                     'Codex transcript mixes session IDs or workspaces')
-            has_header = True
-        if not has_header or row.get('type') != 'turn_context' or not isinstance(payload, dict):
+            if metadata is None:
+                _require(isinstance(payload, dict), 'Codex transcript requires a session header')
+                metadata = payload
+                ident = metadata.get('id')
+                _require(isinstance(ident, str) and UUIDISH.fullmatch(ident), 'Codex transcript lacks a stable session ID')
+                in_scope = codex_scope(metadata, repo)
+            elif in_scope:
+                _require(isinstance(payload, dict) and payload.get('id') == ident and _workspace(payload.get('cwd'), repo),
+                         'Codex transcript mixes session IDs or workspaces')
+        if not in_scope or row.get('type') != 'turn_context' or not isinstance(payload, dict):
             continue
         if 'cwd' in payload:
             matches = _workspace(payload['cwd'], repo)
@@ -207,9 +248,12 @@ def _codex(raw, repo):
             if isinstance(turn_id, str):
                 contexts[turn_id] = contexts.get(turn_id, True) and matches
 
+    _require(metadata is not None, 'Codex transcript requires a session header')
+    if not in_scope:
+        return None, []
     has_header, turns = False, []
     forked = bool(metadata.get('forked_from_id') or metadata.get('history_base'))
-    for line, row in rows:
+    for line, row in rows():
         if row.get('type') == 'session_meta':
             has_header = True
         if not has_header or row.get('type') != 'response_item':
@@ -232,32 +276,59 @@ def _codex(raw, repo):
     return ident, turns
 
 
-def transcript(path, repo, start, end, current, *, host='claude', include_commands=False):
-    """Return the session ID, scoped visible turns, excerpt count trimmed, and raw digest."""
+def _messages(rows, path, repo, mtime, host, include_commands):
+    if host == 'claude':
+        return _claude(rows, repo, include_commands=include_commands)
+    if host == 'cursor':
+        ident = cursor_identity(path, repo)
+        return ident, _cursor(rows, ident, repo, mtime, include_commands=include_commands) if ident is not None else []
+    return _codex(rows, repo)
+
+
+def _visible(ident, candidates, start, end, current):
+    seen, turns, shortened = set(), [], 0
+    if ident is not None and ident != current:
+        for uid, stamp, row, trimmed in candidates:
+            if (start and stamp < start) or (end and stamp > end) or uid in seen:
+                continue
+            seen.add(uid)
+            if row['text']:
+                shortened += trimmed
+                turns.append(row)
+    return turns, shortened
+
+
+def _scope(path, repo, host):
     _require(host in HOSTS, 'choose a supported transcript host')
     path, repo = _file(path), Path(repo).resolve(strict=True)
     _require(path.suffix == '.jsonl', 'select a JSONL transcript')
-    ident = cursor_identity(path, repo) if host == 'cursor' else None
+    return path, repo
+
+
+def transcript(path, repo, start, end, current, *, host='claude', include_commands=False):
+    """Return the session ID, scoped visible turns, excerpt count trimmed, and raw digest."""
+    path, repo = _scope(path, repo, host)
     before = path.stat()
     raw = _read(path, MAX_BYTES)
-    if host == 'claude':
-        ident, candidates = _claude(raw, repo, include_commands=include_commands)
-    elif host == 'cursor':
-        mtime = datetime.fromtimestamp(before.st_mtime, timezone.utc)
-        candidates = _cursor(raw, ident, repo, mtime, include_commands=include_commands) if ident is not None else []
+    records = raw.splitlines()
+    mtime = datetime.fromtimestamp(before.st_mtime, timezone.utc)
+    ident, candidates = _messages(lambda: _rows(records), path, repo, mtime, host, include_commands)
+    if host == 'cursor':
         after = path.stat()
         _require((before.st_size, before.st_mtime_ns, before.st_ino) == (after.st_size, after.st_mtime_ns, after.st_ino),
                  'Cursor transcript changed while reading its time evidence')
-    else:
-        ident, candidates = _codex(raw, repo)
-    seen, turns, shortened = set(), [], 0
-    if ident is not None and ident != current:
-        for uid, stamp, row in candidates:
-            if (start and stamp < start) or (end and stamp > end) or uid in seen:
-                continue
-            clean = BEARER.sub(r'\1[omitted]', CREDENTIAL.sub('[omitted]', _scrub(row['text'])))
-            seen.add(uid)
-            if clean:
-                shortened += len(clean) > MAX_EXCERPT
-                turns.append({**row, 'text': clean[:MAX_EXCERPT]})
+    turns, shortened = _visible(ident, candidates, start, end, current)
     return ident, turns, shortened, _digest(raw)
+
+
+def session_snapshot(path, repo, *, host='claude'):
+    """Stream one selected chat, returning scoped turns and its captured-byte reference."""
+    path, repo = _scope(path, repo, host)
+    _require(path.is_file(), 'select a regular transcript file')
+    with path.open('rb') as stream:
+        snapshot = _SessionSnapshot(stream)
+        mtime = datetime.fromtimestamp(snapshot.before.st_mtime, timezone.utc)
+        ident, candidates = _messages(snapshot.rows, path, repo, mtime, host, True)
+        source = snapshot.reference(path)
+    turns, _ = _visible(ident, candidates, None, None, None)
+    return ident, turns, source

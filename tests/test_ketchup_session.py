@@ -3,11 +3,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from workbench import ketchup, ketchup_video
+from workbench import ketchup, ketchup_video, recall_sessions
 
 
 CLAUDE_ID = 'ec66ac45-71f1-4a4d-8fdc-d670516341ea'
@@ -38,7 +39,7 @@ class KetchupSessionTests(unittest.TestCase):
         return path
 
     def claude(self, *, after=(), command='ketchup'):
-        slug = str(self.repo).replace('/', '-')
+        slug = re.sub(r'[^A-Za-z0-9-]', '-', self.repo.as_posix())
         texts = [('user', 'Verify the checkout.'), ('assistant', 'I checked the run.'),
                  ('user', f'<command-message>agent-workbench:{command}</command-message>\n'
                           f'<command-name>/agent-workbench:{command}</command-name>\n<command-args></command-args>'),
@@ -111,3 +112,63 @@ class KetchupSessionTests(unittest.TestCase):
         with patch.dict(os.environ, {**self.env, 'CLAUDE_CODE_SESSION_ID':CLAUDE_ID}, clear=True):
             ketchup_video.collect(repo=self.repo, manifest=manifest, out=output)
         self.assertEqual(json.loads(output.read_text())['window']['invocation_line'], 3)
+
+    def test_large_codex_log_anchors_both_commands_and_retains_original_lines(self):
+        def message(role, content, at):
+            return {'type':'response_item', 'timestamp':stamp(at), 'payload':{'type':'message', 'role':role,
+                'content':[{'type':'input_text' if role == 'user' else 'output_text', 'text':content}]}}
+
+        output_row = {'type':'response_item', 'payload':{'type':'function_call_output', 'output':'x' * 700_000}}
+        for workflow in ('ketchup', 'ketchup-video'):
+            with self.subTest(workflow=workflow):
+                path = self.write(self.home/f'{workflow}.jsonl', [
+                    {'type':'session_meta', 'payload':{'id':CODEX_ID, 'cwd':str(self.repo)}},
+                    message('user', 'Review the recent result.', 1), *([output_row] * 9),
+                    message('assistant', 'The run passed.', 2), message('user', f'/{workflow}', 3)])
+                self.assertGreater(path.stat().st_size, recall_sessions.MAX_BYTES)
+                if workflow == 'ketchup':
+                    window = ketchup.collect(repo=self.repo, transcript=path, host='codex')['window']
+                else:
+                    manifest = self.home/'manifest.json'
+                    manifest.write_text('{"evidence": []}')
+                    result = self.home/'video-evidence.json'
+                    ketchup_video.collect(repo=self.repo, transcript=path, host='codex', manifest=manifest, out=result)
+                    window = json.loads(result.read_text())['window']
+                self.assertEqual(window['last_user_line'], 2)
+                self.assertEqual(window['invocation_line'], 13)
+                self.assertEqual([turn['line'] for turn in window['later_turn_context']], [12])
+                self.assertEqual(window['transcript']['bytes'], path.stat().st_size)
+                self.assertEqual(window['transcript']['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
+
+    def test_growth_preserves_the_captured_prefix_and_excludes_a_later_user_message(self):
+        path = self.claude()
+        first = path.read_bytes()
+        parser = recall_sessions._messages
+
+        def parse_then_append(*args):
+            parsed = parser(*args)
+            new_row = {'cwd':str(self.repo), 'type':'user', 'sessionId':CLAUDE_ID, 'timestamp':stamp(4),
+                       'message':{'role':'user', 'content':'This message arrived later.'}}
+            with path.open('ab') as stream:
+                stream.write((json.dumps(new_row) + '\n').encode())
+            return parsed
+
+        with patch.object(recall_sessions, '_messages', side_effect=parse_then_append):
+            window = ketchup.collect(repo=self.repo, transcript=path)['window']
+        self.assertGreater(path.stat().st_size, len(first))
+        self.assertEqual(window['invocation_line'], 3)
+        self.assertEqual(window['transcript']['sha256'], hashlib.sha256(first).hexdigest())
+        self.assertEqual(window['transcript']['bytes'], len(first))
+
+    def test_growth_does_not_hide_a_rewrite_of_captured_bytes(self):
+        path = self.claude()
+        parser = recall_sessions._messages
+
+        def parse_then_rewrite(*args):
+            parsed = parser(*args)
+            path.write_bytes(path.read_bytes().replace(b'Verify', b'Change') + b'\n')
+            return parsed
+
+        with patch.object(recall_sessions, '_messages', side_effect=parse_then_rewrite):
+            with self.assertRaisesRegex(ValueError, 'bytes changed'):
+                ketchup.collect(repo=self.repo, transcript=path)

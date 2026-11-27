@@ -43,8 +43,7 @@ def anchor(repo, *, transcript=None, host=None, session_id=None, invocation_line
            command='ketchup', context_limit=None):
     repo = Path(repo).resolve(strict=True)
     source_host, path, expected = _select(repo, host, transcript, session_id)
-    session, turns, _, digest = recall_sessions.transcript(path, repo, None, None, None, host=source_host,
-                                                          include_commands=True)
+    session, turns, snapshot = recall_sessions.session_snapshot(path, repo, host=source_host)
     _require(session is not None and (expected is None or session == expected), 'session or workspace identity differs')
     names = {f'/{command}', f'/agent-workbench:{command}', f'/pstack:{command}'}
     if invocation_line is None:
@@ -60,7 +59,7 @@ def anchor(repo, *, transcript=None, host=None, session_id=None, invocation_line
     _require(inferred or _date(last['at']) <= _date(current['at']), 'session command predates the preceding human message')
     later = [turn for turn in preceding if turn['line'] > last['line']
              and (inferred or turn.get('time_source') == 'file-mtime' or _date(turn['at']) <= _date(current['at']))]
-    return {'transcript': {'path': str(path), 'sha256': digest}, 'session': session, 'host': source_host,
+    return {'transcript': snapshot, 'session': session, 'host': source_host,
             'last_user_line': last['line'], 'invocation_line': current['line'],
             'time_basis': 'message-order' if inferred else 'recorded-timestamps',
             'since': None if inferred else last['at'], 'until': None if inferred else current['at'],
