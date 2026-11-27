@@ -76,22 +76,6 @@ def validate(contract, check_path, check_text):
             claimed.add(command)
 
 
-def _registrations(text, receiver):
-    tokens = [match for match in _TOKENS.finditer(text) if match.lastgroup != "comment"]
-    for offset, token in enumerate(tokens):
-        if token[0] != receiver or offset and tokens[offset - 1][0] in (".", "#"):
-            continue
-        following = tokens[offset + 1:offset + 6]
-        if len(following) != 5:
-            continue
-        dot, method, begin, literal, end = following
-        if (dot[0], method[0], begin[0], end[0]) != (".", "command", "(", ")"):
-            continue
-        if literal[0][0] not in ("'", '"') or not _COMMAND.fullmatch(literal[0][1:-1]):
-            continue
-        yield literal[0][1:-1], text.count("\n", 0, method.start()) + 1
-
-
 def _literal(token):
     return token[1:-1] if token[0] in ("'", '"') and "\\" not in token else None
 
@@ -107,7 +91,101 @@ def _matching(tokens, start, brackets=_BRACKETS):
                 break
             if not stack:
                 return index
-    raise ValueError("unbalanced JSX options syntax")
+    raise ValueError("unbalanced source delimiters")
+
+
+def _command_name(value):
+    words = value.split(" ", 1) if value else []
+    return words[0] if words and _COMMAND.fullmatch(words[0]) else None
+
+
+def _top_level(tokens, start, stop):
+    while start < stop:
+        yield start
+        if tokens[start][0] in _BRACKETS:
+            start = _matching(tokens, start)
+        start += 1
+
+
+def _command_loop_domains(tokens, receiver):
+    """Resolve only immutable literal loops, and only direct uses in their body."""
+    domains = {}
+    for index, token in enumerate(tokens):
+        head = [match[0] for match in tokens[index + 1:index + 6]] if token[0] == "for" else []
+        if (len(head) != 5 or head[:2] != ["(", "const"] or head[3:] != ["of", "["]
+                or not _RECEIVER.fullmatch(head[2])):
+            continue
+        name = head[2]
+        array_end = _matching(tokens, index + 5)
+        brace = array_end + 1
+        if [t[0] for t in tokens[brace:brace + 2]] == ["as", "const"]:
+            brace += 2
+        if [t[0] for t in tokens[brace:brace + 2]] != [")", "{"]:
+            continue
+        values = [_command_name(_literal(part[0][0])) if len(part) == 1 else None
+                  for part in _comma_parts(tokens[index + 6:array_end])]
+        if not values or None in values or len(set(values)) != len(values):
+            continue
+        brace += 1
+        for offset in _top_level(tokens, brace + 1, _matching(tokens, brace)):
+            if tokens[offset][0] == receiver and (offset == brace + 1 or tokens[offset - 1][0] == ";"):
+                domains[offset] = (name, values)
+    return domains
+
+
+def _command_access(tokens, offset):
+    following = [token[0] for token in tokens[offset + 1:offset + 3]]
+    start = offset + 1
+    if following[:2] == ["?", "."]:
+        start += 2
+    elif following[:1] == ["."]:
+        start += 1
+    elif following[:1] != ["["]:
+        return None
+    if start == len(tokens):
+        return None
+    if tokens[start][0] == "[":
+        if start + 2 >= len(tokens) or tokens[start + 2][0] != "]":
+            return None
+        name = _literal(tokens[start + 1][0])
+        method, begin = start + 1, start + 3
+    else:
+        name = tokens[start][0]
+        method, begin = start, start + 1
+    return (name, method, begin) if name in ("command", "addCommand") else None
+
+
+def _registrations(text, receiver):
+    tokens = [match for match in _TOKENS.finditer(text) if match.lastgroup != "comment"]
+    domains = _command_loop_domains(tokens, receiver)
+    found, unresolved = [], []
+    for offset, token in enumerate(tokens):
+        if token[0] != receiver or offset and tokens[offset - 1][0] in (".", "#"):
+            continue
+        access = _command_access(tokens, offset)
+        if access is None:
+            continue
+        name, method, begin = access
+        line = text.count("\n", 0, tokens[method].start()) + 1
+        if name == "addCommand":
+            unresolved.append((line, "Commander addCommand requires explicit registration review"))
+            continue
+        if [t[0] for t in tokens[begin:begin + 2]] == ["?", "."]:
+            begin += 2
+        arguments = [t[0] for t in tokens[begin:begin + 3]]
+        names = []
+        if len(arguments) == 3 and arguments[0] == "(" and arguments[2] in (")", ","):
+            value = arguments[1]
+            literal = _command_name(_literal(value))
+            if literal:
+                names = [literal]
+            elif offset in domains and domains[offset][0] == value:
+                names = domains[offset][1]
+        if names:
+            found.extend((name, line) for name in names)
+        else:
+            unresolved.append((line, "Commander command registration name could not be resolved"))
+    return found, unresolved
 
 
 def _jsx_attributes(tokens, start):
@@ -222,13 +300,17 @@ def scan(contract, read_blob):
             try:
                 if kind == "jsx-options":
                     found = _jsx_options(text, source["component"], source["label_key"])
+                    unresolved = []
                 else:
-                    found = list(_registrations(text, source["receiver"]))
+                    found, unresolved = _registrations(text, source["receiver"])
             except ValueError as problem:
                 errors.append({"namespace": namespace, "path": path, "blob": blob, "error": str(problem)})
                 continue
-            if not found:
-                errors.append({"namespace": namespace, "path": path, "error": "no literal command registrations found"})
+            errors.extend({"namespace": namespace, "path": path, "blob": blob, "line": line, "error": problem}
+                          for line, problem in unresolved)
+            if not found and not unresolved:
+                errors.append({"namespace": namespace, "path": path, "blob": blob,
+                               "error": "no command registrations found on the declared receiver"})
             for name, line in found:
                 key = f"{namespace} {name}"
                 if key in kinds and kinds[key] != kind:

@@ -24,9 +24,21 @@
         "install": "Needs a separate writable fixture and install provenance assertions.",
         "update": "A version-changing ClawHub fixture must be set up before testing updates.",
         "verify": "Requires a controlled ClawHub response and package provenance fixture.",
-        "workshop": "Archive and restore need a disposable learned-skill state history.",
+        "workshop": "The parent opens help; the Workshop operations use their own scope.",
         "library": "Needs an authenticated test account and an isolated library or service fixture.",
         "search": "Needs a controlled search backend and test catalogue."
+      }
+    },
+    {
+      "namespace": "openclaw skills workshop",
+      "sources": [
+        {
+          "path": "src/cli/skills-cli.ts",
+          "receiver": "workshop"
+        }
+      ],
+      "excluded": {
+        "changes": "Requires a fixture for history ordering and limit behavior."
       }
     },
     {
@@ -100,6 +112,26 @@
       "entrypoints": [
         "openclaw skills list",
         "openclaw skills info"
+      ]
+    },
+    {
+      "id": "workshop-roundtrip",
+      "helper": "workshop-roundtrip.mjs",
+      "marker": "VERIFY_OPENCLAW_WORKSHOP_ROUNDTRIP_PASS",
+      "reach": "Open a local OpenClaw terminal with a disposable learned Workshop skill.",
+      "drive": "List the skill, archive it, list it as archived, restore it, and inspect the restored content using the CLI.",
+      "observe": "The skill moves from current to archived and back. The CLI reads the original skill content after restoration.",
+      "gotchas": "The exercise uses only temporary state with no live Gateway or provider credentials.",
+      "source": [
+        {"path": "src/cli/skills-cli.ts", "contains": "for (const method of [\"archive\", \"restore\"] as const)"},
+        {"path": "src/skills/workshop/library.ts", "contains": "export async function archiveWorkshopSkill"},
+        {"path": "src/skills/workshop/library.ts", "contains": "export async function restoreWorkshopSkill"}
+      ],
+      "entrypoints": [
+        "openclaw skills workshop list",
+        "openclaw skills workshop show",
+        "openclaw skills workshop archive",
+        "openclaw skills workshop restore"
       ]
     },
     {

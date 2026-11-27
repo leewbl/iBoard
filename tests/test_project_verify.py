@@ -240,6 +240,123 @@ class ProjectVerificationTests(unittest.TestCase):
         self.assertFalse((self.root / 'incomplete' / 'verify-fixture').exists())
         self.assertIn('inventory needs map corrections', proof['reason'])
 
+    def use_commander_inventory(self, first, second):
+        namespace = 'fixture skills'
+        self.contract['entrypoint_inventory'] = [
+            {'namespace': namespace, 'sources': [{'path': 'register.ts', 'receiver': 'skills'}],
+             'excluded': {}}
+        ]
+        self.contract['features'][0]['entrypoints'] = [f'{namespace} {name}' for name in first]
+        self.contract['features'][1]['entrypoints'] = [f'{namespace} {name}' for name in second]
+        self.manifest.write_text(json.dumps(self.contract))
+        return namespace
+
+    def commit_commander_source(self, source):
+        path = self.repo / 'register.ts'
+        path.write_text(source)
+        cli.git(self.repo, 'add', 'register.ts')
+        cli.git(self.repo, 'commit', '-qm', 'fixture command registrations')
+        self.revision = cli.sha(self.repo, 'HEAD')
+        return path
+
+    def test_commander_inventory_resolves_literal_signatures_and_fixed_loops(self):
+        namespace = self.use_commander_inventory(('info', 'status'), ('archive', 'restore'))
+        original = (
+            "// skills.command('commented');\n"
+            "const example = \"skills.command('quoted')\";\n"
+            "skills.command('info <name>');\n"
+            "skills['command']('status', { hidden: true });\n"
+            "for (const method of ['archive', 'restore'] as const) {\n"
+            "  const description = describe(method);\n"
+            "  skills\n"
+            "    .command(method)\n"
+            "    .description(description);\n"
+            "}\n"
+        )
+        path = self.commit_commander_source(original)
+        previous = self.revision
+        baseline = project_verify.discover(repo=self.repo, revision=previous,
+                                           out=self.root / 'original-cli', manifest=self.manifest)
+        self.assertEqual(baseline['outcome'], 'mapped')
+        self.assertEqual(baseline['entrypoints']['errors'], [])
+
+        changed = original.replace("'restore'", "'remove'")
+        self.commit_commander_source(changed)
+        path.write_text(changed.replace("'remove'", "'only-in-worktree'"))
+        report = project_verify.discover(repo=self.repo, revision=self.revision, since=previous,
+                                         out=self.root / 'changed-cli', manifest=self.manifest)
+        self.assertEqual(report['outcome'], 'review-required')
+        self.assertEqual(report['comparison']['added'], [f'{namespace} remove'])
+        self.assertEqual(report['comparison']['removed'], [f'{namespace} restore'])
+        inventory = report['entrypoints']
+        self.assertEqual(inventory['errors'], [])
+        self.assertEqual(inventory['unmapped'], [f'{namespace} remove'])
+        self.assertEqual(inventory['stale'], [f'{namespace} restore'])
+        entries = {row['command']: row for row in inventory['entries']}
+        expected = {'info': (3, 'mapped'), 'status': (4, 'mapped'),
+                    'archive': (8, 'mapped'), 'remove': (8, 'unmapped')}
+        self.assertEqual(set(entries), {f'{namespace} {name}' for name in expected})
+        blob = cli.git(self.repo, 'rev-parse', f'{self.revision}:register.ts')
+        for name, (line, status) in expected.items():
+            self.assertEqual(entries[f'{namespace} {name}']['status'], status)
+            self.assertEqual(entries[f'{namespace} {name}']['locations'],
+                             [{'path': 'register.ts', 'blob': blob, 'line': line}])
+
+    def test_unresolved_commander_registrations_block_create_and_maintenance(self):
+        namespace = self.use_commander_inventory(('info',), ('status',))
+        literal = 'skills.command("info");\nskills.command("status");\n'
+        self.commit_commander_source(literal)
+        bundle = self.create()
+        cases = {
+            'dynamic-name': ('skills.command(resolveName());\n', 3),
+            'dynamic-bracket-name': ('skills["command"](resolveName());\n', 3),
+            'dynamic-iterable': ('for (const method of loadMethods()) {\n  skills.command(method);\n}\n', 4),
+            'shadowed-block': (
+                'for (const method of ["archive"] as const) {\n'
+                '  {\n'
+                '    const method = resolveName();\n'
+                '    skills.command(method);\n'
+                '  }\n'
+                '}\n',
+                6,
+            ),
+            'shadowed-callback': (
+                'for (const method of ["archive"] as const) {\n'
+                '  run((method) => skills.command(method));\n'
+                '}\n',
+                4,
+            ),
+            'shadowed-arrow-expression': (
+                'for (const method of ["archive"] as const) {\n'
+                '  const register = (method) => skills.command(method);\n'
+                '}\n',
+                4,
+            ),
+            'prebuilt-command': ('skills.addCommand(prebuilt);\n', 3),
+        }
+        for case, (source, line) in cases.items():
+            with self.subTest(case=case):
+                self.commit_commander_source(literal + source)
+                blob = cli.git(self.repo, 'rev-parse', f'{self.revision}:register.ts')
+                discovered = project_verify.discover(repo=self.repo, revision=self.revision,
+                                                      out=self.root / case, manifest=self.manifest)
+                self.assertEqual(discovered['outcome'], 'review-required')
+                created = self.run_mode('create', f'create-{case}', manifest=self.manifest, helpers=self.helpers)
+                self.assertEqual(created['outcome'], 'blocked')
+                self.assertEqual(created['features'], {'first': 'passed'})
+                self.assertFalse((self.root / f'create-{case}' / 'verify-fixture').exists())
+                maintained = self.run_mode('maintain', f'maintain-{case}', skill=bundle)
+                self.assertEqual(maintained['outcome'], 'blocked')
+                self.assertEqual(maintained['features'], {'first': 'passed', 'second': 'passed'})
+                for result in (discovered, created, maintained):
+                    inventory = result['entrypoints']
+                    self.assertEqual(inventory['stale'], [])
+                    self.assertEqual(inventory['unmapped'], [])
+                    self.assertEqual([row['command'] for row in inventory['entries']],
+                                     [f'{namespace} info', f'{namespace} status'])
+                    self.assertEqual({(row['path'], row['blob'], row['line']) for row in inventory['errors']},
+                                     {('register.ts', blob, line)})
+
     def use_session_status_inventory(self):
         namespace = 'fixture sessions status'
         self.contract['surface'] = 'Fixture CLI and Sessions UI'

@@ -24,7 +24,7 @@ class GatewayGateTests(unittest.TestCase):
         self.addCleanup(changed_paths.stop)
 
     def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None,
-                skills_inspect_image=None, config_image=None, rename=False, delete=False, status_filter=False,
+                skills_inspect_image=None, config_image=None, workshop_image=None, rename=False, delete=False, status_filter=False,
                 browser_receipt=True, same_container=False, restart=None, deletion=None, list_scope='all',
                 filter_fault=None, rename_fields=None):
         refs = {}
@@ -37,6 +37,8 @@ class GatewayGateTests(unittest.TestCase):
             journeys['skills-inspect'] = skills_inspect_image
         if config_image is not None:
             journeys['config-validate'] = config_image
+        if workshop_image is not None:
+            journeys['workshop-roundtrip'] = workshop_image
         if rename:
             journeys[verify_openclaw.SESSION_RENAME] = gateway_image
         if delete:
@@ -200,6 +202,21 @@ class GatewayGateTests(unittest.TestCase):
         self.reports(config_image='sha256:' + 'f' * 64)
         receipts = verify_openclaw.require(self.data, self.head, self.destination)
         self.assertEqual(set(receipts), {'gateway-health', 'config-validate'})
+
+    def test_workshop_changes_require_two_matching_roundtrip_receipts(self):
+        image = 'sha256:' + 'f' * 64
+        for changed in ('src/cli/skills-cli.ts', 'src/skills/workshop/library.ts'):
+            with self.subTest(changed=changed):
+                self.changed_paths.return_value = changed + '\0'
+                self.reports(skills_image=image, skills_inspect_image=image)
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'workshop-roundtrip'):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+                self.reports(skills_image=image, skills_inspect_image=image, workshop_image='sha256:' + 'e' * 64)
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'workshop-roundtrip'):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+                self.reports(skills_image=image, skills_inspect_image=image, workshop_image=image)
+                receipts = verify_openclaw.require(self.data, self.head, self.destination)
+                self.assertEqual(len(receipts['workshop-roundtrip']), 2)
 
     def test_connected_ui_requires_a_bound_screenshot_in_its_own_output(self):
         journey = 'control-ui-connected'

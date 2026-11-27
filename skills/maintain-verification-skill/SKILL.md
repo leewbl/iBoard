@@ -13,7 +13,7 @@ python3 -m workbench.project_verify discover --repo "$TARGET_REPO" --revision "$
   --manifest "$SKILL_DIR/contract.json" --out "$DISCOVERY_EVIDENCE"
 ```
 
-`discover` matches literal Commander registrations on declared receivers and inline option values in declared JSX controls. It records the Git blob and line for mapped, excluded, and unmapped entrypoints. Use `--since "$PREVIOUS_REVISION"` to compare named entrypoints across commits. A declared JSX control with dynamic options or ambiguous bindings requires review. Inspect dynamic command registrations, other controls, and routes outside the declared scopes separately. Require a source location and a user entry point before proposing a missing feature.
+`discover` reads Commander registrations on declared receivers and inline option values in declared JSX controls. It resolves quoted command names and direct registrations inside fixed arrays of names, such as OpenClaw's Workshop archive and restore loop. Registrations that use an unresolved name or `addCommand`, and JSX controls with ambiguous options, require review. The report keeps the Git blob and line for each known entrypoint and each unresolved registration. Use `--since "$PREVIOUS_REVISION"` to compare named entrypoints across commits. Inspect receiver aliases, indirect registration helpers, other controls, and routes outside the declared scopes separately. Require a source location and a user entry point before proposing a missing feature.
 
 ```sh
 python3 -m workbench.project_verify maintain --repo "$TARGET_REPO" --revision "$REVISION" \
