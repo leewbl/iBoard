@@ -252,6 +252,11 @@ SCENARIOS = {
         'skills/ketchup-video/SKILL.md', 'ketchup_video collect',
         'Exact transcript window, approved visual evidence, subtitled MP4 and per-slide frame measurements',
         'Select the invocation line and existing task artifacts. Render outside the target repository.'),
+    'make-bot-ui': Scenario(
+        'Trigger named iBoard routines from a local or tailnet page', 'skills/make-bot-ui/SKILL.md',
+        'skills/make-bot-ui/SKILL.md', 'bot_ui create',
+        'Panel and sender key separation, webhook receipt, scoped action and retained failed delivery',
+        'Native routines work locally. Cursor webhooks and tailnet access require the corresponding accounts.'),
     'generate-verify': Scenario(
         'Create a project-specific verification skill', 'skills/create-verification-skill/SKILL.md',
         'skills/create-verification-skill/SKILL.md', 'project_verify create',

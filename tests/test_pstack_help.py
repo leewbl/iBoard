@@ -20,6 +20,7 @@ class PstackHelpTests(unittest.TestCase):
             'setup-models': 'model_profiles probe',
             'poteto-mode': 'poteto_mode list',
             'ketchup-video': 'ketchup_video collect',
+            'make-bot-ui': 'bot_ui create',
             'bro': 'intent_review collect --mode bro',
             'in-your-own-words': 'intent_review collect --mode in-your-own-words',
             'reframe': 'intent_review collect --mode reframe',
@@ -64,7 +65,7 @@ class PstackHelpTests(unittest.TestCase):
 
     def test_catalog_only_and_prompt_guidance_have_no_runnable_route(self):
         for name, expected_status in (
-            ('make-bot-ui', 'catalog-only'),
+            ('automations/benny/templates/triage-automation-prompt.md', 'catalog-only'),
             ('principle-prove-it-works', 'guidance-only'),
         ):
             with self.subTest(name=name):

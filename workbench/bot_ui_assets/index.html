@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>iBoard</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="brand"><span class="mark" aria-hidden="true">i</span><span>iBoard</span></header>
+  <main>
+    <h1 id="title">工作流面板</h1>
+    <section class="controls" aria-labelledby="controls">
+      <h2 id="controls">触发操作</h2>
+      <div class="access">
+        <label for="access" id="access-label">面板访问密钥</label>
+        <input id="access" type="password" minlength="20" maxlength="240" required autocomplete="off" spellcheck="false">
+      </div>
+      <div id="actions"></div>
+    </section>
+    <section class="outcome" aria-labelledby="outcome">
+      <h2 id="outcome">最近请求</h2>
+      <div id="live" role="status" aria-live="polite"><p id="state">等待选择操作。</p><p id="detail" hidden></p></div>
+      <button id="refresh" type="button" hidden>查看结果</button>
+      <button id="drain" type="button" hidden>处理保留的请求</button>
+    </section>
+  </main>
+</body>
+</html>
