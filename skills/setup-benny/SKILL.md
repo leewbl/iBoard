@@ -45,6 +45,12 @@ Set `source_notice_identity` inside the `reproduce` worker policy to an approved
 
 The claim window starts from the later of confirmed reproduction and reply time. Later ownership checks recognize only the exact confirmed reply recorded in `source-notice.json`. Any additional message, edit or claim still pauses repair or draft delivery. An uncertain write is reconciled with the original thread. The coordinator preserves the intent when Slack cannot confirm the reply.
 
+### Approve a corrected setup before the run
+
+With source notices enabled, set `corrections` inside `reproduce` to a map from setup names to operator-approved `manifest`, `helpers`, and `oracle` paths. Benny freezes each setup before launching the original verification. A setup may change how the app is prepared and driven. The project, expected observation, success and failure markers, independent oracle outcomes and media requirements stay fixed.
+
+During the original claim window, the reporter can reply `Correction: setup: clean-state` to select the configured `clean-state` setup. At the end of that same window, Benny runs the selected setup once against the original commit and image. The original evidence and the corrected evidence remain in separate directories. Repair uses only a confirmed corrected result. A late or unapproved correction, a second correction, a claim, or an edit to the report holds the workflow for inspection.
+
 ## Read or verify one approved report
 
 Copy [configuration.example.json](configuration.example.json) to a project-specific file outside the target checkout. Fill in the Slack workspace, source channel, configured triage identity, GitHub target and time limits. Use a separate configuration for another source channel. Store the Slack credential in an owner-only file and supply it to iBoard as a path through `--token-file`. Keep it out of the project, configuration and any model prompt.

@@ -462,3 +462,103 @@ class BennyAutomationTests(unittest.TestCase):
         self.assertEqual(len(self.source.fixture.sent), 1)
         run.assert_called_once()
         draft.assert_not_called()
+
+    def queue_correctable_repair(self, event):
+        runtime, reproduce, prepare = self.queue_repair(event, claim_seconds=30)
+        variant = self.root/'clean-state'
+        variant.mkdir()
+        manifest = json.loads(runtime.manifest.read_text())
+        manifest['features'][0]['drive'] = 'Clear the fixture cache, then read the named item.'
+        (variant/'manifest.json').write_text(json.dumps(manifest))
+        shutil.copytree(runtime.helpers, variant/'helpers')
+        main = variant/'helpers/main.sh'
+        main.write_text('# Clear the fixture cache before reading.\n' + main.read_text())
+        (variant/'oracle.sh').write_text('# Read the fixture without cached data.\n' + runtime.oracle.read_text())
+        self.opts['reproduce'].update(
+            source_notice_identity=TRIAGE,
+            corrections={'clean-state': {'manifest': 'clean-state/manifest.json',
+                                         'helpers': 'clean-state/helpers', 'oracle': 'clean-state/oracle.sh'}})
+        cli.write(self.policy, self.opts)
+        self.source.fixture.reply_behavior = 'accepted'
+        return runtime, reproduce, prepare
+
+    def correct_setup(self, waiting):
+        self.assertEqual(waiting['status'], 'waiting-claim')
+        deadline = datetime.fromisoformat(waiting['ready_at']).timestamp()
+        correction = reply(120, 'Correction: setup: clean-state', user=self.source.fixture.root['user'],
+                           ts=f'{int(deadline) - 1}.000000')
+        self.source.fixture.pages[-1].append(correction)
+        return deadline
+
+    def test_correction_reuses_a_completed_rerun_after_worker_interruption(self):
+        event = 'Ev987CORRECTED'
+        _, reproduce, prepare = self.queue_correctable_repair(event)
+        writer = self.source.fixture.writer
+
+        def interrupted_reproduction(**options):
+            report = reproduce(**options)
+            if Path(options['out']).parent.name == 'correction':
+                raise KeyboardInterrupt('stopped after corrected reproduction')
+            return report
+
+        with patch.object(benny_reproduce, 'reproduce', side_effect=interrupted_reproduction) as run, \
+             patch.object(benny_reproduce, 'prepare_repair', side_effect=prepare) as native_prepare, \
+             patch.object(benny_draft, 'deliver', return_value={'status': 'draft'}) as draft:
+            waiting = self.work(event, source_notice_writer=writer)
+            deadline = self.correct_setup(waiting)
+            draft.assert_not_called()
+            with patch.object(benny_automation.time, 'time', return_value=deadline + 1):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.work(event, source_notice_writer=writer)
+                native_prepare.assert_not_called()
+                result = self.work(event, source_notice_writer=writer)
+                self.assertEqual(self.work(event, source_notice_writer=writer), result)
+        self.assertEqual(result['status'], 'draft')
+        self.assertEqual(run.call_count, 2)
+        native_prepare.assert_called_once()
+        draft.assert_called_once()
+        original = waiting['reproduction']
+        self.assertEqual(cli.digest(original['path']), original['sha256'])
+        notice = waiting['source_notice']
+        self.assertEqual(cli.digest(notice['path']), notice['sha256'])
+        rerun = Path(run.call_args.kwargs['out'])/'result.json'
+        self.assertNotEqual(str(rerun), original['path'])
+        corrected = cli.read(rerun)
+        self.assertEqual(corrected['status'], 'reproduced')
+        self.assertEqual(corrected['claim_seconds'], 0)
+        _, route = benny.load_route(corrected['route']['path'], corrected['route']['sha256'])
+        self.assertEqual(route['snapshot']['messages'][-1]['text'], 'Correction: setup: clean-state')
+        self.assertEqual(cli.read(rerun.with_name('contract.json'))['journey']['drive'],
+                         'Clear the fixture cache, then read the named item.')
+        self.assertEqual(Path(native_prepare.call_args.kwargs['receipt']), rerun)
+        self.assertEqual(native_prepare.call_args.kwargs['sha256'], cli.digest(rerun))
+        self.assertEqual(len(self.source.fixture.sent), 1)
+
+    def test_healthy_corrected_setup_keeps_both_reports_and_does_not_prepare_repair(self):
+        event = 'Ev987CORRHEALTHY'
+        runtime, reproduce, _ = self.queue_correctable_repair(event)
+        writer = self.source.fixture.writer
+
+        def healthy_reproduction(**options):
+            if Path(options['out']).parent.name == 'correction':
+                for probe in ('MAIN', 'ORACLE'):
+                    runtime.states[(test_project_triage.BASE_IMAGE, probe)] = 'pass'
+            return reproduce(**options)
+
+        with patch.object(benny_reproduce, 'reproduce', side_effect=healthy_reproduction) as run, \
+             patch.object(benny_reproduce, 'prepare_repair') as prepare, \
+             patch.object(benny_draft, 'deliver') as draft:
+            waiting = self.work(event, source_notice_writer=writer)
+            deadline = self.correct_setup(waiting)
+            with patch.object(benny_automation.time, 'time', return_value=deadline + 1):
+                result = self.work(event, source_notice_writer=writer)
+                self.assertEqual(self.work(event, source_notice_writer=writer), result)
+        self.assertEqual(result['status'], 'not-reproduced')
+        self.assertEqual(run.call_count, 2)
+        prepare.assert_not_called()
+        draft.assert_not_called()
+        original = waiting['reproduction']
+        self.assertEqual(cli.digest(original['path']), original['sha256'])
+        corrected = cli.read(Path(run.call_args.kwargs['out'])/'result.json')
+        self.assertEqual(corrected['status'], 'not-reproduced')
+        self.assertEqual(len(self.source.fixture.sent), 1)

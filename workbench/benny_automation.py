@@ -10,8 +10,9 @@ from pathlib import Path
 import socket
 import time
 
-from workbench import (autopilot, benny, benny_deploy, benny_draft, benny_events, benny_handoff, benny_notice, benny_operations,
-                       benny_repair, benny_reproduce, benny_triage, cli, delivery, project_verify, publish, start)
+from workbench import (autopilot, benny, benny_correction, benny_deploy, benny_draft, benny_events, benny_handoff,
+                       benny_notice, benny_operations, benny_repair, benny_reproduce, benny_triage, cli, delivery,
+                       project_verify, publish, start)
 from workbench.benny_slack import CHANNEL, STAMP, USER, Slack, SlackWriter
 from workbench.task_lock import TaskBusy, task_lock
 
@@ -20,7 +21,7 @@ TRIAGE_OPTIONS = {'selections', 'terms', 'routing_map', 'seconds', 'model_name',
 REPRO_OPTIONS = {'image', 'manifest', 'helpers', 'journey', 'oracle', 'oracle_marker', 'oracle_failure_marker', 'memory_mb'}
 VISUAL_OPTIONS = {'baseline_visible', 'candidate_visible'}
 HANDOFF_SECONDS = 90
-REPRO_CHECKPOINTS = {'opening-operations', 'reproducing', 'prepare-repair', 'repair', 'reporting-operations'}
+REPRO_CHECKPOINTS = {'opening-operations', 'reproducing', 'correcting', 'prepare-repair', 'repair', 'reporting-operations'}
 OPERATIONS_START = {'verify-existing': 'Verifying existing fix', 'eligible-for-reproduction': 'Reproducing'}
 OPERATIONS_RESULT = {'confirmed': 'Existing fix verified', 'reproduced': 'Reproduced', 'waiting-claim': 'Reproduced',
                      'not-reproduced': 'Could not reproduce', 'inconclusive': 'Could not reproduce',
@@ -134,7 +135,8 @@ def _policy(path, role):
         raise ValueError('worker policy needs the selected Benny role')
     own = all_roles[role]
     permitted = (TRIAGE_OPTIONS | {'apply_verdict', 'labels', 'followup_seconds'} if role == 'triage'
-                 else REPRO_OPTIONS | VISUAL_OPTIONS | {'claim_seconds', 'repair', 'operations', 'source_notice_identity'})
+                 else REPRO_OPTIONS | VISUAL_OPTIONS | {'claim_seconds', 'repair', 'operations', 'source_notice_identity',
+                                                        'corrections'})
     if own.keys() - permitted:
         raise ValueError('unknown option for the selected Benny role')
     if role == 'triage' and type(own.get('apply_verdict', False)) is not bool:
@@ -155,6 +157,16 @@ def _policy(path, role):
         if key in own and own[key] is not None:
             requested = Path(own[key]).expanduser()
             own[key] = str((path.parent / requested).resolve(strict=True))
+    if 'corrections' in own:
+        variants = own['corrections']
+        files = {'manifest', 'helpers', 'oracle'}
+        if (not own.get('source_notice_identity') or not isinstance(variants, dict) or not 1 <= len(variants) <= 8
+                or any(not isinstance(value, dict) or value.keys() != files
+                       or any(not isinstance(item, str) or not item for item in value.values())
+                       for value in variants.values())):
+            raise ValueError('Benny corrections need a source notice and named approved setup files')
+        own['corrections'] = {name: {key: str((path.parent / Path(item).expanduser()).resolve(strict=True))
+                                    for key, item in paths.items()} for name, paths in variants.items()}
     return own, hashlib.sha256(raw).hexdigest()
 
 
@@ -249,44 +261,15 @@ def _report_reproduction(path, reference, proof, *, identity, slack, writer, ope
     return retained, benny_reproduce._confirmed_notice(retained, reference, proof)
 
 
-def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, prior=None, operations=None,
-               source_writer=None):
-    if route['status'] == 'verify-existing':
-        confirmed = benny.verify(slack=slack, receipt=route['receipt'], sha256=route['sha256'],
-                                 out=out/'existing', **runtime)
-        return {'status': confirmed['outcome'], 'existing': _ref(out/'existing/result.json')}
-    path = out/'reproduction/result.json'
-    if prior:
-        reference, proof = _retained_reproduction(path, route, project, prior)
-    else:
-        checkpoint(phase='reproducing')
-        proof = benny_reproduce.reproduce(slack=slack, route=route['receipt'], sha256=route['sha256'],
-                                           revision=project['revision'], out=out/'reproduction',
-                                           seconds=rules['verification_seconds'], **runtime,
-                                           **{key: opts[key] for key in VISUAL_OPTIONS | {'claim_seconds'} if key in opts})
-        reference = _ref(path)
-    result = {'status': proof['status'], 'reproduction': reference}
-    repair = opts.get('repair')
-    if proof['status'] != 'reproduced':
+def _repair_reproduction(result, proof, repair, *, slack, out, checkpoint, prior, operations):
+    if not repair or proof['status'] != 'reproduced':
         return result
-    notice = None
-    if identity := opts.get('source_notice_identity'):
-        retained = prior.get('source_notice') if prior else None
-        if prior and prior.get('phase') != 'reproducing' and retained is None:
-            raise ValueError('Benny repair checkpoint lost its confirmed source notice')
-        result['source_notice'], notice = _report_reproduction(out/'source-notice.json', reference, proof,
-                                                               identity=identity, slack=slack, writer=source_writer,
-                                                               operations=operations, retained=retained)
-    if not repair:
-        return result
-    ready_at = benny_reproduce._claim_ready_at(proof, notice)
-    if time.time() < ready_at:
-        return {**result, 'status': 'waiting-claim', 'ready_at': datetime.fromtimestamp(ready_at, timezone.utc).isoformat()}
+    reference = result['reproduction']
     task_id = 'benny-' + _hash(out.name)[:32]
     task = out/'tasks'/task_id/'task.json'
     phase = prior.get('phase') if prior else None
-    notice_reference = result.get('source_notice')
-    bindings = {key: result[key] for key in ('reproduction', 'source_notice') if key in result}
+    notice_reference = None if 'corrected_route' in result else result.get('source_notice')
+    bindings = {key: value for key, value in result.items() if key != 'status'}
     if phase in ('prepare-repair', 'repair'):
         if prior.get('task') != str(task):
             raise ValueError('Benny checkpoint refers to a different repair task')
@@ -312,6 +295,104 @@ def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, 
         _report_repair_failure(operations, task)
         raise
     return {**result, 'status': completed['status'], 'task': str(task), 'repair': completed}
+
+
+def _measure_reproduction(route, opts, runtime, *, project, rules, slack, out, claim_seconds=None):
+    settings = {key: opts[key] for key in VISUAL_OPTIONS | {'claim_seconds'} if key in opts}
+    if claim_seconds is not None:
+        settings['claim_seconds'] = claim_seconds
+    proof = benny_reproduce.reproduce(slack=slack, route=route['receipt'], sha256=route['sha256'],
+                                      revision=project['revision'], out=out, seconds=rules['verification_seconds'],
+                                      **runtime, **settings)
+    return _ref(out/'result.json'), proof
+
+
+def _corrected_reproduction(opts, runtime, *, project, rules, slack, out, checkpoint, prior, operations, launch=False):
+    route_ref = prior['corrected_route']
+    route_path = out/'correction/source/route.json'
+    if route_path.is_symlink() or route_ref != _ref(route_path):
+        raise ValueError('Benny corrected route changed before verification')
+    _, frozen = benny.load_route(route_ref['path'], route_ref['sha256'])
+    correction = frozen['correction']
+    original = {key: prior[key] for key in ('source_notice', 'original_reproduction', 'correction_options', 'corrected_route')}
+    if (correction['initial'] != original['original_reproduction'] or correction['notice'] != original['source_notice']
+            or correction['archive'] != original['correction_options']):
+        raise ValueError('Benny corrected route no longer matches its original receipts')
+    initial = original['original_reproduction']
+    _, initial_proof, _, _ = benny_reproduce._approved(initial['path'], initial['sha256'])
+    benny_reproduce._confirmed_notice(original['source_notice'], initial, initial_proof)
+    route = {'receipt': route_ref['path'], 'sha256': route_ref['sha256']}
+    path = out/'correction/reproduction'
+    if launch:
+        corrected = benny_correction.options(original['correction_options'], correction['variant'], runtime)
+        corrected['image'] = initial_proof['image']
+        reference, proof = _measure_reproduction(route, opts, corrected, project=project, rules=rules, slack=slack,
+                                                 out=path, claim_seconds=0)
+        if proof['status'] == 'reproduced':
+            _, proof, _, _ = benny_reproduce._approved(reference['path'], reference['sha256'])
+    else:
+        previous = {'phase': 'reproducing'} if prior['phase'] == 'correcting' else prior
+        reference, proof = _retained_reproduction(path/'result.json', route, project, previous)
+    if proof.get('image', initial_proof['image']) != initial_proof['image']:
+        raise ValueError('Benny corrected verification changed the original image')
+    result = {**original, 'status': proof['status'], 'reproduction': reference}
+    return _repair_reproduction(result, proof, opts.get('repair'), slack=slack, out=out, checkpoint=checkpoint,
+                                prior=prior, operations=operations)
+
+
+def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, prior=None, operations=None,
+               source_writer=None):
+    if route['status'] == 'verify-existing':
+        confirmed = benny.verify(slack=slack, receipt=route['receipt'], sha256=route['sha256'],
+                                 out=out/'existing', **runtime)
+        return {'status': confirmed['outcome'], 'existing': _ref(out/'existing/result.json')}
+    if prior and 'corrected_route' in prior:
+        return _corrected_reproduction(opts, runtime, project=project, rules=rules, slack=slack, out=out,
+                                       checkpoint=checkpoint, prior=prior, operations=operations)
+    options_path = out/'correction-options.json'
+    archive = None
+    if prior:
+        if opts.get('corrections'):
+            archive = prior.get('correction_options')
+            if options_path.is_symlink() or archive != _ref(options_path):
+                raise ValueError('Benny approved correction options changed during the window')
+        reference, proof = _retained_reproduction(out/'reproduction/result.json', route, project, prior)
+    else:
+        if variants := opts.get('corrections'):
+            archive = benny_correction.freeze(options_path, variants, runtime)
+        checkpoint(phase='reproducing', **({'correction_options': archive} if archive else {}))
+        reference, proof = _measure_reproduction(route, opts, runtime, project=project, rules=rules, slack=slack,
+                                                 out=out/'reproduction')
+    result = {'status': proof['status'], 'reproduction': reference}
+    if archive:
+        result['correction_options'] = archive
+    if proof['status'] != 'reproduced':
+        return result
+    notice = None
+    if identity := opts.get('source_notice_identity'):
+        retained = prior.get('source_notice') if prior else None
+        if prior and prior.get('phase') != 'reproducing' and retained is None:
+            raise ValueError('Benny repair checkpoint lost its confirmed source notice')
+        result['source_notice'], notice = _report_reproduction(out/'source-notice.json', reference, proof,
+                                                               identity=identity, slack=slack, writer=source_writer,
+                                                               operations=operations, retained=retained)
+    if not opts.get('repair') and not archive:
+        return result
+    ready_at = benny_reproduce._claim_ready_at(proof, notice)
+    if time.time() < ready_at:
+        return {**result, 'status': 'waiting-claim', 'ready_at': datetime.fromtimestamp(ready_at, timezone.utc).isoformat()}
+    if archive and (not prior or prior.get('phase') not in ('prepare-repair', 'repair')):
+        corrected = benny_correction.select(initial=reference, notice=result['source_notice'], archive=archive,
+                                            slack=slack, ready_at=ready_at, out=out/'correction/source')
+        if corrected:
+            if operations:
+                operations.status('Reproducing')
+            saved = checkpoint(phase='correcting', corrected_route=corrected, original_reproduction=reference,
+                               source_notice=result['source_notice'], correction_options=archive)
+            return _corrected_reproduction(opts, runtime, project=project, rules=rules, slack=slack, out=out,
+                                           checkpoint=checkpoint, prior=saved, operations=operations, launch=True)
+    return _repair_reproduction(result, proof, opts.get('repair'), slack=slack, out=out, checkpoint=checkpoint,
+                                prior=prior, operations=operations)
 
 
 def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, source_writer, out, checkpoint, prior=None):

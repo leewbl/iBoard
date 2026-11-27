@@ -264,6 +264,10 @@ def _approved(receipt, sha256):
         raise ValueError('Benny reproduction contract or approved driver changed')
     containers = _observations(baseline.parent, cli.read(baseline), contract, report['base'], report['image'],
                                'observed-failure')
+    _, route = benny.load_route(report['route']['path'], report['route']['sha256'])
+    if 'correction' in route:
+        from workbench import benny_correction
+        benny_correction.audit(path, report, contract, route)
     return path, report, contract, containers
 
 
