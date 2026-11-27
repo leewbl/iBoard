@@ -355,7 +355,7 @@ async function writeTrace(session) {
   }
 }
 
-async function capture(browser, spec) {
+async function capture(browser, spec, browserProbe) {
   const context = await browser.newContext({
     viewport: { width: 1200, height: 800 }, serviceWorkers: 'block', acceptDownloads: false,
   });
@@ -427,6 +427,7 @@ async function capture(browser, spec) {
   const before = locator ? await sample(locator) : null;
   await sleep(spec.window_ms);
   const after = locator ? await sample(locator) : null;
+  const probe = browserProbe ? await browserProbe({ page, session: pageSession, send, checkOrigin, origin: spec.origin }) : null;
   await page.evaluate(() => performance.mark('iboard:window-end'));
   const finalRate = await send(pageSession, 'Animation.getPlaybackRate');
   checkOrigin(page);
@@ -439,12 +440,18 @@ async function capture(browser, spec) {
   return {
     kind: 'iboard-browser-trace', port: spec.port, route: spec.route, window_ms: spec.window_ms,
     paused: spec.paused, playback_rate: playbackRate, clicked: Boolean(spec.click),
-    observed: locator ? { before, after } : null, ...scriptEvidence,
+    observed: locator ? { before, after } : null, ...scriptEvidence, ...(probe ? { probe } : {}),
   };
 }
 
 async function main() {
   const spec = request(JSON.parse(await readFile('/workspace/browser-request.json', 'utf8')));
+  let browserProbe = null;
+  if (spec.probe !== undefined) {
+    if (spec.paused) throw new Error('Browser probe cannot be combined with the animation pause');
+    const { prepareBrowserProbe } = await import('./browser-probe.mjs');
+    browserProbe = await prepareBrowserProbe(spec.probe);
+  }
   const home = await mkdtemp('/tmp/iboard-browser-');
   const env = localEnvironment(home, spec.port);
   let browser, server, report;
@@ -456,7 +463,7 @@ async function main() {
       env, headless: true, timeout: 12_000,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
     });
-    report = await capture(browser, spec);
+    report = await capture(browser, spec, browserProbe);
   } finally {
     try {
       if (browser) await bounded(browser.close(), 8_000, 'Chromium shutdown');

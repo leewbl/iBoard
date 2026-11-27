@@ -391,6 +391,11 @@ SCENARIOS = {
         'skills/poteto-mode/playbooks/runtime-forensics.md', 'skills/runtime-forensics/SKILL.md',
         'browser_forensics', 'A raw CDP stream, SQLite analysis and source binding or an explicit unverified location',
         'The page must be on the selected container loopback and use a preinstalled Chromium.'),
+    'test-live-browser-hypothesis': Scenario(
+        'Test a reversible hypothesis against one running browser page',
+        'skills/poteto-mode/playbooks/runtime-forensics.md', 'skills/runtime-forensics/SKILL.md',
+        'browser_forensics --probe', 'Two intervention and restoration rounds with frozen metrics and Chromium trace evidence',
+        'Use a tracked probe manifest with a bounded, reversible change in offline Docker.'),
     'analyze-trace': Scenario(
         'Examine an existing runtime capture', 'skills/poteto-mode/playbooks/trace-forensics.md',
         'skills/trace-forensics/SKILL.md', 'trace_forensics', 'The original artifact digest and findings that refer to decoded data',

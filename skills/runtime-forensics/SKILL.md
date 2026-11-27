@@ -54,4 +54,23 @@ does not by itself identify a separate rendering or application fault.
 Keep raw traces and SQLite evidence with the run. They can contain application
 test data, including request URLs.
 
+Use a committed `--probe PATH.json` for other reversible browser hypotheses.
+The manifest pins a Git-relative JavaScript expression and fixes a sample
+count, settle time, metrics, minimum effect, stability and recovery conditions.
+The expression supplies `setup`, `observe`, `intervene`, `restore` and
+`cleanup`. `observe` returns exactly the declared finite numeric metrics. Use
+the same observation in every phase and change only the input under study.
+Set `--probe-repo` and `--probe-revision` for a probe maintained separately from
+the application, as in the [OpenClaw viewport example](../../examples/openclaw-runtime-probes/shell-viewport.json).
+
+The driver runs the probe through Chromium CDP in one loopback page, with two
+interventions and two restorations. A supported result requires the effect in
+both rounds, stable samples and recovery to the original baseline. The report
+retains the committed probe, samples, and trace markers within the same
+renderer. Keep the conclusion scoped to the controlled input and observed
+signal. Use an explicitly selected probe from reviewed source and a disposable
+test workload.
+
 Report the observed signal, source, comparison, raw artifact and cleanup status. Hand confirmed product findings to the bug or performance workflow. Keep an infrastructure failure attached to its run so automated repair can preserve the candidate without spending a repair iteration.
+
+Throughput checkpoint `n/a, read-only forensics`.

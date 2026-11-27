@@ -16,11 +16,12 @@ import time
 from urllib.parse import unquote, urlsplit
 
 from runner.sandbox import BROWSER_MAPS_ARTIFACT, PROFILE_ARTIFACTS, SandboxError, run_sandbox
-from workbench import browser_source_maps, cli, trace_forensics, workflow
+from workbench import browser_probe, browser_source_maps, cli, trace_forensics, workflow
 from workbench.runtime_forensics import ForensicsError, SKILL, _tracked
 
 
 DRIVER = SKILL / 'capture-browser.mjs'
+PROBE_DRIVER = SKILL / 'browser-probe.mjs'
 ARTIFACT, TRACE_LIMIT = PROFILE_ARTIFACTS['.cdptrace']
 SCRIPT_LIMIT = 2 << 20
 
@@ -209,7 +210,7 @@ def _label_sources(imported, bindings, window, mappings=None):
         'Missing columns and ambiguous thread attribution remain unresolved.')
 
 
-def _trial(repo, revision, image, request, timeout, memory_mb, out):
+def _trial(repo, revision, image, request, timeout, memory_mb, out, *, probe_config=None, probe_source=None):
     out.mkdir(mode=0o700)
     started = time.monotonic()
     pinned = workflow._verified_image(repo, image, min(180, timeout), commit=revision)
@@ -219,17 +220,25 @@ def _trial(repo, revision, image, request, timeout, memory_mb, out):
     artifact = out / ARTIFACT
     maps_output = out / BROWSER_MAPS_ARTIFACT if request.get('source_maps') else None
     helper_sha = cli.digest(DRIVER)
+    probe_helper_sha = cli.digest(PROBE_DRIVER) if probe_config is not None else None
     with TemporaryDirectory(prefix='iboard-browser-trace-') as scratch:
         stage = Path(scratch)
         shutil.copyfile(DRIVER, stage / DRIVER.name)
         if cli.digest(stage / DRIVER.name) != helper_sha:
             raise ForensicsError('browser capture helper changed while staging')
+        if probe_config is not None:
+            shutil.copyfile(PROBE_DRIVER, stage / PROBE_DRIVER.name)
+            if cli.digest(stage / PROBE_DRIVER.name) != probe_helper_sha:
+                raise ForensicsError('browser probe helper changed while staging')
+            trace_forensics._write_private(stage / 'browser-probe.js', probe_source)
         cli.write(stage / 'browser-request.json', request)
         report = run_sandbox(stage, pinned, ['node', '/workspace/' + DRIVER.name], remaining,
                              memory_mb=memory_mb, source_root='/app', workspace_read_only=True,
                              profile_output=artifact, pids_limit=384,
                              browser_maps_output=maps_output)
     report.update(schema=cli.SCHEMA, source_verified_commit=revision, helper_sha256=helper_sha)
+    if probe_config is not None:
+        report['probe_helper_sha256'] = probe_helper_sha
     report_path = out / 'sandbox.json'
     cli.write(report_path, report)
     if (report.get('exit_code') != 0 or not report.get('container_created') or not report.get('cleanup_confirmed')
@@ -243,6 +252,11 @@ def _trial(repo, revision, image, request, timeout, memory_mb, out):
     if loaded[0] != 'chrome':
         raise ForensicsError('the browser capture is not a Chrome trace')
     window = _trace_window(loaded[1])
+    probe_evidence = None
+    if probe_config is not None:
+        probe_evidence = browser_probe.evaluate(probe_config, receipt.get('probe'), loaded[1], window)
+    elif 'probe' in receipt:
+        raise ForensicsError('browser receipt contains an unrequested probe')
     bindings = _bindings(repo, revision, request['port'], receipt)
     mappings = map_evidence = None
     if maps_output is not None:
@@ -258,10 +272,13 @@ def _trial(repo, revision, image, request, timeout, memory_mb, out):
               'script_bindings':bindings, 'window':window, 'trace':imported}
     if map_evidence is not None:
         result['source_maps'] = map_evidence
+    if probe_evidence is not None:
+        result['probe'] = probe_evidence
     return result
 
 
-def capture(*, repo, revision, image, request, pause_animations, timeout, memory_mb, out):
+def capture(*, repo, revision, image, request, pause_animations, timeout, memory_mb, out,
+            probe=None, probe_repo=None, probe_revision=None):
     repo = Path(repo).expanduser().resolve(strict=True)
     out = Path(out).expanduser().resolve()
     if (out.is_relative_to(repo) or not 1 <= timeout <= 900 or not 128 <= memory_mb <= 8192
@@ -281,6 +298,9 @@ def capture(*, repo, revision, image, request, pause_animations, timeout, memory
         raise ForensicsError('the animation probe requires an observed element')
     if type(request.get('source_maps', False)) is not bool:
         raise ForensicsError('source map collection requires a boolean request')
+    if ('probe' in request or (probe is None and (probe_repo is not None or probe_revision is not None))
+            or (probe is not None and pause_animations)):
+        raise ForensicsError('select a tracked probe manifest for a single non-paused browser run')
     if not revision or revision.startswith('-'):
         raise ForensicsError('select a Git commit or ref')
     revision = cli.sha(repo, revision, timeout=15)
@@ -288,18 +308,34 @@ def capture(*, repo, revision, image, request, pause_animations, timeout, memory
         if Path(path).suffix not in ('.js', '.mjs', '.cjs', '.ts', '.mts', '.cts') or not _tracked(repo, revision, path):
             raise ForensicsError('browser server entry and loader must be tracked at the selected revision')
 
+    probe_config = probe_source = None
+    if probe is not None:
+        checkout = Path(probe_repo).expanduser().resolve(strict=True) if probe_repo is not None else repo
+        if out.is_relative_to(checkout):
+            raise ForensicsError('probe evidence must be outside the probe repository')
+        selected = probe_revision if probe_revision is not None else ('HEAD' if checkout != repo else revision)
+        if not selected or selected.startswith('-'):
+            raise ForensicsError('select a probe Git commit or ref')
+        probe_config, probe_source = browser_probe.prepare(checkout, cli.sha(checkout, selected, timeout=15), probe)
+        request = {**request, 'probe':browser_probe.request(probe_config)}
+
     out.mkdir(mode=0o700, parents=True)
     report_path = out / 'result.json'
     result = {'schema':cli.SCHEMA, 'commit':revision, 'request':request, 'memory_mb':memory_mb, 'trials':{}}
+    if probe_config is not None:
+        trace_forensics._write_private(out / 'browser-probe.js', probe_source)
+        result['probe_config'] = {'repo':str(checkout), 'snapshot':str(out / 'browser-probe.js'), **probe_config}
     cli.write(report_path, result)
     result['trials']['baseline'] = _trial(repo, revision, image, {**request, 'paused':False},
-                                          timeout, memory_mb, out / 'baseline')
+                                          timeout, memory_mb, out / 'baseline',
+                                          probe_config=probe_config, probe_source=probe_source)
     cli.write(report_path, result)
     if pause_animations:
         pinned = result['trials']['baseline']['image']
         result['trials']['paused'] = _trial(repo, revision, pinned, {**request, 'paused':True},
                                             timeout, memory_mb, out / 'paused')
-    result['mechanism'] = _mechanism(result['trials'])
+    result['mechanism'] = (result['trials']['baseline']['probe'] if probe_config is not None
+                           else _mechanism(result['trials']))
     cli.write(report_path, result)
     return report_path
 
@@ -319,6 +355,9 @@ def main(argv=None):
     parser.add_argument('--window-ms', type=int, default=1200)
     parser.add_argument('--pause-animations', action='store_true')
     parser.add_argument('--source-maps', action='store_true', help='Capture linked source maps from the selected loopback page')
+    parser.add_argument('--probe', help='Tracked Git-relative manifest for a reversible live CDP experiment')
+    parser.add_argument('--probe-repo', type=Path, help='Optional separate checkout containing the probe')
+    parser.add_argument('--probe-revision', help='Git commit or ref containing the probe manifest and script')
     parser.add_argument('--timeout', type=int, default=120, help='Time limit per capture')
     parser.add_argument('--memory-mb', type=int, default=2048)
     parser.add_argument('--out', type=Path, required=True)

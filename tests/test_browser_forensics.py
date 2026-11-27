@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from runner.sandbox import SandboxError, run_sandbox
 from workbench import browser_forensics, cli
+from workbench.runtime_forensics import ForensicsError
 
 
 class ScriptBindingTests(unittest.TestCase):
@@ -61,6 +62,43 @@ class ScriptBindingTests(unittest.TestCase):
         self.assertEqual(self.bindings([
             (self.origin + '/app.mjs', self.source_digest),
         ], complete=False), {})
+
+    def test_probe_uses_a_separate_frozen_checkout_and_cannot_mix_with_animation_pause(self):
+        committed = b'({ setup() {}, observe() { return { ticks: 1 }; } })\n'
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / 'probes'
+            checkout.mkdir()
+            cli.git(checkout, 'init', '-q')
+            cli.git(checkout, 'config', 'user.name', 'Probe Test')
+            cli.git(checkout, 'config', 'user.email', 'probe-test@example.invalid')
+            (checkout / 'probe.js').write_bytes(committed)
+            (checkout / 'manifest.json').write_text(json.dumps({
+                'schema':1, 'source':'probe.js', 'samples':2, 'settle_ms':0,
+                'metrics':{'ticks':{'direction':'decrease', 'min_change':1, 'restore_tolerance':0, 'max_spread':0}},
+            }))
+            cli.git(checkout, 'add', '.')
+            cli.git(checkout, 'commit', '-qm', 'Freeze probe contract')
+            revision = cli.sha(checkout, 'HEAD')
+            (checkout / 'probe.js').write_text('// changed after commit')
+            request = {'entry':'app.mjs', 'loader':None, 'args':[], 'port':self.port,
+                       'route':'/', 'click':None, 'observe':'#target', 'window_ms':100}
+            options = {'repo':self.repo, 'revision':self.revision, 'image':'app:test', 'request':request,
+                       'timeout':10, 'memory_mb':512, 'out':root / 'capture', 'probe':'manifest.json',
+                       'probe_repo':checkout, 'probe_revision':revision}
+            overview = {'status':'hypothesis-supported'}
+            with patch.object(browser_forensics, '_trial', return_value={'probe':overview}) as run:
+                with self.assertRaisesRegex(ForensicsError, 'single non-paused'):
+                    browser_forensics.capture(**options, pause_animations=True)
+                run.assert_not_called()
+                path = browser_forensics.capture(**options, pause_animations=False)
+            self.assertEqual(run.call_args.args[1], self.revision)
+            self.assertEqual(run.call_args.kwargs['probe_source'], committed)
+            self.assertEqual(run.call_args.args[3]['probe']['sha256'], sha256(committed).hexdigest())
+            report = cli.read(path)
+            self.assertEqual(report['probe_config']['revision'], revision)
+            self.assertEqual(Path(report['probe_config']['snapshot']).read_bytes(), committed)
+            self.assertEqual(report['mechanism'], overview)
 
     def test_capture_pins_both_trials_and_imports_only_attested_frame_locations(self):
         pinned = 'sha256:' + 'a' * 64
