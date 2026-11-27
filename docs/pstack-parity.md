@@ -100,6 +100,10 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [`workbench.technical_writing`](../skills/technical-writing/SKILL.md) 可按用途审阅、改写或起草文档、README、RFC、PR 正文和提交说明。文章采用一种 Diátaxis 结构，PR 和提交说明按工程交付格式处理。[`unslop`](../skills/unslop/SKILL.md) 复用同一流程，并保留上游规则编号。改写先检查命令、数字、代码和链接，再由独立会话核对事实、范围、原意和读者需求。通过后导出独立文件。写作流程可作为提交前的单独步骤。
 
+## TypeScript 类型和边界校验
+
+规划、实现、修复和复验的提示词带有 [TypeScript 规则](../skills/typescript-best-practices/SKILL.md)。`workbench.typescript_discipline` 可用本地镜像中的 Compiler API 对照 Git 基线和候选。断网容器检查项目配置、编译报错、所选文件是否真实进入编译，以及候选是否放宽原有检查。候选在独立容器再次编译，可额外双跑指定的真实调用测试。有新增类型断言、无条件谓词等迹象时，可固定源码片段与运行回执发起独立复核。发布继续走项目原有门禁。
+
 [`workbench.automate_me`](../skills/automate-me/SKILL.md) 从明确选定的 Claude Code 会话生成个人模式技能草稿。收集阶段生成带会话行号的本地证据，模型只收到批准范围内的用户文本。重复习惯须有不同周和不同会话的依据。草稿纳入确认的建议和直接规则，可在保留其他条目的前提下更新已有技能。
 
 [`workbench.reflect`](../skills/reflect/SKILL.md) 把指定的一次会话复盘转成技能修订及待办。正文修订绑定会话中使用的技能，漏触发场景调整描述。应用前核对批准的行、原技能和现有副本，再在 Claude 项目或用户技能目录写入。

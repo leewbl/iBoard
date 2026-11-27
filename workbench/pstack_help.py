@@ -60,6 +60,12 @@ SCENARIOS = {
         'Remove formulaic prose while keeping meaning and tone', 'skills/unslop/SKILL.md',
         'skills/unslop/SKILL.md', 'technical_writing collect --mode unslop',
         'Rule IDs, a proposed diff and independent fidelity checks'),
+    'typescript-best-practices': Scenario(
+        'Review TypeScript design and verify the selected project with the compiler',
+        'skills/typescript-best-practices/SKILL.md', 'skills/typescript-best-practices/SKILL.md',
+        'typescript_discipline check',
+        'Compiler identity, baseline and independent candidate observations, and source-reviewed type findings',
+        'Use a local source image with the compiler API and project dependencies already installed.'),
     'how': Scenario(
         'Explain how code works', 'skills/how/SKILL.md', 'skills/investigate/SKILL.md',
         'investigate how', 'A source-backed explanation for an exact repository revision'),

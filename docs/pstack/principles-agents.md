@@ -31,7 +31,7 @@
 | [`sequence-verifiable-units`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-sequence-verifiable-units/SKILL.md) | 多步迁移、成批修改、提交或 PR 栈。 | 为每个可独立检查的小步骤留基线、改动和检查，按证明顺序交付。 | 有 bug 基线和候选分段检查；多候选及依赖 PR 的验证顺序仍需自动化。 |
 | [`subtract-before-you-add`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-subtract-before-you-add/SKILL.md) | 功能演进、重构及提示词整理。 | 先清理死代码和重复指令，扩展已观测需要的行为，保留删减前后的运行证据。 | 可集中审查和调用规则；减少包装层或说明之前须核对旧用例和任务记录。 |
 | [`test-behavior-not-implementation`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-test-behavior-not-implementation/SKILL.md) | 新增、重写或判断是否保留某条测试。 | 断言对调用者可见的结果；用错误行为会失败、等效内部重构仍通过检验断言。 | 真实 CLI 已检查用户可见的诊断、可用状态及输入文件不变；每个新场景还需证明能捕捉记录中的实际回归。 |
-| [`type-system-discipline`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-type-system-discipline/SKILL.md) | 设计类型、函数签名或处理外部数据。 | 解析外部数据，区分语义不同的值，覆盖所有已声明变体，并让类型来源一致。 | Python 入口已有显式校验；报告、阶段结果和工具响应变体还需统一契约及拒绝用例。 |
+| [`type-system-discipline`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-type-system-discipline/SKILL.md) | 设计类型、函数签名或处理外部数据。 | 解析外部数据，区分语义不同的值，覆盖所有已声明变体，并让类型来源一致。 | [TypeScript 指南与检查](../../skills/typescript-best-practices/SKILL.md)进入计划、实现、修复和复验提示词，配有断网编译和调用证据。Python 报告及工具响应变体仍需统一契约和拒绝用例。 |
 
 ## 代理和工作者
 

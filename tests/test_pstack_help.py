@@ -24,6 +24,7 @@ class PstackHelpTests(unittest.TestCase):
             'sharpen': 'intent_review collect --mode sharpen',
             'technical-writing': 'technical_writing collect --mode technical-writing',
             'unslop': 'technical_writing collect --mode unslop',
+            'typescript-best-practices': 'typescript_discipline check',
             'pr-status': 'pr_watch --mode check',
             'verify-pr': 'verify_pr',
             'review-pr': 'interrogate',

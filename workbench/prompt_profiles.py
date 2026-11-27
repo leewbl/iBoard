@@ -3,6 +3,19 @@
 import hashlib
 
 PSTACK_COMMIT = '41e400932eca14f289e7db717a70455256b6d388'
+TYPESCRIPT_SOURCES = (
+    'skills/typescript-best-practices/SKILL.md', 'skills/typescript-best-practices/references/patterns.md',
+    'skills/principle-type-system-discipline/SKILL.md', 'skills/principle-boundary-discipline/SKILL.md',
+)
+TYPESCRIPT_GUIDANCE = (
+    'When reading or editing TypeScript, use discriminated variants and the simplest total domain type. '
+    'Brand primitives only when distinct meanings can be confused. Parse external unknown data once at its '
+    'boundary with the project schema or a validating predicate. Derive types from that authority. '
+    'Prefer discriminants and native narrowing, verify every predicate, cover variant switches exhaustively, '
+    'and prefer satisfies over an unverified cast. Use named object arguments where positional calls are ambiguous '
+    'and avoid unnecessary allocation on measured hot paths. Use structured diagnostics. '
+    'Compile with the repository toolchain and check real caller behavior. A green type check does not validate a guard.'
+)
 
 # Each profile keeps the coordinator's existing schema, permission model and
 # execution boundaries. Upstream documents are never interpolated into prompts.
@@ -78,6 +91,9 @@ def guidance(phase, kind):
     if profile is None:
         return '', {}
     sources, instruction = profile
+    if phase in ('plan', 'implementation', 'repair', 'final-review'):
+        sources = (*sources, *TYPESCRIPT_SOURCES)
+        instruction += ' ' + TYPESCRIPT_GUIDANCE
     return instruction, {
         'pstack_commit': PSTACK_COMMIT,
         'phase': phase,
