@@ -88,6 +88,11 @@ SCENARIOS = {
         'skills/reflect/SKILL.md', 'reflect collect',
         'Cited edits, rejected findings, an executable-check backlog and a local application receipt',
         'Review the destinations and select the exact edit IDs before applying them.'),
+    'recall': Scenario(
+        'Recover project decisions and outstanding work from previous chats', 'skills/recall/SKILL.md',
+        'skills/recall/SKILL.md', 'recall collect',
+        'A cited handoff, current Git and GitHub artifact states, and one concrete next action',
+        'Select Claude Code transcripts and shared notes. Review the digest before submitting excerpts to the model.'),
     'review-worktree': Scenario(
         'Review uncommitted changes in independent sandboxes', 'skills/interrogate/SKILL.md',
         'skills/interrogate/SKILL.md', 'interrogate_snapshot',
