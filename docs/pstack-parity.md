@@ -20,6 +20,8 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/
 
 [`workbench.refactor`](../skills/refactor/SKILL.md) 在重构前冻结源提交、预期行为、驱动和允许改动的路径。它在断网 Docker 中使用同一份驱动，逐提交比较退出码和 stdout、stderr 原始字节。证据不完整或同一版本两次运行不一致时，结果记为未确定。`workbench.start --kind refactor` 将对照报告送入独立终审，创建、更新、合并 PR 前会重新核对报告、原始回执和同一份终审。
 
+[故障根因验证](../skills/bug-cause/SKILL.md) 可随新任务启用。工作台把故障触发与单参数对照绑定到同一提交的驱动，在编辑前独立判断对照能否排除一个竞争解释。修复后在相同入口重跑两组检查，原故障信号仍出现、驱动改变或回执缺失都会阻断交付。
+
 只读调研可用 [`workbench.investigate`](../skills/investigate/SKILL.md) 或 Claude Code 的 `/agent-workbench:investigate` 启动。指定提交和文件即可运行 `how`、`why`、`teach` 或 `investigation`。合成模式分别向源码与历史阶段提供证据，再汇总为统一说明，保留两边的未知项。报告记录实际引用的源码行和提交、模型调用时间及提示词哈希。历史阶段可用 `--pr` 纳入用户明确选定、能与所选 Git 历史关联的 PR 正文和有界讨论摘录。
 
 接续或查看已留存任务时，使用 [`workbench.pickup`](../skills/pickup/SKILL.md) 或 `workbench.resume --inspect`。工具观察现有任务锁，核对工作树、输入和证据哈希，区分已记录的发布与合并结果。可用 `--since` 查看指定时间后的事件，用 `--check-pr` 查询对应 PR 的当前提交和检查状态。该入口提供接续判断，执行仍经过原有恢复和交付门禁。

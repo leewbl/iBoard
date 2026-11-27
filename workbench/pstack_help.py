@@ -48,6 +48,11 @@ SCENARIOS = {
         'Reproduce and fix a specified bug', 'skills/poteto-mode/playbooks/bug-fix.md',
         'skills/optimize/SKILL.md', 'start --kind bug', 'Baseline reproduction and independent candidate runs on the same scenario',
         'Provide a task budget and observable wrong result. Delivery needs an explicitly authorized fork.'),
+    'prove-bug-cause': Scenario(
+        'Establish the mechanism behind a specified bug', 'skills/poteto-mode/playbooks/bug-fix.md',
+        'skills/bug-cause/SKILL.md', 'start --kind bug --require-root-cause',
+        'Same-entrypoint trigger and control on the baseline and candidate, with an independent verdict',
+        'Use a committed driver with one variable argument and an observable faulty and healthy outcome.'),
     'test-first': Scenario(
         'Use the same regression test before and after a fix', 'skills/tdd/SKILL.md',
         'skills/tdd/SKILL.md', 'start --kind bug', 'Two baseline failures at the expected assertion and two isolated candidate passes',

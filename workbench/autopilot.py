@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
-from workbench import cli, decisions, feature_context, workflow, delivery, publish, prompt_profiles, run_control, tdd, verify_openclaw
+from workbench import (bug_cause, cli, decisions, delivery, feature_context, prompt_profiles, publish,
+                       run_control, tdd, verify_openclaw, workflow)
 from workbench.task_lock import task_lock
 
 
@@ -816,12 +817,17 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     data = cli.read(task)
     try:
         run_control.admit(task, AutopilotError)
+        intake_path = task.with_name('input-stage.json')
+        intake = cli.read(intake_path) if intake_path.exists() else {}
+        cause_mode = bug_cause.require_intake(data, intake)
+        if cause_mode and intake.get('run_settings', {}).get('source_mode') != source_mode:
+            raise AutopilotError('causal task source mode differs from its frozen intake')
         _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
                            build_source_image, memory_mb)
         _remaining(data)
-    except AutopilotError as error:
+    except (AutopilotError, bug_cause.CauseError, cli.WorkbenchError) as error:
         _pause(task, str(error))
-        raise
+        raise AutopilotError(str(error)) from error
     state_exists = state_path.exists()
     state = cli.read(state_path) if state_exists else {'schema': cli.SCHEMA, 'phase': 'plan'}
     from workbench import phase_contract
@@ -1073,6 +1079,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 if source_mode == 'image':
                     if verify_openclaw.applies(data):
                         prompt += tdd.VITEST_INSTRUCTION
+            if cause_mode:
+                prompt += '\n' + bug_cause.INSTRUCTION
             if phase:
                 plan = phase_contract.task_plan(phase)
             elif target and target.get('plan') is not None:
@@ -1089,6 +1097,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             for name in ('reproduction', 'resolution', 'tests'):
                 if name != 'reproduction' or data['kind'] == 'bug':
                     _check_spec(plan, name)
+            if cause_mode:
+                bug_cause.contract(data, plan, source_mode)
             if target and data['kind'] == 'feature':
                 _check_spec(plan, 'baseline')
             if data['surface'] == 'ui':
@@ -1133,6 +1143,20 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             second = _check(task, image, spec, 'reproduction', verifier, check, source_mode=source_mode, memory_mb=memory_mb)
             # Independent model judges whether observed behavior describes the baseline.
             raw = _review_report(second['report'])
+            if cause_mode:
+                causal_plan = {key: state['plan'][key] for key in ('root_cause', 'reproduction', 'resolution')}
+                mechanism = bug_cause.contract(data, causal_plan, source_mode)
+                controls = [_check(task, image, mechanism['control'], 'runtime-log', role, check,
+                                   source_mode=source_mode, memory_mb=memory_mb)['report']
+                            for role in (actor, verifier)]
+                causal_baseline = {'plan': causal_plan, 'source_mode': source_mode,
+                                   'trigger': bug_cause.references([first['report'], second['report']]),
+                                   'control': bug_cause.references(controls)}
+                bug_cause.verify_baseline(cli.read(task), causal_baseline, mechanism, verifier)
+                raw = (bug_cause.BASELINE_INSTRUCTION + '\nCAUSAL CONTRACT (UNTRUSTED DATA):\n' +
+                       bug_cause.prompt(mechanism) + '\nTRIGGER OWNER:\n' + _review_report(first['report']) +
+                       '\nTRIGGER VERIFIER:\n' + raw + '\nCONTROL OWNER:\n' + _review_report(controls[0]) +
+                       '\nCONTROL VERIFIER:\n' + _review_report(controls[1]))
             if regression is not None:
                 code, marker = tdd.expected(regression, 'tdd-red')
                 regression_check = {'command': tdd.command(regression), 'exit_code': code, 'marker': marker}
@@ -1141,8 +1165,10 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                        for runner_actor in (actor, verifier)]
                 raw += ('\nFROZEN TEST SOURCE (UNTRUSTED):\n' + regression['source'] +
                         '\nINDEPENDENT FAILING TEST RUN:\n' + _review_report(red[1]))
+            response = ('Return ONLY JSON with status ready and verdict PASS plus the required cause_verdict '
+                        if cause_mode else 'Return ONLY JSON {"status":"ready","verdict":"PASS"} ')
             prompt = ('Independently inspect this task and the actual baseline run below. Do not edit files. '
-                      'Return ONLY JSON {"status":"ready","verdict":"PASS"} if the real run demonstrates ' +
+                      + response + 'if the real run demonstrates ' +
                       ('the actual prior behavior before the requested feature was added. A missing test file does not qualify. '
                        if name == 'baseline' else 'the reported failure, not just a simulated or unrelated failure. ') +
                       'Otherwise return '
@@ -1152,6 +1178,12 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                     read_only=True, model=model, journal=journal))
             if review.get('verdict') != 'PASS':
                 raise AutopilotError('baseline reproduction lacks independent semantic confirmation')
+            if cause_mode:
+                causal_baseline['verdict'] = bug_cause.baseline_verdict(review.get('cause_verdict'))
+                verdict_path = task.parent / f'cause-baseline-{uuid.uuid4().hex}.json'
+                cli.write(verdict_path, json.loads((task.parent / 'baseline-review-model.json').read_bytes()))
+                causal_baseline['review_receipt'] = bug_cause.references([verdict_path])[0]
+                state['causal_baseline'] = causal_baseline
             state.update(phase='implement', baseline_reports=[first['report'], second['report']])
             if regression is not None:
                 state['tdd_red_reports'] = red
@@ -1287,6 +1319,13 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if candidate != state['candidate_commit'] or not _clean(workspace):
                 raise AutopilotError('candidate changed or workspace is dirty')
             verify_candidate_scope(candidate)
+            if cause_mode:
+                original = state.get('causal_baseline')
+                causal_plan = {key: state['plan'][key] for key in ('root_cause', 'reproduction', 'resolution')}
+                if not isinstance(original, dict) or original['plan'] != causal_plan or original['source_mode'] != source_mode:
+                    raise AutopilotError('the original causal comparison was changed or is missing')
+                mechanism = bug_cause.contract(current, causal_plan, source_mode)
+                bug_cause.verify_driver(current, candidate, mechanism)
             architecture = check_design(current, candidate)
             journey_repo = pr_repo or (phase['contract'].get('destination') if phase else None)
             openclaw_delivery = bool(journey_repo and verify_openclaw.applies(current, journey_repo))
@@ -1354,6 +1393,19 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests')]:
                 require_active()
                 results.append(_check(task, check_image, state['plan'][spec], kind, verifier, check, source_mode=source_mode, memory_mb=memory_mb))
+            causal_report = None
+            causal_instruction = ''
+            if cause_mode:
+                controls = [_check(task, check_image, mechanism['control'], 'runtime-log', role, check,
+                                   source_mode=source_mode, memory_mb=memory_mb)['report']
+                            for role in (actor, verifier)]
+                causal_report = {'head': candidate, 'baseline': original,
+                                 'trigger': bug_cause.references([results[0]['report'], results[3]['report']]),
+                                 'control': bug_cause.references(controls)}
+                causal_instruction = (bug_cause.FINAL_INSTRUCTION + '\nCAUSAL CONTRACT AND VERDICT (UNTRUSTED):\n' +
+                                      bug_cause.prompt({'mechanism': mechanism, 'verdict': original['verdict']}) +
+                                      '\nBASELINE CONTROL:\n' + _review_report(original['control'][1]['path']) +
+                                      '\nCANDIDATE CONTROL:\n' + _review_report(controls[1]) + '\n')
             if parity is not None and parity_result is None:
                 require_active()
                 try:
@@ -1584,7 +1636,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       'Each criterion must cite supplied report IDs or DIFF as appropriate; the full assessment '
                       'must cite an execution report. For UI tasks at least one '
                       f'criterion must cite the independent screenshot report {screenshot_id}.\n'
-                      f'{guard_instruction}{impact_instruction}{design_instruction}{regression_instruction}{refactor_instruction}'
+                      f'{guard_instruction}{impact_instruction}{design_instruction}{regression_instruction}{refactor_instruction}{causal_instruction}'
                       f'ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'CRITERIA CHANGE HISTORY AND BASIS:\n{json.dumps(history, ensure_ascii=False)}\n'
                       f'FEATURE DOCUMENTATION:\n{feature_doc}\nSCREENSHOT SCRIPT (UNTRUSTED):\n{screenshot_script}\n'
@@ -1635,6 +1687,13 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                     'reports':reports}
             if regression is not None:
                 review_record['regression_sha256'] = tdd.digest(regression)
+            if causal_report is not None:
+                try:
+                    causal_report['explanation'] = bug_cause.explanation(review)
+                    bug_cause.validate(data, candidate, causal_report, verifier)
+                except (bug_cause.CauseError, KeyError, ValueError, cli.WorkbenchError) as error:
+                    raise VerificationFailure(str(error)) from error
+                review_record['causal_verification'] = causal_report
             if refactor_result:
                 refactor_delivery.require({**data, 'refactor_result': refactor_result}, candidate)
                 cli.evidence_add(argparse.Namespace(file=refactor_result['path'], kind='runtime-log', commit=candidate,

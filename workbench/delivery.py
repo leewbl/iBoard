@@ -231,6 +231,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None, *, replay_auth
     run_control.admit(task_path, DeliveryError)
     github = github or GitHub()
     data = cli.read(Path(task_path))
+    require_refactor_intake(task_path, data)
     if 'verification_target' in data:
         raise DeliveryError('verification-only task does not authorize issue closure')
     require_replay_write(task_path, data, repo, replay_authority, 'close', number=pr_number)
@@ -242,7 +243,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None, *, replay_auth
     head, errors = cli.gate(data, 'HEAD')
     if errors:
         raise DeliveryError('issue closure blocked by evidence gate: ' + '; '.join(errors))
-    _independent_verification(data, head)
+    review = _independent_verification(data, head)
     if isinstance(github, GitHub):
         github.set_task_deadline(data)
     owner = repo.split('/')[0]
@@ -267,6 +268,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None, *, replay_auth
         raise DeliveryError('issue closure blocked before write: ' + '; '.join(errors))
     require_local_write(task_path, data, head, github, repo)
     run_control.admit(task_path, DeliveryError)
+    recheck_refactor_write(task_path, data, head, repo, review)
     require_replay_write(task_path, data, repo, replay_authority, 'close', number=pr_number)
     updated = github.close_issue(repo, issue)
     if updated.get('number') != issue or updated.get('state') != 'closed':
@@ -458,7 +460,7 @@ def validate_phase_citations(assessments, reports, required):
 
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
-    from workbench import feature_context, phase_contract, tdd, visual_parity
+    from workbench import bug_cause, feature_context, phase_contract, tdd, visual_parity
     is_refactor = data.get('kind') == 'refactor'
     if not is_refactor and ('refactor_contract' in data or 'refactor_result' in data):
         raise DeliveryError('refactoring evidence requires a refactor task')
@@ -552,6 +554,9 @@ def _independent_verification(data, target, *, destination=None):
                 continue
         try:
             validate_impact_review(data, target, report.get('impact'), reports, actor)
+            if data.get('root_cause') is not None and cli.digest(item['path']) != item['sha256']:
+                continue
+            bug_cause.validate(data, target, report.get('causal_verification'), actor)
             if data.get('regression_test') is not None:
                 if (report.get('regression_sha256') != tdd.digest(data['regression_test'])
                         or cli.digest(item['path']) != item['sha256']):
@@ -562,7 +567,7 @@ def _independent_verification(data, target, *, destination=None):
             if data.get('phase_result'):
                 result = cli.read(Path(data['phase_result']['path']))['record']
                 validate_phase_citations(assessments, reports, {name: result[name] for name in ('unit', 'live')})
-        except (DeliveryError, cli.WorkbenchError):
+        except (DeliveryError, cli.WorkbenchError, KeyError, TypeError, ValueError, OSError):
             continue
         required = [('test-result', target)]
         if data['kind'] == 'bug' or 'verification_target' in data:
@@ -598,6 +603,12 @@ def _independent_verification(data, target, *, destination=None):
 def recheck_refactor_write(task_path, expected, head, destination, review):
     """Keep the same approved contract and independent review before remote mutations."""
     require_refactor_intake(task_path, expected)
+    if expected.get('root_cause'):
+        latest = cli.read(Path(task_path))
+        require_refactor_intake(task_path, latest)
+        if latest.get('root_cause') != expected['root_cause'] or _independent_verification(
+                latest, head, destination=destination) != review:
+            raise DeliveryError('independent causal evidence changed before GitHub write')
     if expected.get('kind') != 'refactor':
         return
     latest = cli.read(Path(task_path))
@@ -609,18 +620,25 @@ def recheck_refactor_write(task_path, expected, head, destination, review):
 
 
 def require_refactor_intake(task_path, data):
-    """Check a recorded refactoring intake even when the task claims another kind."""
+    """Keep approved task-level verification modes bound to the recorded intake."""
     path = Path(task_path).parent / 'input-stage.json'
     if path.is_symlink():
         raise DeliveryError('task intake path changed before GitHub operation')
     if not path.exists():
         if data.get('kind') == 'refactor':
             raise DeliveryError('frozen refactoring intake is missing before GitHub operation')
+        if data.get('root_cause'):
+            raise DeliveryError('frozen causal verification intake is missing before GitHub operation')
         return
     try:
         stage = cli.read(path)
     except (AttributeError, OSError, TypeError, cli.WorkbenchError) as error:
         raise DeliveryError('task intake could not be verified before GitHub operation') from error
+    from workbench import bug_cause
+    try:
+        bug_cause.require_intake(data, stage)
+    except bug_cause.CauseError as error:
+        raise DeliveryError(str(error)) from error
     if 'refactor_contract' in stage or data.get('kind') == 'refactor':
         if (data.get('kind') != 'refactor' or not stage.get('refactor_contract')
                 or data.get('refactor_contract') != stage['refactor_contract']):

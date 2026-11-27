@@ -45,6 +45,8 @@ def _binding(task, data):
            for key in ('seconds', 'iterations')):
         raise RunError('autonomous execution requires positive original time and iteration limits')
     fields = {key: data.get(key) for key in SNAPSHOT_FIELDS}
+    if 'root_cause' in data:
+        fields['root_cause'] = data['root_cause']
     fields.update(criteria_sha256=cli.criteria_digest(data), base_digest=stage['base_digest'],
                   input_digest=stage['input_digest'], settings=stage['run_settings'])
     return fields, stage

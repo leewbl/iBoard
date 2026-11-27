@@ -421,7 +421,7 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
             runner_options['regression_file'] = regression['path']
         if not native or kind == 'tdd-red':
             runner_options['regression_source'] = regression['source'].encode()
-    if data.get('phase_binding') or data.get('kind') == 'refactor':
+    if data.get('phase_binding') or data.get('kind') == 'refactor' or data.get('root_cause'):
         runner_options['workspace_read_only'] = True
     if screenshot_path is not None:
         runner_options.update(memory_mb=memory_mb, screenshot_output=screenshot_path)

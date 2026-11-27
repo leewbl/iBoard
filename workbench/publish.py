@@ -414,6 +414,12 @@ def _pr_body(data, head):
         digest = tdd.digest(data['regression_test'])
         path = data['regression_test']['path']
         body += f'\nFocused regression `{path}` retained in the candidate. Source SHA-256 `{digest}`.\n'
+    if data.get('root_cause'):
+        item = delivery._independent_verification(data, head, destination=data.get('delivery_repo'))
+        causal = json.loads(Path(item['path']).read_bytes())['causal_verification']
+        body += '\n## Root cause\n\n'
+        body += '\n'.join('    ' + line for line in _public_log_excerpt(causal['explanation']).splitlines()) + '\n'
+        body += f'\nPaired baseline and candidate controls. Independent review SHA-256 `{item["sha256"]}`.\n'
     if data.get('surface') == 'ui':
         body += (f"\n## Screenshot\n\n[View verified screenshot](https://github.com/{destination}/blob/"
                  f"{artifact['commit']}/screenshot.png) (SHA-256 `{artifact['sha256']}`). "
@@ -652,7 +658,7 @@ def publish(task_path, repo, github=None, *, replay_authority=None):
         raise PublishError('local evidence gate failed: ' + '; '.join(issues))
     _require_gateway(data, head, repo)
     review = delivery._independent_verification(data, head, destination=repo)
-    refactor_review = review if data.get('kind') == 'refactor' else None
+    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') else None
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -741,7 +747,7 @@ def republish(task_path, repo, number, previous_head, github=None, *, replay_aut
         raise PublishError('new candidate is not independently verified or unchanged')
     _require_gateway(data, head, repo)
     review = delivery._independent_verification(data, head, destination=repo)
-    refactor_review = review if data.get('kind') == 'refactor' else None
+    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') else None
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)

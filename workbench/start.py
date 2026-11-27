@@ -172,7 +172,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
           feature_arena_out=None, visual_baseline=None, visual_baseline_sha256=None,
           refactor_contract=None, refactor_contract_sha256=None,
-          prepare_only=False,
+          prepare_only=False, require_root_cause=False,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
@@ -181,6 +181,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('prepare-only cannot run an Arena comparison')
     if kind not in cli.TASK_KINDS or surface not in ('ui', 'non-ui') or iterations < 1 or seconds < 1:
         raise StartError('task kind, surface and positive limits are required')
+    if require_root_cause and (kind != 'bug' or verification_target is not None):
+        raise StartError('causal verification requires a new bug task')
     refactor_input = None
     if kind == 'refactor':
         from workbench import refactor, refactor_delivery
@@ -301,6 +303,14 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('cannot inspect the local Docker image') from error
     if inspected.returncode:
         raise StartError('Docker image must already exist locally')
+    if require_root_cause:
+        try:
+            selected_image, = json.loads(inspected.stdout)
+            image = selected_image['Id']
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
+                raise ValueError('invalid image identity')
+        except (KeyError, TypeError, ValueError) as error:
+            raise StartError('causal verification requires a pinned local image ID') from error
     if refactor_input:
         try:
             selected_image, = json.loads(inspected.stdout)
@@ -345,6 +355,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
             try:
                 data = cli.read(task)
                 data['impact_review'] = 'runtime-v1'
+                if require_root_cause:
+                    from workbench import bug_cause
+                    data['root_cause'] = bug_cause.MODE
                 if publish_only:
                     data['publish_only'] = True
                 if visual_baseline:
@@ -401,6 +414,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 }
                 if not screenshots:
                     stage['request_digest'] = cli.digest(request)
+                if require_root_cause:
+                    stage['root_cause'] = bug_cause.MODE
                 if refactor_input:
                     stage['refactor_contract'] = refactor_input
                 if verification_target is not None:
@@ -454,6 +469,7 @@ def main(argv=None):
     parser.add_argument('--pr-repo')
     parser.add_argument('--publish-only', action='store_true', help='create the verified PR without waiting for CI or merging')
     parser.add_argument('--prepare-only', action='store_true', help='retain a paused intake without running the task')
+    parser.add_argument('--require-root-cause', action='store_true', help='require paired causal controls for a new bug')
     parser.add_argument('--criterion', action='append', default=[], metavar='ID=TEXT',
                         help='freeze an acceptance criterion at intake; may be repeated')
     parser.add_argument('--required-ci-workflow', action='append', dest='required_ci_workflows',
@@ -493,7 +509,7 @@ def main(argv=None):
                    feature_arena_out=args.feature_arena_out, visual_baseline=args.visual_baseline,
                    visual_baseline_sha256=args.visual_baseline_sha256, refactor_contract=args.refactor_contract,
                    refactor_contract_sha256=args.refactor_contract_sha256, prepare_only=args.prepare_only,
-                   criteria=criteria)
+                   criteria=criteria, require_root_cause=args.require_root_cause)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
