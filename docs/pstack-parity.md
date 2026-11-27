@@ -107,3 +107,5 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 [`workbench.perf_issue`](../skills/perf-issue/SKILL.md) 在修改前冻结基准、负载脚本、同提交对照和热点。自动复验按同一契约交替运行原版与候选，核对完成的工作量、结果摘要、原始数值和相应源码。改进未达到冻结阈值、端到端退化或证据更改均阻断交付，PR 正文引用实际前后数值与证据摘要。
 
 [`workbench.blast_radius`](../skills/blast-radius/SKILL.md) 使用精确 diff 和指定下游源码提出影响假设，再将批准的探针绑定到具体前提。只有两次不同断网容器和独立评审支持的事实才标为已证明。重复失败和未检验项分别保留。任务关联报告后，发布再次核对原任务、提交、探针和原始证据。
+
+[`workbench.no_comments`](../skills/no-comments/SKILL.md) 从 Git 工作差异和指定文件收集真实注释，通过独立审查给出删除选项、保留依据和后续行动。应用只改获选普通注释，并复核语法树、工作区和暂存区。支持 Python、JavaScript 与 TypeScript。抑制检查的根因修复和把约束编码成测试属于后续验证任务。

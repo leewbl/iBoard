@@ -98,6 +98,11 @@ SCENARIOS = {
         'skills/poteto-mode/playbooks/authoring-a-skill.md', 'skills/author-skill/SKILL.md', 'skill_authoring check',
         'Exact-commit metadata, link checks, and retained offline structural results',
         'Use the normal iBoard publication gate after attaching the successful skill receipt.'),
+    'no-comments': Scenario(
+        'Review scoped comments, suppressions and workaround code',
+        'skills/no-comments/SKILL.md', 'skills/no-comments/SKILL.md', 'no_comments collect',
+        'Verified comment-only patch and cited follow-up actions for suppressions and constraints',
+        'Select exact files or a working diff. Approval applies only to ordinary comments.'),
     'recall': Scenario(
         'Recover project decisions and outstanding work from previous chats', 'skills/recall/SKILL.md',
         'skills/recall/SKILL.md', 'recall collect',
