@@ -168,10 +168,9 @@ def _step(repo, baseline, scope, directory, entry, step):
                  'phase visual parity requires the UI screenshot check and a frozen state manifest and driver')
         visual_ref = _ref(directory, {key: visual[key] for key in ('path', 'sha256')})
         visual_plan = visual_parity.manifest(_json(Path(visual_ref['path']), visual_ref['sha256'], 80_000))
-        _require(visual['driver_sha256'] == cli.digest(visual_parity.DRIVER), 'approved visual capture driver changed')
+        _require(visual['driver_sha256'] == visual_parity.driver_digest(visual_plan), 'approved visual capture driver changed')
         visual_parity._source_paths(repo, baseline, visual_plan)
-        if server := visual_plan.get('server'):
-            path = server['entry']
+        if path := visual_parity.server_entry(visual_plan):
             _require(path not in scope, 'visual server entrypoint must stay outside the approved edit scope')
             scripts['visual_server'] = {'path': path, 'blob': _entrypoint(repo, baseline, path)}
         step = {**step, 'visual_parity': {**visual_ref, 'driver_sha256': visual['driver_sha256']}}

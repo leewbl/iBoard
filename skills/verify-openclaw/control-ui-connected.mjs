@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -10,12 +11,18 @@ import { promisify } from 'node:util';
 const origin = 'http://127.0.0.1:18789';
 const socketOrigin = 'ws://127.0.0.1:18789';
 const token = 'iboard-disposable-local-ui-token';
-const journey = process.argv[2] ?? 'connected';
+const [journey = 'connected', ...extra] = process.argv.slice(2);
 assert.ok(['connected', 'session-rename', 'session-delete', 'session-status-filter'].includes(journey),
   'Unknown Control UI journey');
 const rename = journey === 'session-rename';
 const deleting = journey === 'session-delete';
 const filtering = journey === 'session-status-filter';
+const visualState = extra[1];
+assert.ok(!extra.length || (
+  extra.length === 2 && extra[0] === '--visual-state' &&
+  ((journey === 'connected' && visualState === 'empty') ||
+    (filtering && ['active', 'archived', 'all'].includes(visualState)))
+), 'Unknown Control UI visual state for this journey');
 const fixtureKey = 'agent:main:iboard-browser-verification';
 const originalLabel = 'iBoard verification fixture';
 const finalLabel = 'iBoard verification persisted';
@@ -47,6 +54,7 @@ const state = join(root, 'state');
 const config = join(state, 'openclaw.json');
 const log = join(root, 'gateway.log');
 let browser, child, closed, exit, launchError, passed = false;
+let visualBrowser;
 const deleteTrace = deleting ? { step: 'start-gateway' } : null;
 
 const emit = (phase, fields) => console.log(JSON.stringify({ phase, ...fields }));
@@ -166,7 +174,7 @@ async function prepareFixture() {
     gateway: {
       mode: 'local',
       auth: { mode: 'token', token },
-      controlUi: { enabled: true, root: '/app/dist/control-ui' },
+      controlUi: { enabled: true, root: '/app/dist/control-ui', ...(visualState ? { communityInvite: false } : {}) },
     },
   }), { mode: 0o600, flag: 'wx' });
 }
@@ -316,6 +324,7 @@ async function openSessions() {
   const context = await browser.newContext({
     viewport, colorScheme: 'light', reducedMotion: 'reduce',
     locale: 'en-US', timezoneId: 'UTC', serviceWorkers: 'block', acceptDownloads: false,
+    ...(visualState ? { deviceScaleFactor: 1 } : {}),
   });
   let outside;
   context.on('request', request => {
@@ -447,6 +456,13 @@ async function openSessions() {
   }
   const proof = await observe(activeProof, missingList, listResponseTimeout);
   assert.ok(Number.isInteger(proof.handshake.protocol) && proof.handshake.protocol > 0);
+  if (visualState) {
+    const presentation = await page.request.get(origin + '/control-ui-config.json', {
+      headers: { Authorization: `Bearer ${token}` }, maxRedirects: 0,
+    });
+    assert.ok(presentation.ok(), 'The visual fixture could not read authenticated Gateway presentation settings');
+    assert.equal((await presentation.json()).communityInvite, false, 'The visual fixture requires the pinned invitation setting');
+  }
   await page.locator('openclaw-sessions-page .sessions-table').waitFor({ state: 'visible' });
   const assertConnectedPage = () => {
     const url = new URL(page.url());
@@ -462,15 +478,41 @@ async function openSessions() {
   return { page, proof, servedCommit, writes, assertConnectedPage, latestFilterSequence, filterProofAfter };
 }
 
-async function capture(view, evidence = {}) {
+async function captureVisual(view, requestId, assertState) {
+  view.assertConnectedPage();
+  await view.page.evaluate(async () => {
+    await document.fonts.ready;
+    await Promise.all([...document.images].filter(image => image.currentSrc && image.loading !== 'lazy')
+      .map(image => image.decode()));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  await assertState();
+  const png = await view.page.screenshot({ fullPage: false, animations: 'disabled', caret: 'hide', scale: 'css' });
+  await assertState();
+  view.assertConnectedPage();
+  return { png, receipt: { state: visualState, viewport, ...visualBrowser,
+    screenshot_sha256: createHash('sha256').update(png).digest('hex'), request_id: requestId } };
+}
+
+async function capture(view, evidence = {}, selectedVisual) {
   view.assertConnectedPage();
   await recorder?.stop({ finalFrame: true });
-  await view.page.screenshot({ path: screenshot, fullPage: false, animations: 'disabled', caret: 'hide' });
+  const visual = visualState === 'empty' ? await captureVisual(view, null, async () => {
+    assert.equal(new URL(view.page.url()).searchParams.get('status'), null);
+    assert.ok(await view.page.getByText('No active sessions.', { exact: true }).isVisible());
+  }) : selectedVisual;
+  if (visualState) {
+    assert.ok(visual, 'The selected authenticated Sessions state was not captured');
+    await writeFile(screenshot, visual.png, { flag: 'wx', mode: 0o600 });
+  } else {
+    await view.page.screenshot({ path: screenshot, fullPage: false, animations: 'disabled', caret: 'hide' });
+  }
   view.assertConnectedPage();
   const recordingSha256 = await recorder?.save();
   emit('ui', { route: '/sessions', gatewayPid: child.pid, servedCommit: view.servedCommit, handshake: view.proof.handshake,
     readback: { method: 'sessions.list', count: view.proof.sessions.length, archived: view.proof.archived },
-    screenshot: true, ...(recorder ? { recording: true, recordingJourney: journey, recordingSha256 } : {}), ...evidence });
+    screenshot: true, ...(recorder ? { recording: true, recordingJourney: journey, recordingSha256 } : {}),
+    ...(visual ? { visual: visual.receipt } : {}), ...evidence });
 }
 
 function rowFor(view, key) {
@@ -646,9 +688,10 @@ async function verifySessionStatusFilter(active, archived, view) {
     .and(view.page.locator('.sessions-toolbar__refresh'));
   const prefix = 'Select session: ';
   const rowSelectors = view.page.locator(`.sessions-table tbody input[aria-label^="${prefix}"]:visible`);
+  const readVisibleKeys = () => rowSelectors.evaluateAll((nodes, length) =>
+    nodes.map(node => node.getAttribute('aria-label').slice(length)).sort(), prefix.length);
   const expectRows = (state, expected) => observe(async () => {
-    const keys = await rowSelectors.evaluateAll((nodes, length) =>
-      nodes.map(node => node.getAttribute('aria-label').slice(length)).sort(), prefix.length);
+    const keys = await readVisibleKeys();
     return JSON.stringify(keys) === JSON.stringify(expected) ? keys : null;
   }, `The ${state} Sessions filter did not render exactly the expected fixtures`);
 
@@ -673,7 +716,7 @@ async function verifySessionStatusFilter(active, archived, view) {
   }
 
   await record('active', undefined, 'load', view.proof, [active]);
-  let finalProof;
+  let finalProof, selectedVisual;
   for (const [state, label, scope, expected] of [
     ['archived', 'Archived', true, [archived]],
     ['all', 'All', 'all', [active, archived]],
@@ -694,17 +737,30 @@ async function verifySessionStatusFilter(active, archived, view) {
     finalProof = await observe(() => view.filterProofAfter(sequence, scope),
       `The ${state} Sessions filter did not receive a fresh authenticated list reply`, 90_000);
     await record(state, scope, state === 'active' ? 'filter-refresh' : 'filter', finalProof, expected);
+    if (state === visualState) {
+      selectedVisual = await captureVisual(view, finalProof.requestId, async () => {
+        assert.equal(new URL(view.page.url()).searchParams.get('status'), state === 'active' ? null : state);
+        assert.deepEqual(await readVisibleKeys(), steps.at(-1).visibleKeys, 'Sessions changed during visual capture');
+      });
+    }
   }
-  await capture({ ...view, proof: finalProof }, { filter: { fixtures, steps, sessionMutations: view.writes.length } });
+  const evidence = { filter: { fixtures, steps, sessionMutations: view.writes.length } };
+  await capture({ ...view, proof: finalProof }, evidence, selectedVisual);
   assert.equal(view.writes.length, 0, 'The Sessions filters sent a late session mutation');
 }
 
 async function launchBrowser() {
   const requireFromImage = createRequire('/app/package.json');
   const { chromium } = requireFromImage('/app/node_modules/playwright');
-  browser = await chromium.launch({
-    headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
-  });
+  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath();
+  const binary = visualState ? await realpath(executablePath) : executablePath;
+  browser = await chromium.launch({ headless: true, executablePath: binary });
+  if (visualState) {
+    const digest = createHash('sha256');
+    for await (const chunk of createReadStream(binary)) digest.update(chunk);
+    const { version: playwright } = requireFromImage('/app/node_modules/playwright/package.json');
+    visualBrowser = { browser: browser.version(), playwright, chromium_sha256: digest.digest('hex') };
+  }
 }
 
 async function drive() {

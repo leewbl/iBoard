@@ -15,6 +15,8 @@ from workbench import cli, visual_pixels, workflow
 
 
 DRIVER = Path(__file__).resolve().parents[1] / 'skills' / 'visual-parity' / 'capture.mjs'
+CONNECTED_DRIVER = DRIVER.parents[1] / 'verify-openclaw' / 'control-ui-connected.mjs'
+CONNECTED_STATES = {'empty', 'active', 'archived', 'all'}
 OPENCLAW_RECIPE = DRIVER.parents[2] / 'examples' / 'openclaw-control-ui-parity' / 'build-login-ui.mjs'
 OPENCLAW_PROFILE = 'openclaw-control-ui-login'
 ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}')
@@ -41,7 +43,7 @@ def _text(value, limit, *, empty=False):
 
 def manifest(value):
     if (not isinstance(value, dict) or value.get('schema') != 1
-            or set(value) - {'schema', 'viewport', 'states', 'server', 'rebuild'}):
+            or set(value) - {'schema', 'viewport', 'states', 'server', 'rebuild', 'openclaw_connected'}):
         raise ParityError('invalid visual state manifest')
     viewport, states = value.get('viewport'), value.get('states')
     if (not isinstance(viewport, dict) or set(viewport) != {'width', 'height'} or
@@ -50,6 +52,13 @@ def manifest(value):
             or not isinstance(states, list) or not 1 <= len(states) <= 12):
         raise ParityError('visual parity needs a bounded viewport and one to twelve states')
     server = value.get('server')
+    connected = 'openclaw_connected' in value
+    if connected:
+        spec = value['openclaw_connected']
+        if ('server' in value or 'rebuild' not in value or viewport != {'width':1280, 'height':800}
+                or not isinstance(spec, dict) or set(spec) != {'driver_sha256'}
+                or not isinstance(spec['driver_sha256'], str) or not SHA.fullmatch(spec['driver_sha256'])):
+            raise ParityError('connected OpenClaw parity needs its frozen driver, rebuild recipe and 1280×800 viewport')
     if 'server' in value:
         if (not isinstance(server, dict) or set(server) != {'entry', 'args', 'port', 'ready'}
                 or type(server['port']) is not int or not 1024 <= server['port'] <= 65535
@@ -60,16 +69,22 @@ def manifest(value):
         _route(server['ready'])
     if 'rebuild' in value:
         spec = value['rebuild']
-        if (server is None or not isinstance(spec, dict) or set(spec) != {'profile', 'sha256'}
+        if ((server is None and not connected) or not isinstance(spec, dict) or set(spec) != {'profile', 'sha256'}
                 or spec['profile'] != OPENCLAW_PROFILE or not SHA.fullmatch(str(spec['sha256']))):
             raise ParityError('visual rebuild requires the approved OpenClaw build recipe and a loopback server')
     ids = set()
     for state in states:
-        if (not isinstance(state, dict) or set(state) != {'id', 'path', 'steps'}
-                or not isinstance(state['id'], str) or not ID.fullmatch(state['id']) or state['id'].lower() in ids
-                or not isinstance(state['steps'], list) or len(state['steps']) > 12):
+        fields = {'id', 'journey'} if connected else {'id', 'path', 'steps'}
+        if (not isinstance(state, dict) or set(state) != fields
+                or not isinstance(state['id'], str) or not ID.fullmatch(state['id']) or state['id'].lower() in ids):
             raise ParityError('visual parity needs unique states and bounded steps')
         ids.add(state['id'].lower())
+        if connected:
+            if not isinstance(state['journey'], str) or state['journey'] not in CONNECTED_STATES:
+                raise ParityError('invalid authenticated OpenClaw visual journey')
+            continue
+        if not isinstance(state['steps'], list) or len(state['steps']) > 12:
+            raise ParityError('visual parity needs unique states and bounded steps')
         _route(state['path']) if server else _relative(state['path'])
         for step in state['steps']:
             if not isinstance(step, dict):
@@ -124,11 +139,17 @@ def _bounded_time(start, timeout):
     return remaining
 
 
+def server_entry(plan):
+    return 'src/entry.ts' if 'openclaw_connected' in plan else plan.get('server', {}).get('entry')
+
+
 def _source_paths(repo, revision, plan):
     if cli.git(repo, 'ls-tree', revision, '--', 'node_modules', timeout=15):
         raise ParityError('visual source checkout must keep the frozen browser dependencies outside tracked files')
-    server = plan.get('server')
-    paths = [server['entry']] if server else list({state['path'] for state in plan['states']})
+    entry = server_entry(plan)
+    paths = [entry] if entry else sorted({state['path'] for state in plan['states']})
+    if 'openclaw_connected' in plan:
+        paths.append('ui/vite.config.ts')
     for path in paths:
         entry = cli.git(repo, 'ls-tree', revision, '--', path, timeout=15)
         if not entry.startswith(('100644 blob ', '100755 blob ')) or entry.partition('\t')[2] != path:
@@ -155,6 +176,56 @@ def _same_runtime(before, after, timeout):
         raise ParityError('candidate image must retain the frozen browser image and its runtime configuration')
 
 
+def _driver(plan):
+    connected = plan.get('openclaw_connected')
+    path = CONNECTED_DRIVER if connected else DRIVER
+    data = _read(path, 100_000)
+    if connected and _digest(data) != connected['driver_sha256']:
+        raise ParityError('approved connected OpenClaw visual driver changed')
+    return data
+
+
+def driver_digest(plan):
+    return _digest(_driver(plan))
+
+
+def _connected_journey(state):
+    return 'connected' if state['journey'] == 'empty' else 'session-status-filter'
+
+
+def _command(state):
+    if 'journey' in state:
+        return ['node', '/workspace/control-ui-connected.mjs', _connected_journey(state), '--visual-state', state['journey']]
+    return ['node', '/workspace/capture.mjs', state['id']]
+
+
+def _capture_receipt(report, state, revision, screenshot):
+    if 'journey' not in state:
+        receipt = json.loads(report['stdout'])
+        if (not isinstance(receipt, dict) or receipt.get('kind') != 'visual-parity-capture'
+                or receipt.get('state') != state['id'] or receipt.get('actions') != state['steps']):
+            raise ParityError('visual execution report has an invalid browser receipt')
+        return receipt
+
+    from workbench import verify_openclaw
+
+    gateway_report = {**report, 'journey':'control-ui-' + _connected_journey(state), 'commit':revision,
+                      'screenshot_path':str(screenshot.resolve(strict=True))}
+    if not verify_openclaw._browser_evidence(gateway_report, screenshot):
+        raise ParityError('visual capture lacks the authenticated OpenClaw journey evidence')
+    ui = json.loads(report['stdout'].splitlines()[1])
+    receipt = ui.get('visual')
+    target = state['journey']
+    request_id = None
+    if target != 'empty':
+        request_id = ui['filter']['steps'][{'archived':1, 'all':2, 'active':3}[target]]['requestId']
+    fields = {'state', 'request_id', 'viewport', 'browser', 'playwright', 'chromium_sha256', 'screenshot_sha256'}
+    if (not isinstance(receipt, dict) or set(receipt) != fields or receipt['state'] != target
+            or receipt['request_id'] != request_id):
+        raise ParityError('visual screenshot does not match the selected authenticated OpenClaw state')
+    return receipt
+
+
 def _raw_capture(path, values, state, role, revision, image, *, memory_mb=None, before=None):
     report_path, screenshot_path = path / (role + '.json'), path / (role + '.png')
     log = _read(report_path, 2_500_000)
@@ -174,9 +245,6 @@ def _raw_capture(path, values, state, role, revision, image, *, memory_mb=None, 
                 raise ValueError('capture did not finish before the cutoff')
         except (KeyError, OverflowError, TypeError, ValueError) as error:
             raise ParityError('visual baseline must have completed before the phase began') from error
-    receipt = json.loads(report.get('stdout', ''))
-    if not isinstance(receipt, dict):
-        raise ParityError('visual execution report has an invalid browser receipt')
     container = str(report.get('create_stdout', '')).strip()
     reported_path = Path(str(report.get('screenshot_path', '')))
     if (report.get('exit_code') != 0 or report.get('error') or report.get('stdout_truncated')
@@ -184,11 +252,12 @@ def _raw_capture(path, values, state, role, revision, image, *, memory_mb=None, 
             or report.get('container_created') is not True or not SHA.fullmatch(container)
             or report.get('source_root') != '/app' or report.get('workspace_read_only') is not True
             or report.get('image') != image or report.get('source_verified_commit') != revision
-            or report.get('actor') != role or report.get('command') != ['node', '/workspace/capture.mjs', state['id']]
+            or report.get('actor') != role or report.get('command') != _command(state)
             or report.get('screenshot_sha256') != _digest(image_bytes)
-            or not reported_path.is_absolute() or reported_path.parts[-2:] != (state['id'], role + '.png')
-            or receipt.get('kind') != 'visual-parity-capture' or receipt.get('state') != state['id']
-            or receipt.get('actions') != state['steps'] or not _text(receipt.get('browser'), 120)
+            or not reported_path.is_absolute() or reported_path.parts[-2:] != (state['id'], role + '.png')):
+        raise ParityError(f'visual capture identity is invalid: {state["id"]}/{role}')
+    receipt = _capture_receipt(report, state, revision, screenshot_path)
+    if (not _text(receipt.get('browser'), 120)
             or not _text(receipt.get('playwright'), 120) or not SHA.fullmatch(str(receipt.get('chromium_sha256')))
             or receipt.get('screenshot_sha256') != _digest(image_bytes)):
         raise ParityError(f'visual capture identity is invalid: {state["id"]}/{role}')
@@ -198,9 +267,14 @@ def _raw_capture(path, values, state, role, revision, image, *, memory_mb=None, 
 def _run(root, plan, driver, revision, image, timeout, memory_mb):
     started = time.monotonic()
     records = {}
+    connected = 'openclaw_connected' in plan
     with TemporaryDirectory(prefix='iboard-visual-driver-') as scratch:
-        (Path(scratch) / 'capture.mjs').write_bytes(driver)
-        (Path(scratch) / 'manifest.json').write_text(json.dumps(plan), encoding='utf-8')
+        if connected:
+            (Path(scratch) / 'control-ui-connected.mjs').write_bytes(driver)
+            (Path(scratch) / 'expected-commit.txt').write_text(revision + '\n', encoding='utf-8')
+        else:
+            (Path(scratch) / 'capture.mjs').write_bytes(driver)
+            (Path(scratch) / 'manifest.json').write_text(json.dumps(plan), encoding='utf-8')
         for state in plan['states']:
             folder = root / state['id']
             folder.mkdir()
@@ -208,9 +282,10 @@ def _run(root, plan, driver, revision, image, timeout, memory_mb):
             for role in ROLES:
                 image_path = folder / (role + '.png')
                 try:
-                    report = run_sandbox(scratch, image, ['node', '/workspace/capture.mjs', state['id']],
+                    report = run_sandbox(scratch, image, _command(state),
                                          _bounded_time(started, timeout), memory_mb=memory_mb,
-                                         workspace_read_only=True, source_root='/app', screenshot_output=image_path)
+                                         workspace_read_only=True, source_root='/app', screenshot_output=image_path,
+                                         **({'pids_limit':384} if connected else {}))
                 except (OSError, SandboxError) as error:
                     report = {'error': str(error), 'container_created': False, 'cleanup_confirmed': False}
                 report.update(source_verified_commit=revision, actor=role)
@@ -281,6 +356,7 @@ def capture_baseline(repo, revision, image, manifest_path, out, timeout, memory_
     started = time.monotonic()
     raw = _read(Path(manifest_path), 80_000)
     plan = manifest(json.loads(raw))
+    driver = _driver(plan)
     revision = cli.sha(repo, revision, timeout=15)
     _source_paths(repo, revision, plan)
     image = workflow._verified_image(repo, image, min(timeout, 300), commit=revision)
@@ -292,7 +368,6 @@ def capture_baseline(repo, revision, image, manifest_path, out, timeout, memory_
     out.mkdir(parents=True, mode=0o700)
     plan_path = out / 'manifest.json'
     plan_path.write_bytes(raw)
-    driver = _read(DRIVER, 100_000)
     records = _run(out, plan, driver, revision, image, _bounded_time(started, timeout), memory_mb)
     _inspect(out, plan, records, revision, image, check_repeat=True)
     path = out / 'baseline.json'
@@ -314,12 +389,14 @@ def read_baseline(ref, expected_base):
     if (not isinstance(proof, dict) or _digest(raw) != ref['sha256']
             or proof.get('schema') != 1 or proof.get('revision') != expected_base
             or set(proof) - {'build'} != {'schema', 'revision', 'image', 'driver_sha256', 'manifest_sha256', 'states'}
-            or not IMAGE.fullmatch(str(proof.get('image'))) or proof.get('driver_sha256') != cli.digest(DRIVER)):
+            or not IMAGE.fullmatch(str(proof.get('image')))):
         raise ParityError('visual baseline digest, Git revision, or trusted driver changed')
     payload = _read(path.with_name('manifest.json'), 80_000)
     if _digest(payload) != proof.get('manifest_sha256'):
         raise ParityError('frozen visual state manifest changed')
     plan = manifest(json.loads(payload))
+    if proof.get('driver_sha256') != driver_digest(plan):
+        raise ParityError('frozen visual capture driver changed')
     _validate_rebuild(plan, proof.get('build'), expected_base, proof['image'])
     return path, proof, plan
 
@@ -369,7 +446,7 @@ def compare_candidate(repo, base, ref, revision, image, out, timeout, memory_mb,
     _validate_rebuild(plan, build, revision, image, input_image=proof['image'])
     image = workflow._verified_image(repo, image, min(_bounded_time(started, timeout), 300), commit=revision)
     _same_runtime(proof['image'], image, _bounded_time(started, timeout))
-    driver = _read(DRIVER, 100_000)
+    driver = _driver(plan)
     if _digest(driver) != proof['driver_sha256']:
         raise ParityError('trusted visual driver changed during preparation')
     out.mkdir(parents=True, mode=0o700)

@@ -45,4 +45,10 @@ The CLI exits 0 when both states match and 1 when pixels differ. Review the diff
 | Collapsed | 0 pixels in both captures | 0 pixels in both captures |
 | Expanded | 0 pixels in both captures | 2,519 pixels in each capture |
 
-The first 960 × 820 attempt was rejected because six pixels differed in the animated logo. The retained 960 × 430 baseline was frozen before either candidate commit. Both candidates were rebuilt from their own tracked stylesheet with the same build helper, then captured in separate offline containers. This scenario covers the disconnected login screen and the compiled stylesheet. Connected Gateway journeys and PR delivery need their own evidence.
+The first 960 × 820 attempt was rejected because six pixels differed in the animated logo. The retained 960 × 430 baseline was frozen before either candidate commit. Both candidates were rebuilt from their own tracked stylesheet with the same build helper, then captured in separate offline containers.
+
+## Authenticated Sessions
+
+Use [connected-states.json](connected-states.json) with the same baseline and compare commands for the real Sessions page. Set `--timeout 1800` to budget for separate Gateway launches and use `--memory-mb 3712` with a Docker VM sized for that limit. Each capture launches an isolated Gateway, waits for readiness, authenticates the browser, and checks the expected rows. Populated states seed two disposable fixtures and verify the Active, Archived and All transitions. The snapshot uses the selected transition's authenticated reply. Every screenshot covers the complete 1280 × 800 viewport.
+
+The Gateway fixture sets `gateway.controlUi.communityInvite` to `false` before capture and checks the served presentation setting. This controls the timed invitation outside the Sessions states under test. The manifest freezes the Gateway driver digest along with the visual build recipe. Retain the original baseline and both per-state receipts as the reference for the migration.
