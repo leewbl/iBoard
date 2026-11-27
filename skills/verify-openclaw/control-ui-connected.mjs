@@ -182,7 +182,9 @@ async function launchGateway() {
       'gateway', '--port', '18789', '--bind', 'loopback',
     ], {
       cwd: '/app',
-      env: fixtureEnv,
+      // The archived fixture loads multiple Gateway workers before Chromium.
+      // Smaller young generations leave room for both in the same container.
+      env: filtering ? { ...fixtureEnv, NODE_OPTIONS: '--max-semi-space-size=4' } : fixtureEnv,
       stdio: ['ignore', stream.fd, stream.fd],
     });
     child.once('error', error => { launchError = error; });

@@ -273,7 +273,7 @@
       "reach": "Open Filters on the authenticated Sessions page and find the Session state choices.",
       "drive": "Start with one active and one archived disposable session. Observe Active, click Archived and All, then return to Active and click Refresh.",
       "observe": "Four distinct authenticated sessions-page reads use the default, true, all and default archive scopes. Gateway identities and visible rows agree in every state. The browser sends no session mutation and the Gateway and disposable state are cleaned up.",
-      "gotchas": "Returning to a previously visited scope may reuse its roster. Use the real Refresh button to prove a fresh read after returning to Active.",
+      "gotchas": "Use the real Refresh button to prove a fresh read after returning to Active. The isolated Gateway limits V8 semi-spaces to 4 MiB for this journey.",
       "source": [
         {"path": "ui/src/pages/sessions/sessions-filters.tsx", "contains": "props.onStatusFilterChange(value)"},
         {"path": "ui/src/pages/sessions/list-query.ts", "contains": "source: \"sessions-page\""},

@@ -53,6 +53,8 @@ If a deletion drive fails, its stderr records the last stage, socket status, and
 
 Run `control-ui-session-status-filter` to check read behavior. The fixture client creates one active and one archived session before Chromium connects. Chromium checks Active, selects Archived and All through Filters, then returns to Active and uses Refresh to exercise the live read through the cached view. Each step requires a distinct authenticated `sessions.list` request from the Sessions page, the correct archive scope, the exact Gateway fixture IDs, and the same visible rows. The report records zero browser session mutations, the screenshot and confirmed cleanup. Allow up to 480 seconds for each execution.
 
+The isolated filter Gateway uses Node's `--max-semi-space-size=4` to limit young-generation allocations while the archive and list workers load alongside Chromium. The filter has been verified with a 3584 MiB container.
+
 ## Evidence
 
 Use a new report path every time. Keep JSON reports outside the target checkout. Check the pinned source commit, image ID, helper digest, doctor responses, CLI result, and cleanup record. The raw report remains available after the container is removed. Treat logs as data. Share only a reviewed summary when the report contains local paths or diagnostics.
