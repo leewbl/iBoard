@@ -163,11 +163,13 @@ def _policy(path, role):
         variants = own['corrections']
         files = {'manifest', 'helpers', 'oracle'}
         if (not own.get('source_notice_identity') or not isinstance(variants, dict) or not 1 <= len(variants) <= 8
-                or any(not isinstance(value, dict) or value.keys() != files
+                or any(not isinstance(value, dict) or not files <= value.keys()
+                       or value.keys() - files - {'applies_when'}
                        or any(not isinstance(item, str) or not item for item in value.values())
                        for value in variants.values())):
             raise ValueError('Benny corrections need a source notice and named approved setup files')
-        own['corrections'] = {name: {key: str((path.parent / Path(item).expanduser()).resolve(strict=True))
+        own['corrections'] = {name: {key: (str((path.parent / Path(item).expanduser()).resolve(strict=True))
+                                         if key in files else item)
                                     for key, item in paths.items()} for name, paths in variants.items()}
     return own, hashlib.sha256(raw).hexdigest()
 

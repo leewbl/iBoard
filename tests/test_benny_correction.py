@@ -2,10 +2,15 @@ import json
 from pathlib import Path
 from shutil import copytree
 import unittest
+from unittest.mock import Mock
 
 import test_benny
 import test_benny_reproduce
 from workbench import benny, benny_correction, benny_notice, benny_reproduce, cli
+
+
+GUIDANCE = 'Use this setup when saved state from a previous session affected the reproduction.'
+NATURAL_CORRECTION = 'The repro used a session that already had saved state. Start a fresh session without that saved state.'
 
 
 class BennyCorrectionTests(unittest.TestCase):
@@ -48,6 +53,13 @@ class BennyCorrectionTests(unittest.TestCase):
         row = test_benny.reply(500, text, user=user, ts=f'{seconds}.000000')
         self.source.pages[-1].append(row)
         return row
+
+    def language_model(self, *, variant='clean-setup'):
+        answer = {'status': 'ready', 'variant': variant,
+                  'quote': 'Start a fresh session without that saved state.' if variant else None,
+                  'guidance_quote': 'saved state from a previous session affected the reproduction' if variant else None}
+        return Mock(return_value={'exit_code': 0, 'timed_out': False, 'provider': 'zhipu', 'model': 'glm-fixture',
+                                  'stdout': json.dumps(answer)})
 
     def test_frozen_recipe_retains_exact_probe_when_live_input_changes(self):
         archive = self.freeze()
@@ -138,6 +150,87 @@ class BennyCorrectionTests(unittest.TestCase):
         raw.write_text(raw.read_text() + '\n')
         with self.assertRaisesRegex(ValueError, 'frozen sandbox receipt'):
             benny_correction.audit(proof_path, proof, contract, route)
+
+    def test_language_correction_binds_the_interpretation_to_native_reproduction(self):
+        self.variants['clean-setup']['applies_when'] = GUIDANCE
+        args = self.ready()
+        source = self.add_correction(args, text=NATURAL_CORRECTION)
+        model = self.language_model()
+
+        route = benny_correction.select(**args, model=model)
+        self.assertEqual(benny_correction.select(**args, model=model), route)
+        model.assert_called_once()
+        _, record = benny.load_route(route['path'], route['sha256'])
+        correction = record['correction']
+        self.assertEqual(correction['message']['text'], source['text'])
+        self.assertEqual(correction['variant'], 'clean-setup')
+        reference = correction['interpretation']
+        evidence = Path(reference['path'])
+        self.assertEqual(evidence, self.root/'correction/interpretation.json')
+        self.assertEqual(cli.digest(evidence), reference['sha256'])
+
+        runtime = benny_correction.options(args['archive'], correction['variant'], self.runtime)
+        out = self.root/'correction/reproduction'
+        self.fixture.reproduce(route=route['path'], sha256=route['sha256'], out=out, **runtime)
+        proof = out/'result.json'
+        proof_digest = cli.digest(proof)
+        self.assertEqual(benny_reproduce._approved(proof, proof_digest)[1]['status'], 'reproduced')
+        evidence.write_bytes(evidence.read_bytes() + b'\n')
+        with self.assertRaises(ValueError):
+            benny_reproduce._approved(proof, proof_digest)
+        model.assert_called_once()
+
+    def test_named_setup_skips_interpretation_and_untrusted_messages_cannot_call_it(self):
+        self.variants['clean-setup']['applies_when'] = GUIDANCE
+        args = self.ready()
+        model = Mock(side_effect=AssertionError('unexpected correction model call'))
+        for changes in ({'user': 'U123OTHER'}, {'offset': 1}):
+            with self.subTest(changes=changes):
+                self.add_correction(args, text=NATURAL_CORRECTION, **changes)
+                with self.assertRaises(ValueError):
+                    benny_correction.select(**args, model=model)
+                self.source.pages[-1].pop()
+        self.add_correction(args)
+        route = benny_correction.select(**args, model=model)
+        _, record = benny.load_route(route['path'], route['sha256'])
+        self.assertEqual(record['correction']['variant'], 'clean-setup')
+        self.assertNotIn('interpretation', record['correction'])
+        model.assert_not_called()
+
+    def test_ambiguous_language_correction_holds_and_retains_the_interpretation(self):
+        self.variants['clean-setup']['applies_when'] = GUIDANCE
+        args = self.ready()
+        self.add_correction(args, text='The session might need a reset, or the current session might be required.')
+        model = self.language_model(variant=None)
+        evidence = self.root/'correction/interpretation.json'
+
+        with self.assertRaises(ValueError):
+            benny_correction.select(**args, model=model)
+        digest = cli.digest(evidence)
+        with self.assertRaises(ValueError):
+            benny_correction.select(**args, model=model)
+        self.assertEqual(cli.digest(evidence), digest)
+        self.assertFalse((args['out']/'route.json').exists())
+        self.assertFalse((self.root/'correction/reproduction').exists())
+        model.assert_called_once()
+
+    def test_language_decision_cannot_admit_a_thread_changed_during_the_model_call(self):
+        self.variants['clean-setup']['applies_when'] = GUIDANCE
+        args = self.ready()
+        self.add_correction(args, text=NATURAL_CORRECTION, offset=-2)
+        model = self.language_model()
+        answer = model.return_value
+
+        def claim_then_answer(*_, **__):
+            self.add_correction(args, text="I'll fix it.")
+            return answer
+
+        model.side_effect = claim_then_answer
+        with self.assertRaisesRegex(ValueError, 'source changed during correction interpretation'):
+            benny_correction.select(**args, model=model)
+        self.assertTrue((self.root/'correction/interpretation.json').is_file())
+        self.assertFalse((args['out']/'route.json').exists())
+        model.assert_called_once()
 
 
 if __name__ == '__main__':

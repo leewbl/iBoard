@@ -55,6 +55,8 @@ With source notices enabled, set `corrections` inside `reproduce` to a map from 
 
 During the original claim window, the reporter can reply `Correction: setup: clean-state` to select the configured `clean-state` setup. At the end of that same window, Benny runs the selected setup once against the original commit and image. The original evidence and the corrected evidence remain in separate directories. Repair uses only a confirmed corrected result. A late or unapproved correction, a second correction, a claim, or an edit to the report holds the workflow for inspection.
 
+Add a concrete `applies_when` sentence to a setup to support natural-language corrections from the reporter. The interpreter receives the reporter's message and approved setup descriptions in a read-only Claude Code + GLM call. It keeps exact excerpts from both the message and the selected description. An unclear correction is retained for inspection. Benny rereads the thread after interpretation and verifies the complete receipt chain before repair or draft delivery. A named setup still uses exact matching.
+
 ## Read or verify one approved report
 
 Copy [configuration.example.json](configuration.example.json) to a project-specific file outside the target checkout. Fill in the Slack workspace, source channel, configured triage identity, GitHub target and time limits. Use a separate configuration for another source channel. Store the Slack credential in an owner-only file and supply it to iBoard as a path through `--token-file`. Keep it out of the project, configuration and any model prompt.

@@ -8,7 +8,8 @@ import re
 import tempfile
 import time
 
-from workbench import benny, benny_handoff, benny_notice, benny_reproduce, cli, project_triage, project_verify
+from workbench import (benny, benny_correction_language, benny_handoff, benny_notice, benny_reproduce, benny_triage,
+                       cli, project_triage, project_verify)
 from workbench.benny_slack import SlackError
 
 
@@ -85,19 +86,26 @@ def freeze(path, variants, runtime):
     if path.resolve() != path:
         raise ValueError('Benny correction archive must use its canonical event path')
     original, _ = _recipe(runtime)
-    approved, files = {}, {}
+    approved, files, guidance = {}, {}, {}
     for name, overrides in variants.items():
         if (not isinstance(name, str) or not NAME.fullmatch(name) or not isinstance(overrides, dict)
-                or set(overrides) != PATH_FIELDS
-                or not all(isinstance(value, (str, Path)) and Path(value).is_absolute()
-                           for value in overrides.values())):
+                or not PATH_FIELDS <= overrides.keys() or overrides.keys() - PATH_FIELDS - {'applies_when'}
+                or not all(isinstance(overrides[key], (str, Path)) and Path(overrides[key]).is_absolute()
+                           for key in PATH_FIELDS)):
             raise ValueError('each correction setup needs a named manifest, helpers directory and independent probe')
+        if 'applies_when' in overrides:
+            description = overrides['applies_when']
+            if not benny_triage._text(description, 360) or not description.isprintable() or len(description.strip()) < 12:
+                raise ValueError('Benny correction applicability needs a concise, concrete setup description')
+            guidance[name] = description.strip()
         recipe, contents = _recipe({**runtime, **overrides})
         if _observation(recipe) != _observation(original):
             raise ValueError('a Benny correction setup cannot change the observable acceptance contract')
         approved[name] = recipe
         files.update({f'{name}/{target}': data for target, data in contents.items()})
     archive = {'schema': cli.SCHEMA, 'kind': KIND, 'scope': _scope(runtime), 'original': original, 'setups': approved}
+    if guidance:
+        archive['guidance'] = guidance
     if path.exists():
         reference = _reference(path)
         if _archive(reference)[1] != archive:
@@ -163,7 +171,7 @@ def _require_contract(contract, recipe, side):
         raise ValueError(f'{side} reproduction differs from the frozen correction plan')
 
 
-def _approved_message(route, row, current, ready_at, approved):
+def _approved_message(route, row, current, ready_at):
     frozen, rules = route['snapshot'], route['rules']
     prior = [*frozen['messages'], row]
     current_rows = current['messages']
@@ -177,19 +185,25 @@ def _approved_message(route, row, current, ready_at, approved):
             or not isinstance(message['ts'], str) or not benny.STAMP.fullmatch(message['ts'])
             or not isinstance(message['text'], str) or benny._ticks(message['ts']) <= benny._ticks(row['ts'])):
         raise SlackError('Benny source changed without an approved in-window setup correction from the reporter')
-    match = CORRECTION.fullmatch(message['text'].strip())
-    variant = match[1] if match else None
     reporter = frozen['messages'][0]
     if (reporter['bot'] or message['bot'] or message['author'] != reporter['author'] or message['files']
-            or not benny._ticks(row['ts']) < benny._ticks(message['ts']) < round(ready_at * 1_000_000)
-            or variant not in approved['setups']):
+            or not benny._ticks(row['ts']) < benny._ticks(message['ts']) < round(ready_at * 1_000_000)):
         raise SlackError('Benny source changed without an approved in-window setup correction from the reporter')
     if benny.route(current, rules, route['selected_artifact']) != route['decision']:
         raise SlackError('Benny correction no longer matches the approved source decision')
-    return variant, message
+    return message
 
 
-def select(*, initial, notice, archive, slack, ready_at, out):
+def _named_setup(message, approved):
+    match = CORRECTION.fullmatch(message['text'].strip())
+    if not match:
+        return None
+    if match[1] not in approved['setups']:
+        raise SlackError('Benny source changed without an approved in-window setup correction from the reporter')
+    return match[1]
+
+
+def select(*, initial, notice, archive, slack, ready_at, out, model=None):
     """Confirm one in-window addition from the original reporter and freeze its source route."""
     out = Path(out).expanduser().absolute()
     event = out.parent.parent
@@ -201,13 +215,28 @@ def select(*, initial, notice, archive, slack, ready_at, out):
     deadline = time.monotonic() + 30
     slack.check_team(route['rules']['workspace'], deadline)
     current = benny._snapshot(slack, route['snapshot']['location'], deadline)
-    admitted = _approved_message(route, row, current, ready_at, approved)
-    if admitted is None:
+    message = _approved_message(route, row, current, ready_at)
+    if message is None:
         return None
-    variant, message = admitted
+    binding = {'initial': initial, 'notice': notice, 'archive': archive}
+    variant = _named_setup(message, approved)
+    details = {}
+    if variant is None:
+        guidance = approved.get('guidance')
+        if not guidance:
+            raise SlackError('Benny source changed without an approved in-window setup correction from the reporter')
+        path = out.parent/'interpretation.json'
+        interpretation = benny_correction_language.choose(path, message=message, guidance=guidance, binding=binding,
+                                                           **({'model': model} if model is not None else {}))
+        variant = benny_correction_language.confirmed(interpretation, message=message, guidance=guidance, binding=binding)
+        if variant is None:
+            raise SlackError('Benny retained the correction but found no clear, approved setup')
+        deadline = time.monotonic() + 30
+        if benny._snapshot(slack, route['snapshot']['location'], deadline) != current:
+            raise SlackError('Benny source changed during correction interpretation')
+        details['interpretation'] = interpretation
     corrected = {**route, 'snapshot': current,
-                 'correction': {'initial': initial, 'notice': notice, 'archive': archive,
-                                'variant': variant, 'message': message}}
+                 'correction': {**binding, 'variant': variant, 'message': message, **details}}
     path = out/'route.json'
     if path.is_symlink():
         raise ValueError('Benny correction route must be a regular file')
@@ -228,16 +257,26 @@ def audit(path, proof, contract, route):
             or proof['route']['path'] != str(route_path) or route_path.resolve() != route_path):
         raise ValueError('Benny corrected reproduction must use its original event paths')
     correction = route.get('correction')
-    if not isinstance(correction, dict) or correction.keys() != {'initial', 'notice', 'archive', 'variant', 'message'}:
+    fields = {'initial', 'notice', 'archive', 'variant', 'message'}
+    if not isinstance(correction, dict) or not fields <= correction.keys() or correction.keys() - fields - {'interpretation'}:
         raise ValueError('Benny corrected route needs its exact admitted correction')
     initial, notice, archive = (correction[key] for key in ('initial', 'notice', 'archive'))
     original, original_route, row, approved = _bound_inputs(event, initial, notice, archive)
     snapshot = route['snapshot']
-    admitted = _approved_message(original_route, row, snapshot, benny_reproduce._claim_ready_at(original, row),
-                                 approved)
-    if (admitted != (correction['variant'], correction['message'])
+    admitted = _approved_message(original_route, row, snapshot, benny_reproduce._claim_ready_at(original, row))
+    if (admitted is None or admitted != correction['message']
             or route != {**original_route, 'snapshot': snapshot, 'correction': correction}):
         raise ValueError('Benny corrected route no longer matches the admitted source change')
+    variant = _named_setup(admitted, approved)
+    if 'interpretation' in correction:
+        reference = correction['interpretation']
+        if variant or _receipt_path(reference) != event/'correction/interpretation.json':
+            raise ValueError('Benny correction mixes named and interpreted setup decisions')
+        binding = {'initial': initial, 'notice': notice, 'archive': archive}
+        variant = benny_correction_language.confirmed(reference, message=admitted, guidance=approved.get('guidance', {}),
+                                                      binding=binding)
+    if variant is None or variant != correction['variant'] or variant not in approved['setups']:
+        raise ValueError('Benny correction lacks a confirmed decision for its approved setup')
     if any(proof[field] != original[field] for field in ('base', 'image', 'checkout', 'repository')):
         raise ValueError('Benny corrected reproduction changed the original baseline or runtime')
     if contract['memory_mb'] != approved['scope']['memory_mb']:
