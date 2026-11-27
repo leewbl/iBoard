@@ -36,6 +36,9 @@ const expectedCommit = (await readFile('/workspace/expected-commit.txt', 'utf8')
 assert.match(expectedCommit, /^[0-9a-f]{40}$/u);
 const recording = process.env.WORKBENCH_RECORDING_PATH;
 const viewport = { width: 1280, height: 800 };
+// Cold Gateway stalls have delayed both page startup and Chromium input delivery.
+const browserActionTimeout = 65_000;
+const browserNavigationTimeout = 90_000;
 const recordingWidth = 960;
 const recordingHeight = 600;
 const root = await mkdtemp('/tmp/iboard-control-ui-');
@@ -328,7 +331,8 @@ async function openSessions() {
   });
   const page = await context.newPage();
   await recorder?.start(page);
-  page.setDefaultTimeout(30_000);
+  page.setDefaultTimeout(browserActionTimeout);
+  page.setDefaultNavigationTimeout(browserNavigationTimeout);
   const writes = [];
   const filterProofs = [];
   let filterSequence = 0;
@@ -405,15 +409,13 @@ async function openSessions() {
     });
   });
   const route = deleting ? '/sessions?status=all' : '/sessions';
-  assert.equal((await page.goto(origin + route, { waitUntil: 'domcontentloaded', timeout: 60_000 }))?.status(), 200);
+  assert.equal((await page.goto(origin + route, { waitUntil: 'domcontentloaded' }))?.status(), 200);
   const servedCommit = await page.evaluate(() => globalThis.OPENCLAW_CONTROL_UI_BUILD_INFO?.commit);
   assert.equal(servedCommit, expectedCommit, 'Served UI bundle does not identify the verified commit');
   await recorder?.checkpoint();
-  // Cold Gateway startup can temporarily leave the UI in a pending connection state.
-  const loginTimeout = 65_000;
-  await page.getByLabel('Gateway secret', { exact: true }).fill(token, { timeout: loginTimeout });
+  await page.getByLabel('Gateway secret', { exact: true }).fill(token);
   await recorder?.checkpoint();
-  await page.getByRole('button', { name: 'Connect', exact: true }).click({ timeout: loginTimeout });
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
   const activeProof = () => {
     if (filterWireError) throw filterWireError;
     return sessionProof && !sessionProof.socket.isClosed() && sessionProof;
@@ -426,12 +428,12 @@ async function openSessions() {
     // Retry only the observed read admission timeout, before any scenario action.
     const refresh = page.getByRole('button', { name: 'Refresh', exact: true })
       .and(page.locator('.sessions-toolbar__refresh'));
-    await refresh.click({ timeout: 65_000 });
+    await refresh.click();
     process.stderr.write('Retried the Sessions list after a Gateway admission timeout\n');
   }
   const proof = await observe(activeProof, missingList, listResponseTimeout);
   assert.ok(Number.isInteger(proof.handshake.protocol) && proof.handshake.protocol > 0);
-  await page.locator('openclaw-sessions-page .sessions-table').waitFor({ state: 'visible', timeout: 65_000 });
+  await page.locator('openclaw-sessions-page .sessions-table').waitFor({ state: 'visible' });
   const assertConnectedPage = () => {
     const url = new URL(page.url());
     assert.equal(url.origin, origin);
@@ -489,19 +491,17 @@ async function restartSessions() {
 
 async function verifyRename(fixture, view) {
   const row = rowFor(view, fixture.key);
-  // Cold startup can stall Chromium while it scrolls a settled row into view.
-  const menuTimeout = 65_000;
   const menuEntries = [];
   async function renameDialog(entry, openMenu) {
     await openMenu();
-    await view.page.getByRole('menuitem', { name: 'Rename…', exact: true }).click({ timeout: menuTimeout });
+    await view.page.getByRole('menuitem', { name: 'Rename…', exact: true }).click();
     const dialog = view.page.getByRole('dialog', { name: 'Rename session', exact: true });
     assert.equal(await dialog.getByRole('textbox').inputValue(), originalLabel);
     menuEntries.push(entry);
     return dialog;
   }
   await assertSession(view, fixture);
-  let dialog = await renameDialog('context-menu', () => row.click({ button: 'right', timeout: menuTimeout }));
+  let dialog = await renameDialog('context-menu', () => row.click({ button: 'right' }));
   await dialog.getByRole('textbox').fill('iBoard canceled fixture edit');
   await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -511,7 +511,7 @@ async function verifyRename(fixture, view) {
   await recorder?.checkpoint();
 
   const menuButton = row.getByRole('button', { name: `Open session menu: ${fixture.key}`, exact: true });
-  dialog = await renameDialog('row-button', () => menuButton.click({ timeout: menuTimeout }));
+  dialog = await renameDialog('row-button', () => menuButton.click());
   await dialog.getByRole('textbox').fill(finalLabel);
   await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();

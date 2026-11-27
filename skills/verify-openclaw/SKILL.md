@@ -35,7 +35,7 @@ python3 -m workbench.verify_openclaw control-ui-connected \
 
 Use the compiled image ID recorded by the [offline Control UI build](../../examples/openclaw-control-ui-parity/README.md). The bundle must identify the same commit as the target checkout. Give each execution new JSON and PNG paths. The report binds the image, commit, helper and screenshot, and stores the selected outcomes without retaining tokens or WebSocket frame bodies. The core feature-map audit uses the CLI and Gateway journeys.
 
-On cold startup, the browser allows up to 65 seconds for each sign-in control within the journey timeout. It then requires the authenticated Gateway response before checking page behavior.
+On cold startup, the browser allows up to 90 seconds for page navigation and 65 seconds for each ordinary browser action, within the journey timeout. It requires the authenticated Gateway response before checking page behavior.
 
 ### Session rename
 
