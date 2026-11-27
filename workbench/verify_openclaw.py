@@ -12,7 +12,7 @@ import time
 import uuid
 
 from runner.sandbox import SandboxError, run_sandbox
-from workbench import cli, workflow
+from workbench import browser_recording, cli, workflow
 
 JOURNEYS = {
     "gateway-health": ("gateway.mjs", "VERIFY_OPENCLAW_GATEWAY_HEALTH_PASS"),
@@ -101,10 +101,12 @@ def _browser_evidence(report, screenshot):
         return False
 
 
-def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None):
+def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None, recording=None):
     browser = journey in BROWSER_JOURNEYS
     if browser != (screenshot is not None):
         raise ValueError('a Control UI browser journey requires a screenshot path')
+    if recording is not None and not browser:
+        raise ValueError('a recording is only available for the Control UI browser journeys')
     helper, marker, command = _journey(journey)
     deadline = time.monotonic() + timeout
     report = {"journey": journey, "requested_image": image}
@@ -126,6 +128,7 @@ def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None):
                 scratch, pinned, command, deadline - time.monotonic(),
                 memory_mb=memory_mb, source_root="/app", workspace_read_only=True,
                 **({'screenshot_output': screenshot, 'pids_limit': 384} if browser else {}),
+                **({'recording_output': recording} if recording is not None else {}),
             ))
     except (OSError, ValueError, SandboxError, workflow.WorkflowError, cli.WorkbenchError) as error:
         report["error"] = str(error)
@@ -134,6 +137,8 @@ def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None):
         and report.get("cleanup_confirmed") is True
         and marker in report.get("stdout", "").splitlines()
         and (not browser or _browser_evidence(report, Path(screenshot)))
+        and (recording is None or browser_recording.receipt(
+            report, recording, report.get('commit'), expected_journey=journey.removeprefix('control-ui-')))
     )
     return report
 
@@ -224,12 +229,14 @@ def build_browser_image(repo, base, image, head, timeout):
     return visual_parity.rebuild_image(repo, base, image, head, plan, timeout)['image']
 
 
-def collect(task, data, head, image, actors, *, remaining, memory_mb):
+def collect(task, data, head, image, actors, *, remaining, memory_mb, record_browser=False):
     results = []
     for journey in required_journeys(data, head):
         for actor in actors:
             path = task.parent / f'{journey}-{uuid.uuid4().hex}.json'
             options = {'screenshot': path.with_suffix('.png')} if journey in BROWSER_JOURNEYS else {}
+            if options and record_browser:
+                options['recording'] = path.with_suffix('.jsonl')
             report = verify(Path(data['repo']), image, journey,
                             timeout=min(_timeout(journey), remaining()), memory_mb=memory_mb, **options)
             report.update(actor=actor, source_mode='image', source_verified_commit=report.get('commit'))
@@ -280,8 +287,13 @@ def require(data, head, destination, *, review_item=None):
                 if (not isinstance(container, str) or run.get('create_stdout_truncated') is True
                         or not re.fullmatch(r'[0-9a-f]{64}', container.strip())):
                     continue
-                if journey in BROWSER_JOURNEYS and not _browser_evidence(run, Path(entry['path']).with_suffix('.png')):
-                    continue
+                if journey in BROWSER_JOURNEYS:
+                    if not _browser_evidence(run, Path(entry['path']).with_suffix('.png')):
+                        continue
+                    if ('recording_path' in run or 'recording_sha256' in run) and not browser_recording.receipt(
+                            run, Path(entry['path']).with_suffix('.jsonl'), head,
+                            expected_journey=journey.removeprefix('control-ui-')):
+                        continue
                 if (run.get('commit') == head
                         and run.get('helper_sha256') == helpers[journey] and run.get('passed') is True
                         and run.get('exit_code') == 0 and run.get('cleanup_confirmed') is True
@@ -318,6 +330,7 @@ def main(argv=None):
     parser.add_argument("--image", required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument('--screenshot', type=Path, help='PNG evidence path for a Control UI browser journey')
+    parser.add_argument('--recording', type=Path, help='JSONL recording path for a Control UI browser journey')
     parser.add_argument("--timeout", type=int, help='seconds (default: 480 for session writes, otherwise 320)')
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
@@ -327,6 +340,12 @@ def main(argv=None):
         args.screenshot = args.screenshot.expanduser().absolute()
         if args.screenshot.exists() or args.screenshot.is_symlink() or args.screenshot.resolve() == args.report.expanduser().resolve():
             parser.error('choose a new screenshot path separate from the JSON report')
+    if args.recording is not None:
+        args.recording = args.recording.expanduser().absolute()
+        if (args.screenshot is None or args.recording.suffix != '.jsonl' or args.recording.exists()
+                or args.recording.is_symlink()
+                or args.recording.resolve() in (args.report.expanduser().resolve(), args.screenshot.resolve())):
+            parser.error('choose a new JSONL recording path separate from the report and browser screenshot')
     # Reserve the evidence path before running; retries must use a new file.
     def private_create(path, flags):
         return os.open(path, flags, 0o600)
@@ -338,6 +357,8 @@ def main(argv=None):
         else:
             if args.screenshot is not None:
                 options['screenshot'] = args.screenshot
+            if args.recording is not None:
+                options['recording'] = args.recording
             report = verify(args.repo, args.image, args.journey, **options)
         json.dump(report, output, indent=2)
         output.write("\n")

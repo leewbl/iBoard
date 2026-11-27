@@ -58,3 +58,28 @@ The helper stops only the child it started and deletes only its own temporary st
 `python3 -m workbench.verify_openclaw --help` lists the supported journeys and resource options. Run the helper through that command, never on the host.
 
 Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) checks all seven mapped journeys, including the connected browser, rename and delete. Use the compiled Chromium-enabled image and a total timeout that covers the whole pass.
+
+
+## Browser recordings
+
+For a Control UI browser journey, pass `--recording` as well as `--screenshot`. Chromium records the actual test page across navigation and browser replacement. The same run reports the served Git revision and the SHA-256 of the recording. A project verification contract can request the same artifact by setting `"recording": true` on a browser journey.
+
+```sh
+python3 -m workbench.verify_openclaw control-ui-session-rename --repo "$REPO" --image "$IMAGE" \
+  --report "$REPORT" --screenshot "$SCREENSHOT" --recording "$RECORDING"
+```
+
+Keep the JSON report, PNG, and JSONL recording in one evidence directory. Render an MP4 with the recording’s SHA-256. The replay preserves captured changes and shortens idle intervals. The JSONL retains the original timestamps.
+
+```sh
+python3 -m workbench.browser_recording --recording "$RECORDING" --sha256 "$RECORDING_SHA256" --out "$MP4"
+```
+
+To review a visible condition, supply the execution report and its digest. A fresh vision call inspects sampled frames and the final PNG. A positive review must cite both the final frame and screenshot. The review states uncertainty when the condition is unclear and retains the evidence hashes.
+
+```sh
+python3 -m workbench.browser_recording --review "$REPORT" --sha256 "$REPORT_SHA256" \
+  --expected-visible "$FINAL_STATE" --out "$MEDIA_REVIEW"
+```
+
+Use disposable data and test credentials. Keep the original artifacts and review in the task evidence directory.

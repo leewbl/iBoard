@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -22,6 +23,10 @@ const screenshot = process.env.WORKBENCH_SCREENSHOT_PATH;
 assert.ok(screenshot, 'Use the sandbox screenshot output');
 const expectedCommit = (await readFile('/workspace/expected-commit.txt', 'utf8')).trim();
 assert.match(expectedCommit, /^[0-9a-f]{40}$/u);
+const recording = process.env.WORKBENCH_RECORDING_PATH;
+const viewport = { width: 1280, height: 800 };
+const recordingWidth = 960;
+const recordingHeight = 600;
 const root = await mkdtemp('/tmp/iboard-control-ui-');
 const home = join(root, 'home');
 const state = join(root, 'state');
@@ -40,6 +45,101 @@ const fixtureEnv = {
   OPENCLAW_SKIP_CHANNELS: '1', OPENCLAW_SKIP_PROVIDERS: '1', OPENCLAW_SKIP_GMAIL_WATCHER: '1',
   OPENCLAW_SKIP_CRON: '1', OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: '1', OPENCLAW_SKIP_CANVAS_HOST: '1',
 };
+
+class BrowserRecording {
+  constructor(path) {
+    this.path = path;
+    this.lines = [JSON.stringify({ schema: 1, producer: 'chromium-cdp', served_commit: expectedCommit, journey })];
+    this.bytes = Buffer.byteLength(this.lines[0]) + 1;
+    this.frames = 0;
+    this.pages = 0;
+    this.lastMs = -1;
+    this.lastJpeg = '';
+    this.different = new Set();
+  }
+
+  retain(data, track, force = false) {
+    const ms = Math.floor(performance.now() - this.started);
+    if (!force && (ms - track.lastMs < 250 || data === this.lastJpeg)) return;
+    const jpeg = Buffer.from(data, 'base64');
+    assert.ok(jpeg.length >= 4 && jpeg.length <= 150_000 && jpeg.toString('base64') === data &&
+      jpeg[0] === 0xff && jpeg[1] === 0xd8 && jpeg.at(-2) === 0xff && jpeg.at(-1) === 0xd9,
+    'Chromium returned an invalid or oversized recording frame');
+    const time = Math.max(ms, this.lastMs + 1);
+    assert.ok(this.frames < 240 && time <= 600_000, 'Browser recording reached its frame or time bound');
+    const line = JSON.stringify({ ms: time, page: track.page, jpeg: data });
+    this.bytes += Buffer.byteLength(line) + 1;
+    assert.ok(this.bytes + 32 <= 24_000_000, 'Browser recording reached its size bound');
+    this.lines.push(line);
+    this.frames += 1;
+    this.lastMs = time;
+    this.lastJpeg = data;
+    track.lastMs = time;
+    if (this.different.size < 3) this.different.add(data);
+  }
+
+  async start(page) {
+    assert.ok(!this.track && this.pages < 32, 'Finish the current recording page before opening another');
+    this.started ??= performance.now();
+    const session = await page.context().newCDPSession(page);
+    const track = { page: ++this.pages, session, lastMs: -Infinity };
+    this.track = track;
+    track.listener = ({ data, sessionId }) => {
+      void session.send('Page.screencastFrameAck', { sessionId }).catch(error => {
+        if (this.track === track && !track.stopping) this.error ??= error;
+      });
+      if (track.stopping || this.error) return;
+      try { this.retain(data, track); } catch (error) { this.error ??= error; }
+    };
+    session.on('Page.screencastFrame', track.listener);
+    await session.send('Page.startScreencast', {
+      format: 'jpeg', quality: 60, maxWidth: recordingWidth, maxHeight: recordingHeight, everyNthFrame: 2,
+    });
+  }
+
+  async checkpoint() {
+    if (this.error) throw this.error;
+    const track = this.track;
+    const { data } = await track.session.send('Page.captureScreenshot', {
+      format: 'jpeg', quality: 60, captureBeyondViewport: false,
+      clip: { x: 0, y: 0, ...viewport, scale: recordingWidth / viewport.width },
+    });
+    this.retain(data, track, true);
+  }
+
+  async stop({ finalFrame = false } = {}) {
+    const track = this.track;
+    if (!track) return;
+    track.stopping = true;
+    try {
+      await track.session.send('Page.stopScreencast');
+      if (finalFrame) await this.checkpoint();
+    } finally {
+      this.track = undefined;
+      track.session.off('Page.screencastFrame', track.listener);
+      await track.session.detach();
+    }
+    if (this.error) throw this.error;
+  }
+
+  async save() {
+    assert.ok(!this.track && this.different.size === 3, 'Browser recording lacks three distinct browser frames');
+    const digest = createHash('sha256');
+    const handle = await open(this.path, 'wx', 0o600);
+    try {
+      for (const line of [...this.lines, JSON.stringify({ end: this.frames })]) {
+        const content = `${line}\n`;
+        await handle.writeFile(content);
+        digest.update(content);
+      }
+    } finally {
+      await handle.close();
+    }
+    return digest.digest('hex');
+  }
+}
+
+const recorder = recording ? new BrowserRecording(recording) : undefined;
 
 async function prepareFixture() {
   await mkdir(home);
@@ -158,7 +258,7 @@ async function prepareSessions(fixtures = []) {
 
 async function openSessions() {
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 800 }, colorScheme: 'light', reducedMotion: 'reduce',
+    viewport, colorScheme: 'light', reducedMotion: 'reduce',
     locale: 'en-US', timezoneId: 'UTC', serviceWorkers: 'block', acceptDownloads: false,
   });
   let outside;
@@ -183,6 +283,7 @@ async function openSessions() {
     }
   });
   const page = await context.newPage();
+  await recorder?.start(page);
   page.setDefaultTimeout(30_000);
   const writes = [];
   let sessionProof, listAdmissionTimeout;
@@ -238,7 +339,9 @@ async function openSessions() {
   assert.equal((await page.goto(origin + route, { waitUntil: 'domcontentloaded', timeout: 60_000 }))?.status(), 200);
   const servedCommit = await page.evaluate(() => globalThis.OPENCLAW_CONTROL_UI_BUILD_INFO?.commit);
   assert.equal(servedCommit, expectedCommit, 'Served UI bundle does not identify the verified commit');
+  await recorder?.checkpoint();
   await page.getByLabel('Gateway secret', { exact: true }).fill(token);
+  await recorder?.checkpoint();
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   const activeProof = () => sessionProof && !sessionProof.socket.isClosed() && sessionProof;
   const missingList = 'The connected browser did not receive the Gateway session list';
@@ -266,11 +369,13 @@ async function openSessions() {
 
 async function capture(view, evidence = {}) {
   view.assertConnectedPage();
+  await recorder?.stop({ finalFrame: true });
   await view.page.screenshot({ path: screenshot, fullPage: false, animations: 'disabled', caret: 'hide' });
   view.assertConnectedPage();
+  const recordingSha256 = await recorder?.save();
   emit('ui', { route: '/sessions', gatewayPid: child.pid, servedCommit: view.servedCommit, handshake: view.proof.handshake,
     readback: { method: 'sessions.list', count: view.proof.sessions.length, archived: view.proof.archived },
-    screenshot: true, ...evidence });
+    screenshot: true, ...(recorder ? { recording: true, recordingJourney: journey, recordingSha256 } : {}), ...evidence });
 }
 
 function rowFor(view, key) {
@@ -288,6 +393,7 @@ async function assertSession(view, fixture, label = fixture.label) {
 
 async function restartSessions() {
   // Keep only the disposable on-disk state while replacing both application processes.
+  await recorder?.stop({ finalFrame: true });
   await browser.close();
   browser = undefined;
   const previousPid = child.pid;
@@ -314,13 +420,16 @@ async function verifyRename(fixture, view) {
   await assertSession(view, fixture);
   let dialog = await renameDialog(view, row);
   await dialog.getByRole('textbox').fill('iBoard canceled fixture edit');
+  await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await dialog.waitFor({ state: 'hidden' });
   await row.getByText(originalLabel, { exact: true }).waitFor();
   assert.equal(view.writes.length, 0, 'Cancel sent a session mutation');
+  await recorder?.checkpoint();
 
   dialog = await renameDialog(view, row);
   await dialog.getByRole('textbox').fill(finalLabel);
+  await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   const write = await observe(() => view.writes.find(entry => entry.accepted), 'Gateway did not accept browser rename');
   assert.equal(view.writes.length, 1, 'Expected one session mutation for save');
@@ -352,9 +461,11 @@ async function verifyDelete(target, survivor, canceledView) {
   await assertSession(canceledView, target);
   await assertSession(canceledView, survivor);
   const canceled = await confirmation(canceledView);
+  await recorder?.checkpoint();
   await canceled.getByRole('button', { name: 'Cancel', exact: true }).click();
   await canceled.waitFor({ state: 'hidden' });
   canceledView.assertConnectedPage();
+  await recorder?.stop({ finalFrame: true });
   await canceledView.context.close();
   assert.equal(canceledView.writes.length, 0, 'Cancel sent a session deletion');
 
@@ -366,6 +477,7 @@ async function verifyDelete(target, survivor, canceledView) {
   view.assertConnectedPage();
 
   const dialog = await confirmation(view);
+  await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
   const write = await observe(() => view.writes.find(entry => entry.accepted && entry.deleted),
     'Gateway did not accept the selected session deletion', 90_000);
@@ -425,7 +537,7 @@ try {
   passed = true;
 } finally {
   try {
-    await browser?.close();
+    try { await recorder?.stop(); } finally { await browser?.close(); }
   } finally {
     try {
       await stopGateway();

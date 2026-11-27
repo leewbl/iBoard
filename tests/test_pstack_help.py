@@ -40,6 +40,7 @@ class PstackHelpTests(unittest.TestCase):
             'benny-verify-candidate': 'benny_reproduce verify-candidate',
             'benny-repair': 'benny_repair',
             'benny-draft': 'benny_draft',
+            'review-browser-recording': 'browser_recording',
             'review-pr': 'interrogate',
             'ship-stack': 'stack_ship plan',
             'inspect-task': 'pickup',

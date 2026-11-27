@@ -8,7 +8,9 @@ import unittest
 import zlib
 from pathlib import Path
 
-from runner.sandbox import MAX_CREATE_OUTPUT, MAX_OUTPUT, SandboxError, _copy_screenshot, _time_ns, _validated_png, run_sandbox
+from runner.sandbox import (
+    MAX_CREATE_OUTPUT, MAX_OUTPUT, MAX_RECORDING, SandboxError, _copy_screenshot, _time_ns, _validated_png, run_sandbox,
+)
 
 
 def tiny_png():
@@ -546,6 +548,93 @@ class SandboxTests(unittest.TestCase):
             self.assertEqual(destination.is_file(), capture)
             if capture:
                 self.assertEqual(report['screenshot_sha256'], hashlib.sha256(tiny_png()).hexdigest())
+
+    def recording_run(self, screenshot, recording, write_recording, *, exit_code=0, capture_failure=False,
+                      screenshot_contents=None):
+        def invoke(args, **kwargs):
+            if args[1] == 'create':
+                self.assertIn('--network=none', args)
+                self.assertIn('--read-only', args)
+                self.assertIn('WORKBENCH_RECORDING_PATH=/artifacts/recording.jsonl', args)
+                self.assertIn('WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png', args)
+                self.assertEqual(args.count('--mount'), 2)
+                mount = next(arg for arg in args if arg.endswith(',dst=/artifacts'))
+                artifacts = Path(mount.split(',')[1].removeprefix('src='))
+                (artifacts / 'screenshot.png').write_bytes(
+                    tiny_png() if screenshot_contents is None else screenshot_contents)
+                write_recording(artifacts / 'recording.jsonl')
+            if args[1] == 'start' and exit_code:
+                return subprocess.CompletedProcess(args, exit_code)
+            return self.fake(args, **kwargs)
+
+        return self.run_it(invoke, source_root='/app', workspace_read_only=True,
+                           screenshot_output=screenshot, recording_output=recording,
+                           capture_failure_screenshot=capture_failure)
+
+    def test_recording_is_copied_and_bound_to_the_screenshot_on_allowed_exits(self):
+        frames = b'{"frame":1}\n'
+        for exit_code, capture, expected in ((0, False, True), (1, True, True),
+                                             (1, False, False), (2, True, False)):
+            with self.subTest(exit_code=exit_code, capture_failure=capture):
+                screenshot = self.workspace / f'{exit_code}-{capture}.png'
+                recording = self.workspace / f'{exit_code}-{capture}.jsonl'
+                report = self.recording_run(screenshot, recording, lambda path: path.write_bytes(frames),
+                                            exit_code=exit_code, capture_failure=capture)
+                self.assertEqual(report['exit_code'], exit_code)
+                self.assertTrue(report['cleanup_confirmed'])
+                self.assertEqual(recording.is_file(), expected)
+                self.assertEqual(screenshot.is_file(), expected)
+                if expected:
+                    self.assertEqual(report['screenshot_path'], str(screenshot.resolve()))
+                    self.assertEqual(recording.read_bytes(), frames)
+                    self.assertEqual(report['recording_path'], str(recording.resolve()))
+                    self.assertEqual(report['recording_sha256'], hashlib.sha256(frames).hexdigest())
+                else:
+                    self.assertNotIn('recording_sha256', report)
+
+    def test_invalid_recording_cannot_produce_a_recording_receipt(self):
+        def oversized(path):
+            with path.open('wb') as stream:
+                stream.truncate(MAX_RECORDING + 1)
+
+        for name, writer, png in (
+                ('absent', lambda path: None, tiny_png()),
+                ('oversized', oversized, tiny_png()),
+                ('source-link', lambda path: path.symlink_to(self.workspace), tiny_png()),
+                ('bad-png', lambda path: path.write_bytes(b'{"frame":1}\n'), b'invalid')):
+            with self.subTest(name=name):
+                recording = self.workspace / f'{name}.jsonl'
+                report = self.recording_run(self.workspace / f'{name}.png', recording, writer,
+                                            screenshot_contents=png)
+                self.assertTrue(report['cleanup_confirmed'])
+                self.assertIn('error', report)
+                self.assertNotIn('recording_sha256', report)
+                self.assertFalse(recording.exists())
+
+    def test_recording_cannot_overwrite_an_existing_host_artifact(self):
+        recording = self.workspace / 'existing.jsonl'
+        prior_bytes = b'{"existing":true}\n'
+        recording.write_bytes(prior_bytes)
+        report = self.recording_run(self.workspace / 'new.png', recording,
+                                    lambda path: path.write_bytes(b'{"recorded":true}\n'))
+        self.assertTrue(report['cleanup_confirmed'])
+        self.assertIn('cannot collect recording', report['error'])
+        self.assertNotIn('recording_sha256', report)
+        self.assertEqual(recording.read_bytes(), prior_bytes)
+
+    def test_recording_cannot_use_the_screenshot_path_or_an_unscoped_run(self):
+        png = self.workspace / 'screenshot.png'
+        jsonl = self.workspace / 'recording.jsonl'
+        allowed = {'source_root': '/app', 'workspace_read_only': True,
+                   'screenshot_output': png, 'recording_output': jsonl}
+        for override in ({'source_root': '/workspace'}, {'workspace_read_only': False},
+                         {'screenshot_output': None}, {'recording_output': png},
+                         {'screenshot_output': jsonl}, {'profile_output': self.workspace / 'cpu.cpuprofile'},
+                         {'statechart_output': self.workspace / 'statechart'}, {'regression_source': b'fixture'}):
+            with self.subTest(fields=override):
+                with self.assertRaisesRegex(SandboxError, 'recording requires'):
+                    self.run_it(**{**allowed, **override})
+                self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":

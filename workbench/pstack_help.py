@@ -248,6 +248,12 @@ SCENARIOS = {
         'skills/reproduce-and-fix-issues/SKILL.md', 'benny_repair',
         'Fresh ownership checks, autonomous causal repair, frozen offline replay and an independent review',
         'Applies to a prepared non-UI task. The result stays at the verified local delivery checkpoint.'),
+    'review-browser-recording': Scenario(
+        'Replay and independently review recorded browser evidence',
+        'automations/benny/skills/reproduce-and-fix-issues/references/control-adapter.md',
+        'skills/verify-openclaw/SKILL.md#browser-recordings', 'browser_recording',
+        'Commit-bound browser recording, final screenshot, and a review of the sampled visible state',
+        'The reviewer observes the supplied frames and final screenshot. It does not perform browser actions.'),
     'benny-draft': Scenario(
         'Submit a draft PR for a verified Benny repair',
         'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',

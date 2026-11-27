@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 import time
 
 from runner.sandbox import run_sandbox
-from workbench import cli, project_verify, verify_openclaw, workflow
+from workbench import browser_recording, cli, project_verify, verify_openclaw, workflow
 
 
 def _image_reference(value):
@@ -114,6 +114,8 @@ def _complete_run(engine, check, raw, report, containers):
                 or cli.digest(screenshot) != raw.get("screenshot_sha256")
                 or (check.get("browser") and not project_verify._browser_receipt(raw, screenshot, engine.revision))):
             return False
+    if check.get("recording") and not browser_recording.receipt(raw, report.with_suffix(".jsonl"), engine.revision):
+        return False
     return True
 
 
@@ -155,7 +157,7 @@ def _inputs(manifest, helpers, journey, oracle, oracle_marker, oracle_failure_ma
     inputs = {doctor["helper"]: project_verify._helper(source, doctor["helper"]),
               primary["helper"]: primary_input, oracle_name: oracle_input}
     digests = {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
-    alternate = {key: value for key, value in primary.items() if key not in ("args", "browser", "screenshot")}
+    alternate = {key: value for key, value in primary.items() if key not in ("args", "browser", "screenshot", "recording")}
     alternate.update(helper=oracle_name, marker=oracle_marker, failure_marker=oracle_failure_marker, screenshot=False)
     return contract['project'], doctor, primary, alternate, inputs, digests
 

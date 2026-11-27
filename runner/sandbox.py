@@ -23,6 +23,7 @@ TMPFS_MB = 1024
 MAX_OUTPUT = 1_000_000
 MAX_CREATE_OUTPUT = 65_536
 MAX_SCREENSHOT = 8_000_000
+MAX_RECORDING = 24_000_000
 MAX_DIAGNOSTIC_OUTPUT = 65_536
 DIAGNOSTIC_TIMEOUT = 3
 PROFILE_ARTIFACTS = {
@@ -207,7 +208,8 @@ def _failure_diagnostics(invoke, docker, container_output, report, until):
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
                 workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None,
-                statechart_output=None, pids_limit=256, capture_failure_screenshot=False):
+                statechart_output=None, pids_limit=256, capture_failure_screenshot=False,
+                recording_output=None):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -220,6 +222,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     Statechart writes only named TLC reports and charts through a separate
     mount, including a normal invariant-violation exit.
     A declared screenshot check can also retain its PNG on an observed exit 1.
+    A read-only image journey can collect a bounded JSONL recording with its PNG.
     ``invoke`` and ``find_executable`` permit unit testing without a Docker daemon.
     """
     docker = find_executable("docker")
@@ -235,6 +238,12 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     if capture_failure_screenshot and screenshot_output is None:
         raise SandboxError("failure screenshot capture requires a screenshot output path")
     regression = regression_source is not None or regression_file is not None
+    if recording_output is not None and (
+            screenshot_output is None or source_root != '/app' or not workspace_read_only
+            or regression or profile_output is not None or statechart_output is not None
+            or Path(recording_output).suffix != '.jsonl'
+            or Path(recording_output).resolve() == Path(screenshot_output).resolve()):
+        raise SandboxError("recording requires a distinct JSONL output and screenshot in a read-only /app run")
     profile = None
     if profile_output is not None:
         profile = PROFILE_ARTIFACTS.get(Path(profile_output).suffix)
@@ -343,6 +352,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 mount = ['--mount', f'type=bind,src={artifact_dir},dst=/artifacts']
                 if screenshot_output is not None:
                     mount.extend(['--env', 'WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png'])
+                if recording_output is not None:
+                    mount.extend(['--env', 'WORKBENCH_RECORDING_PATH=/artifacts/recording.jsonl'])
                 create[create.index('--workdir'):create.index('--workdir')] = mount
             if regression_source is not None:
                 asset = Path(artifact_dir) / ('check.mjs' if regression_file is None else 'check.ts')
@@ -370,6 +381,10 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 if screenshot_output is not None and result.returncode in capture_codes:
                     report['screenshot_sha256'] = _copy_screenshot(artifact_dir, screenshot_output)
                     report['screenshot_path'] = str(Path(screenshot_output).resolve())
+                    if recording_output is not None:
+                        report['recording_sha256'] = _copy_artifact(
+                            artifact_dir, 'recording.jsonl', recording_output, MAX_RECORDING, 'recording')
+                        report['recording_path'] = str(Path(recording_output).resolve())
                 if profile is not None and result.returncode == 0:
                     filename, limit = profile
                     report['profile_sha256'] = _copy_artifact(artifact_dir, filename, profile_output,

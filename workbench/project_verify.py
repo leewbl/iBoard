@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 import time
 
 from runner.sandbox import SandboxError, run_sandbox
-from workbench import cli, project_surface, workflow
+from workbench import browser_recording, cli, project_surface, workflow
 from workbench.verify_pr import VerifyError, _bounded_json
 
 
@@ -60,7 +60,7 @@ def _load_contract(path):
     ids, markers = set(), set()
     for check in [raw["doctor"], *features]:
         fields = {"id", "helper", "marker", "reach", "drive", "observe", "gotchas", "source"}
-        optional = {"screenshot", "entrypoints", "failure_marker", "args", "browser"}
+        optional = {"screenshot", "entrypoints", "failure_marker", "args", "browser", "recording"}
         if (not isinstance(check, dict) or set(check) - fields - optional or not fields <= set(check)):
             raise ValueError("each check needs id, helper, marker, reach, drive, observe, gotchas and source")
         check_id = _slug(check["id"])
@@ -85,6 +85,8 @@ def _load_contract(path):
             _text(arg, "helper argument", 128)
         if type(check.get("browser", False)) is not bool or (check.get("browser") and not check.get("screenshot")):
             raise ValueError("a browser journey requires a screenshot")
+        if type(check.get("recording", False)) is not bool or (check.get("recording") and not check.get("browser")):
+            raise ValueError("a recording requires a declared browser journey")
         for key in ("reach", "drive", "observe", "gotchas"):
             _text(check[key], key)
         sources = check["source"]
@@ -143,6 +145,8 @@ def _artifacts(contract, helpers):
         commands = "\n".join(f"- `{command}`" for command in feature.get("entrypoints", []))
         entrypoints = f"\n{commands}\n" if commands else ""
         evidence = f"`{key}.json` and `{key}.png`" if feature.get("browser") else f"`{key}.json`"
+        if feature.get("recording"):
+            evidence += f", plus a timestamped recording in `{key}.jsonl`"
         maps[f"features/{key}.md"] = (
             f"# {key}\n\n## Sub-features\n\n{feature['observe']}\n\n"
             f"## How to get to it (user POV)\n\n{feature['reach']}\n{entrypoints}\n"
@@ -261,6 +265,7 @@ class Verification:
         command = _command(check)
         browser = check.get("browser", False)
         screenshot = self.output / f"{basename}.png" if check.get("screenshot") else None
+        recording = self.output / f"{basename}.jsonl" if check.get("recording") else None
         helper_sha = None
         # Use a private frozen copy of the explicit helper. No host project, credentials,
         # installed skill tree or evidence directory is mounted into the container.
@@ -279,7 +284,8 @@ class Verification:
                                        memory_mb=self.memory_mb, workspace_read_only=True,
                                        source_root="/app", screenshot_output=screenshot,
                                        **({"capture_failure_screenshot": True} if capture_failure_screenshot else {}),
-                                       **({"pids_limit": 384} if browser else {}))
+                                       **({"pids_limit": 384} if browser else {}),
+                                       **({"recording_output": recording} if recording else {}))
             except (ValueError, OSError, SandboxError) as error:
                 run = {"error": str(error), "diagnostic": "sandbox"}
         passed = (run.get("container_created") is True and run.get("cleanup_confirmed") is True
@@ -287,6 +293,7 @@ class Verification:
                   and run.get("command") == command and run.get("exit_code") == 0 and not run.get("error")
                   and not run.get("timed_out") and check["marker"] in run.get("stdout", "").splitlines()
                   and (not browser or _browser_receipt(run, screenshot, self.revision))
+                  and (recording is None or browser_recording.receipt(run, recording, self.revision))
                   and (screenshot is None or screenshot.is_file() and cli.digest(screenshot) == run.get("screenshot_sha256")))
         path = self.output / f"{basename}.json"
         run.update(schema=cli.SCHEMA, commit=self.revision, check=key, passed=passed,
