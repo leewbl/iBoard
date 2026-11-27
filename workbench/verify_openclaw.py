@@ -22,25 +22,69 @@ JOURNEYS = {
 }
 SESSION_RENAME = 'control-ui-session-rename'
 SESSION_DELETE = 'control-ui-session-delete'
+SESSION_FILTER = 'control-ui-session-status-filter'
 SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE)
+SESSION_JOURNEYS = (*SESSION_WRITES, SESSION_FILTER)
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
     SESSION_RENAME: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS'),
     SESSION_DELETE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_DELETE_PASS'),
+    SESSION_FILTER: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_STATUS_FILTER_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
 def _timeout(journey):
-    return 480 if journey in SESSION_WRITES else 320
+    return 480 if journey in SESSION_JOURNEYS else 320
 
 
 def _journey(journey):
     helper, marker = (BROWSER_JOURNEYS if journey in BROWSER_JOURNEYS else JOURNEYS)[journey]
     command = ['node', f'/workspace/{helper}']
-    if journey in SESSION_WRITES:
+    if journey in SESSION_JOURNEYS:
         command.append(journey.removeprefix('control-ui-'))
     return helper, marker, command
+
+
+def _filter_evidence(ui, readback):
+    evidence = ui['filter']
+    fixtures = evidence['fixtures']
+    active, archived = fixtures['active'], fixtures['archived']
+    if not (readback['count'] == 1 and 'archived' not in readback
+            and type(evidence['sessionMutations']) is int and evidence['sessionMutations'] == 0
+            and active['key'] == 'agent:main:iboard-browser-verification'
+            and archived['key'] == 'agent:main:iboard-browser-archived'
+            and all(isinstance(item['sessionId'], str) and item['sessionId'].strip() for item in (active, archived))
+            and active['sessionId'] != archived['sessionId']):
+        return False
+    expectations = (
+        ('active', 'load', [active]),
+        ('archived', 'filter', [archived]),
+        ('all', 'filter', [active, archived]),
+        ('active', 'filter-refresh', [active]),
+    )
+    steps = evidence['steps']
+    if not isinstance(steps, list) or len(steps) != len(expectations):
+        return False
+    requests = set()
+    for step, (state, trigger, expected) in zip(steps, expectations):
+        if state == 'active':
+            scope_matches = 'archived' not in step
+        elif state == 'archived':
+            scope_matches = step.get('archived') is True
+        else:
+            scope_matches = step.get('archived') == 'all'
+        request = step['requestId']
+        if not (scope_matches and (step.get('state'), step.get('trigger'), step.get('source')) ==
+                (state, trigger, 'sessions-page') and isinstance(request, str) and request.strip()
+                and request not in requests):
+            return False
+        if (not isinstance(step['gateway'], list) or not isinstance(step['visibleKeys'], list)
+                or sorted(step['gateway'], key=lambda item: item['key']) != sorted(expected, key=lambda item: item['key'])
+                or sorted(step['visibleKeys']) != sorted(item['key'] for item in expected)):
+            return False
+        requests.add(request)
+    return True
 
 
 def _browser_evidence(report, screenshot):
@@ -68,7 +112,11 @@ def _browser_evidence(report, screenshot):
                 and cleanup == {'phase': 'cleanup', 'exit': clean_exit, 'scratchRemoved': True}):
             return False
         if not restart_required:
-            return readback['count'] == 0 and 'mutation' not in ui and ui.get('gatewayPid') == initial_pid
+            if 'mutation' in ui or ui.get('gatewayPid') != initial_pid:
+                return False
+            if report['journey'] == SESSION_FILTER:
+                return _filter_evidence(ui, readback)
+            return readback['count'] == 0
         restart = activity[0]
         restarted_pid = restart['gatewayPid']
         if not (restart.get('phase') == 'restart' and restart.get('origin') == doctor['origin']
@@ -214,6 +262,11 @@ def required_journeys(data, head):
         selected.append(SESSION_RENAME)
     if sessions_ui or 'src/gateway/server-methods/sessions-delete.ts' in paths:
         selected.append(SESSION_DELETE)
+    if sessions_ui or any(path in ('ui/src/components/solid/settings-ui.tsx',
+                                   'src/gateway/server-methods/sessions-read.ts',
+                                   'src/gateway/server-methods/sessions-patch-archive.ts')
+                          for path in paths):
+        selected.append(SESSION_FILTER)
     return selected
 
 
@@ -331,7 +384,7 @@ def main(argv=None):
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument('--screenshot', type=Path, help='PNG evidence path for a Control UI browser journey')
     parser.add_argument('--recording', type=Path, help='JSONL recording path for a Control UI browser journey')
-    parser.add_argument("--timeout", type=int, help='seconds (default: 480 for session writes, otherwise 320)')
+    parser.add_argument("--timeout", type=int, help='seconds (default: 480 for Sessions journeys, otherwise 320)')
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
     if (args.journey in BROWSER_JOURNEYS) != (args.screenshot is not None):

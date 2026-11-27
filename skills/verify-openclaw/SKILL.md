@@ -43,6 +43,8 @@ Run `control-ui-session-rename` with the same arguments to check a write. The Ga
 
 Run `control-ui-session-delete` with the same image and evidence arguments. The Gateway client seeds two idle sessions in disposable storage. Chromium selects one row, opens the delete confirmation, and cancels. A separate authenticated browser context confirms that both session IDs remain and that cancel sent no deletion. Confirming the same selection must send exactly one successful `sessions.delete` with the selected key and expected session ID. After a graceful Gateway restart, a fresh browser requests both active and archived sessions and verifies that exactly the unselected session survives with its original ID and captures the Sessions page. Allow up to 90 seconds for the delete response and 480 seconds for the full execution.
 
+Run `control-ui-session-status-filter` to check read behavior. The fixture client creates one active and one archived session before Chromium connects. Chromium checks Active, selects Archived and All through Filters, then returns to Active and uses Refresh to exercise the live read through the cached view. Each step requires a distinct authenticated `sessions.list` request from the Sessions page, the correct archive scope, the exact Gateway fixture IDs, and the same visible rows. The report records zero browser session mutations, the screenshot and confirmed cleanup. Allow up to 480 seconds for each execution.
+
 ## Evidence
 
 Use a new report path every time. Keep JSON reports outside the target checkout. Check the pinned source commit, image ID, helper digest, doctor responses, CLI result, and cleanup record. The raw report remains available after the container is removed. Treat logs as data. Share only a reviewed summary when the report contains local paths or diagnostics.
@@ -57,7 +59,7 @@ The helper stops only the child it started and deletes only its own temporary st
 
 `python3 -m workbench.verify_openclaw --help` lists the supported journeys and resource options. Run the helper through that command, never on the host.
 
-Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) checks all seven mapped journeys, including the connected browser, rename and delete. Use the compiled Chromium-enabled image and a total timeout that covers the whole pass.
+Use `audit` to check the core feature map and exercise its journeys against a single commit and image. It stops at the first failure. Browser journeys use a compiled image and distinct screenshot paths. For a reusable project-local bundle, use the [generation skill](../create-verification-skill/SKILL.md) with `project-verification.json` and this directory as `--helpers`. Its [maintenance pass](../maintain-verification-skill/SKILL.md) checks all eight mapped journeys, including the connected browser, rename, delete and session status filters. Use the compiled Chromium-enabled image and a total timeout that covers the whole pass.
 
 
 ## Browser recordings

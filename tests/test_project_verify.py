@@ -178,7 +178,7 @@ class ProjectVerificationTests(unittest.TestCase):
         wrong_picture = self.run_mode('drive', 'wrong-picture', skill=bundle, journey='second')
         self.assertEqual(wrong_picture['outcome'], 'blocked')
 
-    def test_browser_contract_and_openclaw_gate_share_the_three_entrypoints(self):
+    def test_browser_contract_and_openclaw_gate_share_the_same_entrypoints(self):
         check = self.contract['features'][1]
         check['browser'] = True
         self.manifest.write_text(json.dumps(self.contract))
