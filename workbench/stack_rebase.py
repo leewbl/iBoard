@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from workbench import cli, delivery, pr_watch, stack_ship, stack_verify, start, verify_pr
+from workbench import cli, delivery, pr_watch, run_control, stack_ship, stack_verify, start, verify_pr
 from workbench.task_lock import observe_task_lock, task_lock
 
 
@@ -132,6 +132,7 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
         repo, landed, member, plan_sha = _next(plan_path)
         new_base = _observe(reader, repo, landed, member)
         old_task, original, stage, state, request = _retained(repo, member)
+        run_control.admit(old_task, RebaseError)
     settings = stage['run_settings']
     source_mode = settings['source_mode']
     if source_mode == 'image' and not image:
@@ -240,7 +241,7 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
             or any(not isinstance(value,str) or not pr_watch.SHA.fullmatch(value) for value in (base,head))
             or base == child['base'] or head in (child['head'],base)):
         raise RebaseError('rebased candidate no longer matches the frozen shipping plan')
-    _, original, _, original_state, _ = _retained(repo, child)
+    original_task, original, _, original_state, _ = _retained(repo, child)
     stack_ship._scope(reader, repo)
     task = Path(receipt['task']).resolve(strict=True)
     journal_path = receipt_path.with_suffix('.publish.json')
@@ -319,6 +320,8 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
             if (observed() != current or time.monotonic() >= deadline
                     or cli.digest(receipt_path) != receipt_sha):
                 raise RebaseError('publication inputs changed before retarget')
+            run_control.admit(original_task, RebaseError)
+            run_control.admit(task, RebaseError)
             mark('retarget-intent')
             try:
                 reader.retarget(repo,number)
@@ -330,6 +333,8 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
         if (observed() != (child['head'],'main',base) or time.monotonic() >= deadline
                 or cli.digest(receipt_path) != receipt_sha):
             raise RebaseError('rebased upload requires the confirmed current main base and old head')
+        run_control.admit(original_task, RebaseError)
+        run_control.admit(task, RebaseError)
         mark('push-intent')
         try:
             reader.push_rebased(data['repo'],repo,branch,child['head'],head)

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from workbench import autopilot, cli, feature_context, workflow
+from workbench import autopilot, cli, feature_context, run_control, workflow
 from workbench.task_lock import task_lock, TaskBusy
 from model import glm_vision
 
@@ -61,6 +61,7 @@ def _finish_screenshots(task, *, vision, stage=None):
             or any(not isinstance(item, str) or not item.strip() or len(item) > 15000 for item in descriptions)):
         raise StartError('invalid screenshot preparation state')
     while len(descriptions) < len(images):
+        run_control.admit(task, StartError)
         entry = images[len(descriptions)]
         data = (task.parent / 'inputs' / entry['file']).read_bytes()
         timeout = min(90, autopilot._remaining(cli.read(task)))
@@ -100,6 +101,7 @@ def _resume_locked(task_path, *, run, vision):
     resumed = False
     try:
         data = cli.read(task)
+        run_control.admit(task, StartError)
         state_path = task.parent / 'autopilot.json'
         if state_path.is_file() and cli.read(state_path).get('phase') == 'complete':
             raise StartError('completed task cannot be resumed; use --inspect to look up the outcome')

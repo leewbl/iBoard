@@ -15,6 +15,8 @@ class GatewayGateTests(unittest.TestCase):
         self.head = 'a' * 40
         self.data = {'id': 'pilot', 'repo': str(self.root), 'base_commit': 'b' * 40,
                      'implementer': 'builder', 'evidence': [], 'criteria': [{'id': 'x', 'text': 'x'}]}
+        self.task = self.root / 'task.json'
+        cli.write(self.task, {'schema': cli.SCHEMA, **self.data})
         self.destination = 'owner/myopenclaw'
         changed_paths = patch.object(cli, 'git', return_value='src/gateway/server.ts\0')
         self.changed_paths = changed_paths.start()
@@ -97,10 +99,9 @@ class GatewayGateTests(unittest.TestCase):
             else:
                 self.reports(**kwargs)
             with patch.object(cli, 'read', return_value=self.data), patch.object(cli, 'gate', return_value=(self.head, [])), patch.object(publish.delivery, '_independent_verification'):
-                # Test the unlocked implementations without an on-disk task lock.
                 for call, extra in ((publish.publish, ()), (publish.republish, (1, 'b' * 40))):
                     with self.assertRaisesRegex(publish.PublishError, 'two passing'):
-                        call.__wrapped__(self.root / 'task.json', self.destination, *extra, github=github)
+                        call(self.task, self.destination, *extra, github=github)
         self.assertEqual(github.mock_calls, [])
 
     def test_passes_matching_pair_and_blocks_modified_evidence(self):
@@ -200,7 +201,7 @@ class GatewayGateTests(unittest.TestCase):
                         patch.object(cli, 'gate', return_value=(self.head, [])), \
                         patch.object(publish.delivery, '_independent_verification'):
                     with self.assertRaisesRegex(publish.PublishError, 'control-ui-session-rename'):
-                        publish.publish.__wrapped__(self.root / 'task.json', self.destination, github=github)
+                        publish.publish(self.task, self.destination, github=github)
         self.assertEqual(github.mock_calls, [])
         self.reports(rename=True)
         receipts = verify_openclaw.require(self.data, self.head, self.destination)

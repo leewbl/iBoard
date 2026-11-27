@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from workbench import autopilot, cli, decisions, delivery, start
+from workbench import autopilot, cli, decisions, delivery, run_control, start
 from workbench.task_lock import observe_task_lock
 
 
@@ -211,6 +211,19 @@ def inspect(task_path, *, since=None, check_pr=False, github=None):
     task = Path(task_path).expanduser().resolve(strict=True)
     with observe_task_lock(task) as lock:
         report = _inspect(task, lock, since)
+        try:
+            control = run_control.read(task)
+        except (OSError, run_control.ControlError) as error:
+            report.update(execution='needs-inspection', next='inspect-operator-hold',
+                          operator_hold_error=str(error))
+        else:
+            if control:
+                report['operator_hold'] = control
+                if control['status'] == 'held':
+                    if lock == 'held':
+                        report['next'] = 'wait-for-admitted-step'
+                    elif report['execution'] == 'paused':
+                        report.update(execution='held', next='release-operator-hold-before-resume')
     if check_pr and report.get('pr'):
         pr = report['pr']
         try:

@@ -24,6 +24,8 @@ iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/
 
 接续或查看已留存任务时，使用 [`workbench.pickup`](../skills/pickup/SKILL.md) 或 `workbench.resume --inspect`。工具观察现有任务锁，核对工作树、输入和证据哈希，区分已记录的发布与合并结果。可用 `--since` 查看指定时间后的事件，用 `--check-pr` 查询对应 PR 的当前提交和检查状态。该入口提供接续判断，执行仍经过原有恢复和交付门禁。
 
+[`workbench.run_control hold`](../skills/pause-safely/SKILL.md) 可在另一进程暂停指定任务。已经开始的编辑步骤可以留下正常提交和检查点，后续验证、依赖派发和 GitHub 写入会检查暂停记录。查看确认停点后，显式解除才能按原任务预算恢复。
+
 长任务的阶段决定保存在任务目录的 `decisions.tsv`。每行记录时间、阶段、决定、理由、证据和结果。[`workbench.decisions audit`](../skills/show-me-your-work/SKILL.md) 核对保留文件的哈希和 Git 提交，显示哪些链接仍需在线查看。新的运行会列出继承记录的时间范围，人工可追加说明或纠正。
 
 Claude Code 执行时会为该次运行保留可见回复、工具调用名称和结果状态，也保留直接 GLM 评审的回执。用 `workbench.decision_review` 选择一轮运行和可用的 OpenAI 模型，逐条对照决策、回执和哈希绑定的报告。受限的 Codex CLI 会话只接收该轮的材料。结果必须引用实际证据，运行或报告在审查期间发生变化则放弃本轮结论。已导入的外部会话单独注明来源。跨供应商复核由技能显式发起，OpenClaw 发布门禁仍使用其独立的断网验收。

@@ -102,6 +102,11 @@ SCENARIOS = {
         'Resume a paused iBoard task at its saved checkpoint', 'skills/poteto-mode/playbooks/session-pickup.md',
         'README.md#工作台插件原型', 'resume', 'A restorable task with matching inputs and a valid budget',
         'Inspect the checkpoint first. Resume may run the saved task within its original authorization.'),
+    'pause-task': Scenario(
+        'Hold a task at its next execution or delivery boundary', 'skills/poteto-mode/playbooks/pause-safely.md',
+        'skills/pause-safely/SKILL.md', 'run_control hold',
+        'An operator request ID and the verifiable checkpoint shown by run_control show',
+        'Requires an explicit named task. Release is a separate action after the current step has finished.'),
     'catch-up': Scenario(
         'See progress since a selected time', 'skills/ketchup/SKILL.md',
         'skills/pickup/SKILL.md', 'pickup', 'Task events, supporting artifacts and optional live PR state',

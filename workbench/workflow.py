@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 
-from workbench import cli, tdd
+from workbench import cli, run_control, tdd
 from workbench.task_lock import locked_task
 from runner.sandbox import SandboxError, run_sandbox
 
@@ -368,6 +368,7 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     """
     task = Path(task).expanduser().resolve(strict=True)
     data = cli.read(task)
+    run_control.admit(task, WorkflowError)
     if data['status'] != 'running' or cli.enforce_budget(data):
         raise WorkflowError('task is stopped or its budget is exhausted')
     if not data['criteria']:
@@ -426,6 +427,7 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         runner_options.update(memory_mb=memory_mb, screenshot_output=screenshot_path)
     elif memory_mb != 2048:
         runner_options['memory_mb'] = memory_mb
+    run_control.admit(task, WorkflowError)
     try:
         report = runner(data['repo'], selected_image, command, min(timeout, remaining), **runner_options)
     except (SandboxError, OSError, ValueError) as exc:

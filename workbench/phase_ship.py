@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import time
 
-from workbench import cli, delivery, phase_contract, phase_dispatch, pr_watch, publish, stack_rebase, stack_ship, workflow
+from workbench import cli, delivery, phase_contract, phase_dispatch, pr_watch, publish, run_control, stack_rebase, stack_ship, workflow
 from workbench.task_lock import task_lock
 
 
@@ -265,6 +265,7 @@ def _run(root, contract, workflows, github, replay, publisher, merger):
                 landed[ident] = {'phase': ident, 'pr': member['number'], 'head': member['head'], 'main': main}
                 continue
             _require(observed == main, 'main differs from the approved trunk or last managed landing')
+            run_control.admit(original_task, PhaseShippingError)
             task = original_task
             if original_parent != main:
                 recheck_landings()
@@ -296,6 +297,8 @@ def _run(root, contract, workflows, github, replay, publisher, merger):
                 delivery._merge_workflows(data, workflows)
 
                 def before_write():
+                    run_control.admit(original_task, PhaseShippingError)
+                    run_control.admit(task, PhaseShippingError)
                     remaining()
                     recheck_landings()
                     _require(original_proof() == original and target_proof()[1] == proof,
@@ -303,14 +306,20 @@ def _run(root, contract, workflows, github, replay, publisher, merger):
                     _require(github.branch(repo, 'main') == main, 'main moved before GitHub write')
 
                 with _active(task):
-                    if not step:
+                    if not step or step['state'] == 'publish-paused':
                         before_write()
                         # Refuse to adopt a pre-existing matching branch or PR outside this run.
-                        _require(github.remote_head(repo, member['head_branch']) is None
-                                 and not github.pulls(repo, member['head_branch']),
+                        _require(step or (github.remote_head(repo, member['head_branch']) is None
+                                          and not github.pulls(repo, member['head_branch'])),
                                  'phase branch or pull request existed before shipping')
                         save(ident, 'publish-intent', **snapshot)
-                        published = publisher(task, repo, github=github)
+                        try:
+                            published = publisher(task, repo, github=github)
+                        except publish.PublishError as error:
+                            if isinstance(error.__cause__, run_control.Held):
+                                save(ident, 'publish-paused')
+                                return finish('held', ident, str(error))
+                            raise
                         number = published.get('pr')
                         _require(published.get('repo') == repo and published.get('head') == member['head']
                                  and type(number) is int and number >= 1, 'publisher returned a different PR')

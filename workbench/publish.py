@@ -12,7 +12,7 @@ import re
 import subprocess
 import tempfile
 
-from workbench import cli, delivery
+from workbench import cli, delivery, run_control
 from workbench.task_lock import locked_task
 
 
@@ -600,6 +600,7 @@ def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=
         delivery.recheck_refactor_write(task_path, data, head, repo, refactor_review)
     except delivery.DeliveryError as error:
         raise PublishError(str(error)) from error
+    run_control.admit(task_path, PublishError)
 
 
 @locked_task('task_path')
@@ -607,6 +608,7 @@ def publish(task_path, repo, github=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise PublishError('invalid repository')
     task_path = Path(task_path)
+    run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
     delivery.require_refactor_intake(task_path, data)
     if 'verification_target' in data:
@@ -689,6 +691,7 @@ def republish(task_path, repo, number, previous_head, github=None):
     if not isinstance(previous_head, str) or not re.fullmatch(r'[0-9a-f]{40}', previous_head):
         raise PublishError('invalid previously published revision')
     task_path = Path(task_path)
+    run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
     delivery.require_refactor_intake(task_path, data)
     if 'verification_target' in data:

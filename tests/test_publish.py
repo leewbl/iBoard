@@ -8,7 +8,7 @@ from unittest.mock import patch
 import subprocess
 import zlib
 
-from workbench import publish, cli
+from workbench import publish, cli, run_control
 from test_runner import tiny_png
 
 
@@ -179,6 +179,26 @@ class PublishTests(unittest.TestCase):
             with self.assertRaisesRegex(publish.PublishError, 'budget changed before PR creation'):
                 publish.publish(self.task, 'alice/fork', fake)
         self.assertEqual(fake.events, [('push', 'workbench/case', 'head')])
+
+    def test_operator_hold_between_push_and_create_reuses_the_exact_pushed_branch(self):
+        task = self.task
+
+        class HoldingGitHub(FakeGitHub):
+            def push_new(self, *args):
+                super().push_new(*args)
+                run_control.hold(task, 'pause after admitted branch push')
+
+        fake = HoldingGitHub()
+        cli.write(task, {'schema': cli.SCHEMA, 'id': 'case', 'repo': '/tmp/work', 'base_commit': 'base'})
+        with patch.object(publish.cli, 'gate', return_value=('head', [])), \
+             patch.object(publish.delivery, '_independent_verification'):
+            with self.assertRaisesRegex(publish.PublishError, 'operator hold') as error:
+                publish.publish(task, 'alice/fork', fake)
+            self.assertIsInstance(error.exception.__cause__, run_control.Held)
+            self.assertEqual(fake.events, [('push', 'workbench/case', 'head')])
+            run_control.release(task)
+            self.assertEqual(publish.publish(task, 'alice/fork', fake)['pr'], 7)
+        self.assertEqual(fake.events, [('push', 'workbench/case', 'head'), ('create', 'workbench/case')])
 
 
 class PublicEvidenceTests(unittest.TestCase):

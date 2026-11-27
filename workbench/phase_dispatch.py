@@ -12,7 +12,7 @@ import subprocess
 from threading import Event, Lock, TIMEOUT_MAX
 import uuid
 
-from workbench import autopilot, cli, delivery, phase_contract, phase_runtime, start, visual_parity, workflow
+from workbench import autopilot, cli, delivery, phase_contract, phase_runtime, run_control, start, visual_parity, workflow
 from workbench.task_lock import observe_task_lock, task_lock
 
 
@@ -174,6 +174,7 @@ def _run(root, contract, launch, resume, measure, execute, capture):
             with observe_task_lock(task_path) as lock_state:
                 if lock_state != 'idle':
                     raise DispatchError(f'phase dependency {name} is busy or missing its task lock')
+                run_control.admit(task_path, DispatchError)
                 data = bound(task_path, name, parent)
                 if {'parent': parent, **_verified(task_path, data, entries[name])} != expected:
                     raise DispatchError(f'phase dependency {name} changed before dispatch')
@@ -207,6 +208,7 @@ def _run(root, contract, launch, resume, measure, execute, capture):
             phase_contract.verify_baseline(contract, key, perf,
                                            **({'visual_baseline': visual} if key in rebuilt_visual else {}))
             if task.exists():
+                run_control.admit(task, DispatchError)
                 data = bound(task, key, parent)
                 retained = task.parent / 'autopilot.json'
                 status = cli.read(retained).get('phase') if retained.exists() else None
@@ -257,6 +259,7 @@ def _run(root, contract, launch, resume, measure, execute, capture):
                        prepare=partial(workflow.prepare, base_commit=parent), run=drive)
             recheck_dependencies(prerequisites)
             with task_lock(task):
+                run_control.admit(task, DispatchError)
                 data = bound(task, key, parent)
                 outcome = {'parent': parent, **_verified(task, data, entry)}
         except ERRORS as error:

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, delivery, phase_dispatch, phase_ship, publish, stack_ship
+from workbench import cli, delivery, phase_dispatch, phase_ship, publish, run_control, stack_ship
 
 
 REPO = 'alice/project'
@@ -278,6 +278,22 @@ class PhaseShipTests(unittest.TestCase):
         self.assertEqual(self.ship()['status'], 'awaiting-confirmation')
         self.assertEqual(self.fork.writes, [('publish', 1), ('merge', 1)])
         self.fork._advance(*self.fork.pending)
+        self.assertEqual(self.ship()['status'], 'complete')
+        self.assertEqual(self.fork.writes, [('publish', 1), ('merge', 1), ('publish', 2), ('merge', 2)])
+
+    def test_hold_before_publication_is_resumable_and_does_not_become_an_ambiguous_write(self):
+        task = self.tasks['Label']
+        with patch.object(self.fork, 'create') as publisher:
+            def pause(current, repo, *, github):
+                self.assertEqual(Path(current), task)
+                run_control.hold(task, 'pause while checking the publish gates')
+                run_control.admit(task, publish.PublishError)
+            publisher.side_effect = pause
+            result = self.ship()
+        self.assertEqual(result['status'], 'held', result)
+        self.assertEqual(self.fork.writes, [])
+        self.assertEqual(cli.read(Path(result['journal']))['steps']['Label']['state'], 'publish-paused')
+        run_control.release(task)
         self.assertEqual(self.ship()['status'], 'complete')
         self.assertEqual(self.fork.writes, [('publish', 1), ('merge', 1), ('publish', 2), ('merge', 2)])
 

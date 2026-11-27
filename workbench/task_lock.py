@@ -39,10 +39,12 @@ def observe_task_lock(task):
 
 
 @contextmanager
-def task_lock(task, *, lock_name='.task.lock'):
+def task_lock(task, *, lock_name='.task.lock', wait=False, reentrant=True):
     task = Path(task).expanduser().resolve(strict=True)
     lock_key = (task, lock_name)
     if lock_key in _held.get():
+        if not reentrant:
+            raise TaskBusy(f'task is already being operated on: {task}')
         yield
         return
     path = task.parent / lock_name
@@ -50,7 +52,7 @@ def task_lock(task, *, lock_name='.task.lock'):
     fd = os.open(path, flags, 0o600)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise TaskBusy(f'task is already being operated on: {task}') from error
         token = _held.set(_held.get() | {lock_key})

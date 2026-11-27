@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from test_runner import tiny_png
 
-from workbench import autopilot, cli, delivery, pickup, publish, stack_verify, tdd, visual_parity, workflow
+from workbench import autopilot, cli, delivery, pickup, publish, run_control, stack_verify, tdd, visual_parity, workflow
 
 
 class CompletedCI:
@@ -106,6 +106,22 @@ class AutopilotTests(unittest.TestCase):
         autopilot._wait_for_ci(self.task, 'user/fork', 1, 'a' * 40, github=GitHub(), sleep=delays.append)
         self.assertEqual(len(delays), 6)
         self.assertTrue(all(0 < delay <= 30 for delay in delays))
+
+    def test_hold_during_ci_wait_stops_the_next_remote_poll(self):
+        pending = self.ci_pull([{'status': 'QUEUED', 'conclusion': ''}])
+        calls = []
+
+        class GitHub(CompletedCI):
+            def pull(self, repo, number):
+                calls.append((repo, number))
+                return pending
+
+        def held_while_sleeping(_delay):
+            run_control.hold(self.task, 'stop during CI observation')
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'operator hold'):
+            autopilot._wait_for_ci(self.task, 'user/fork', 1, 'a' * 40, github=GitHub(), sleep=held_while_sleeping)
+        self.assertEqual(calls, [('user/fork', 1)])
 
     def test_ci_wait_fails_after_other_checks_finish(self):
         pending = self.ci_pull([{'status': 'QUEUED'}, {'status': 'COMPLETED', 'conclusion': 'FAILURE', 'name': 'test'}])
@@ -398,6 +414,24 @@ class AutopilotTests(unittest.TestCase):
                                             actor=actor, description=description, criterion=[]), data)
         cli.write(task, data)
         return {'report':str(report), 'commit':commit, 'kind':kind}
+
+    def test_hold_during_implementation_preserves_the_candidate_without_starting_checks(self):
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if not read_only:
+                run_control.hold(self.task, 'wait after the admitted edit')
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'operator hold'):
+            autopilot.run(self.task, self.issue, 'local-image', model=model, check=self.check)
+        data = cli.read(self.task)
+        state = cli.read(self.task.with_name('autopilot.json'))
+        self.assertEqual((state['phase'], data['status'], data['iterations']), ('verify', 'paused', 1))
+        self.assertEqual(state['candidate_commit'], cli.sha(self.workspace, 'HEAD'))
+        self.assertEqual(cli.git(self.workspace, 'status', '--porcelain'), '')
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'fixed')
+        self.assertNotIn('final-review', self.calls)
+        self.assertEqual({item['kind'] for item in data['evidence']}, {'reproduction'})
 
     def test_failed_reproduction_stops_before_modification(self):
         def fail(**kwargs):

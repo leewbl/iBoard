@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
-from workbench import cli, decisions, feature_context, workflow, delivery, publish, prompt_profiles, tdd, verify_openclaw
+from workbench import cli, decisions, feature_context, workflow, delivery, publish, prompt_profiles, run_control, tdd, verify_openclaw
 from workbench.task_lock import task_lock
 
 
@@ -146,6 +146,7 @@ def _validate_verification_target(data, target, issue_digest, settings, pr_numbe
 
 
 def _sleep_before_ci_poll(task, sleep):
+    run_control.admit(task, AutopilotError)
     remaining = _remaining(cli.read(task))
     sleep(min(30, max(0, remaining - 1)))
 
@@ -161,6 +162,7 @@ def _wait_for_ci(task, repo, number, expected_head, *, github=None, sleep=time.s
     transient = re.compile(r'\b(?:EOF|timed?\s*out|connection reset|temporary failure|'
                            r'connection refused|network is unreachable|HTTP\s+50[0234])\b', re.IGNORECASE)
     while True:
+        run_control.admit(task, AutopilotError)
         data = cli.read(task)
         _remaining(data)
         if isinstance(github, delivery.GitHub):
@@ -501,6 +503,8 @@ def _bounded_review_prompt(prompt):
 
 
 def _model(task, phase, prompt, *, read_only, model, journal=None):
+    if read_only:
+        run_control.admit(task, AutopilotError)
     data = cli.read(task)
     guidance, provenance = prompt_profiles.guidance(phase, data.get('kind', '*'))
     if guidance:
@@ -657,6 +661,7 @@ def _review_scripts(workspace, base, head, plan, *, kind, surface, compare_featu
 
 
 def _check(task, image, item, kind, actor, check, *, source_mode='workspace', memory_mb=2048):
+    run_control.admit(task, AutopilotError)
     options = {}
     if source_mode != 'workspace':
         options['source_mode'] = source_mode
@@ -793,6 +798,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     state_path = task.parent / 'autopilot.json'
     data = cli.read(task)
     try:
+        run_control.admit(task, AutopilotError)
         _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
                            build_source_image, memory_mb)
         _remaining(data)
@@ -966,6 +972,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         decisions.record(task, journal, phase, decision, why, proof, result)
 
     def require_active():
+        run_control.admit(task, AutopilotError)
         if refactor_plan:
             current = cli.read(task)
             if (current.get('kind') != 'refactor' or current.get('refactor_contract') != refactor_binding
@@ -1127,6 +1134,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                    decisions.artifact(task, second['report']), 'Independent baseline review passed.')
 
         if state['phase'] in ('implement', 'adopting') and (data.get('adoption') or target or arena or replay_candidate):
+            require_active()
             # Baseline checks append evidence to the persisted task. Re-read it
             # before recording adoption, or this earlier snapshot would erase it.
             data = cli.read(task)
@@ -1708,6 +1716,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                    'commit:' + state['candidate_commit'], 'Fresh verification required.')
 
         if state['phase'] == 'delivery' and target:
+            require_active()
             data = cli.read(task)
             _validate_verification_target(data, target, issue_digest, settings, pr_number)
             head, issues = cli.gate(data, target['head'])
@@ -1722,6 +1731,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             cli.write(state_path, state)
             return state
         if state['phase'] == 'delivery':
+            require_active()
             _validate_adoption(task, cli.read(task), issue_path, image, pr_repo, source_mode, candidate_image,
                                build_source_image, memory_mb)
             if not pr_repo:
@@ -1801,6 +1811,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                            isinstance(event.get('identity'), dict) and event['identity'].get('head') == identity['head']
                            for event in data.get('events', [])):
                         raise AutopilotError('CI repair iteration already recorded for this head; inspect interrupted state') from error
+                    require_active()
                     data['iterations'] += 1
                     data['events'].append({'at': cli.now(), 'type': 'ci-repair-iteration',
                                            'number': data['iterations'], 'failure': str(failure_path),
@@ -1835,6 +1846,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                        model=model, check=check, merge=merge, publisher=publisher,
                                        closer=closer, vision=vision, architecture_review=architecture_review,
                                        phase_measure=phase_measure)
+            require_active()
             result = merge(task, pr_repo, pr_number)
             state.update(phase='close-issue', delivery=result, delivery_repo=pr_repo, delivery_pr=pr_number)
             cli.write(state_path, state)
@@ -1842,6 +1854,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 append_decision('delivery', 'Recorded the guarded merge.', 'The merge guard returned a successful receipt.',
                        f'https://github.com/{pr_repo}/pull/{pr_number}', 'Merge recorded.')
         if state['phase'] == 'close-issue':
+            require_active()
             data = cli.read(task)
             _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
                                build_source_image, memory_mb)

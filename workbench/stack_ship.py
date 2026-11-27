@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import time
 
-from workbench import autopilot, cli, delivery, pr_watch, stack_verify, start, verify_pr, workflow
+from workbench import autopilot, cli, delivery, pr_watch, run_control, stack_verify, start, verify_pr, workflow
 from workbench.task_lock import task_lock
 
 
@@ -209,6 +209,7 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                 if pull['state'] != 'OPEN' or pull['isDraft']:
                     raise ShippingError('the pinned PR must be open and ready for review')
                 with task_lock(task):
+                    run_control.admit(task, ShippingError)
                     data = _proof(repo, member, task)
                     trunk = github.branch(repo, 'main')
                     if trunk != member['base']:
@@ -228,6 +229,7 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                             raise ShippingError('remote state changed before retarget')
                         if time.monotonic() >= deadline or cli.digest(path) != plan_digest:
                             raise ShippingError('shipping deadline or plan changed before retarget')
+                        run_control.admit(task, ShippingError)
                         save(member, 'retarget-intent', head=member['head'], base=trunk)
                         github.retarget(repo, number)
                         pull = _observe(github, repo, member)

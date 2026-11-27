@@ -23,6 +23,7 @@ class PstackHelpTests(unittest.TestCase):
             'ship-stack': 'stack_ship plan',
             'inspect-task': 'pickup',
             'resume-task': 'resume',
+            'pause-task': 'run_control hold',
             'generate-verify': 'project_verify create',
             'maintain-verify': 'project_verify maintain',
             'create-formal-verify': 'formal_verify create',

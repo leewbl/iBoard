@@ -13,7 +13,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from workbench import cli, workflow
+from workbench import cli, run_control, workflow
 from workbench.task_lock import locked_task
 
 
@@ -219,6 +219,7 @@ def own_issue_number(source, repo):
 @locked_task('task_path')
 def close_verified_issue(task_path, repo, pr_number, github=None):
     """Close a specified issue only after its exact candidate PR is merged."""
+    run_control.admit(task_path, DeliveryError)
     github = github or GitHub()
     data = cli.read(Path(task_path))
     if 'verification_target' in data:
@@ -255,6 +256,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
     if errors:
         raise DeliveryError('issue closure blocked before write: ' + '; '.join(errors))
     require_local_write(task_path, data, head, github, repo)
+    run_control.admit(task_path, DeliveryError)
     updated = github.close_issue(repo, issue)
     if updated.get('number') != issue or updated.get('state') != 'closed':
         raise DeliveryError('issue close result was not confirmed; inspect before retrying')
@@ -969,6 +971,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
     github = github or GitHub()
     data = cli.read(Path(task_path))
     require_refactor_intake(task_path, data)
+    run_control.admit(task_path, DeliveryError)
     if 'verification_target' in data and stack_binding is None:
         raise DeliveryError('verification-only task does not authorize merging')
     if stack_binding is not None and (not isinstance(stack_binding, dict) or not callable(revalidate)
@@ -1066,6 +1069,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         _, issues = cli.gate(cli.read(Path(task_path)), head)
         if issues:
             raise DeliveryError('evidence or budget changed before merge: ' + '; '.join(issues))
+        run_control.admit(task_path, DeliveryError)
         if revalidate:
             revalidate()
         recheck_phase()
@@ -1084,6 +1088,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
             raise DeliveryError('evidence or budget changed before push: ' + '; '.join(issues))
         if local_policy:
             require_local_write(task_path, data, head, github, repo)
+        run_control.admit(task_path, DeliveryError)
         if revalidate:
             revalidate()
         recheck_phase()
