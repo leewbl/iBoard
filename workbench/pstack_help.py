@@ -151,6 +151,11 @@ SCENARIOS = {
     'verify-pr': Scenario(
         'Independently verify an existing PR', 'skills/poteto-mode/playbooks/shipping.md',
         'skills/verify-pr/SKILL.md', 'verify_pr', 'Baseline and candidate evidence bound to the selected PR revisions'),
+    'open-verified-pr': Scenario(
+        'Open an independently verified task as a ready GitHub PR',
+        'skills/poteto-mode/playbooks/opening-a-pr.md', 'skills/opening-a-pr/SKILL.md', 'pr_brief prepare',
+        'A revision-bound title, compact brief, source-backed impact and verification receipts',
+        'Uses the existing personal-fork gate. A selected parent PR must still match the independently verified base.'),
     'ship-stack': Scenario(
         'Plan delivery of a verified PR stack', 'skills/poteto-mode/playbooks/shipping.md',
         'skills/shipping/SKILL.md', 'stack_ship plan', 'An ordered plan for the contiguous verified prefix',

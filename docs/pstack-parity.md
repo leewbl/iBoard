@@ -101,3 +101,5 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 [`workbench.pickup_history`](../skills/pickup/SKILL.md) 接收选定的本地分支、GitHub 远端分支或 PR，可附前一轮 `recall` 简报和当前 iBoard 任务回执。它保留旧会话的决策，重新核对实际提交、工作树和 PR 状态，按原目标给出接续检查点。接续盘点本身只读，不重新执行已留存的测试。
 
 [`workbench.skill_authoring`](../skills/author-skill/SKILL.md) 支持编写技能并对固定候选检查元数据、相对链接和跨技能引用。可在两个独立断网容器中运行已提交结构用例。任务关联验证回执后，发布和合并会复核其提交、引用和原始运行记录。
+
+[`workbench.pr_brief`](../skills/opening-a-pr/SKILL.md) 为已独立复验的任务生成少于 40 行的 PR 正文及约定格式标题。简报绑定候选、基线、目标仓库和复验摘要。支持同一 fork 中明确指定的父 PR，并在远端写入前复核父 PR 与基线提交。发布后回读标题、正文和 ready 状态。原始日志保留在任务记录，现有栈交付流程继续负责依赖顺序。
