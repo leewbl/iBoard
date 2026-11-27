@@ -250,7 +250,7 @@ def _lane(arm, data, original, driver, deadline, editor, sandbox):
                        requested_model=arm['model'], private_workspace=True)
         _require(reply.get('exit_code') == 0 and not reply.get('timed_out') and reply.get('trace_completed') is True
                  and not reply.get('trace_truncated') and isinstance(reply.get('model'), str)
-                 and reply['model'].removesuffix('[1M]') == arm['model'], 'model run failed or trace is incomplete')
+                 and claude_glm.reported_model_id(reply['model']) == arm['model'], 'model run failed or trace is incomplete')
         files = _collect(work, original, data['editable'])
     trace = [{k: v for k, v in item.items() if k in ('type', 'tool', 'id', 'path', 'error')}
              for item in reply['trace'] if item.get('type') in ('tool_use', 'tool_result')]
@@ -267,7 +267,7 @@ def _blind(record, data, repo, projects, driver, lanes):
     for index, name in enumerate(record['order'], 1):
         lane, arm, original = lanes[name], arms[name], projects[name]
         files = lane['artifact']
-        _require(lane['model'].removesuffix('[1M]') == arm['model'] and lane['request_sha256'] == _sha(data['request'])
+        _require(claude_glm.reported_model_id(lane['model']) == arm['model'] and lane['request_sha256'] == _sha(data['request'])
                  and lane['removed'] is True and set(files) == set(original)
                  and all(isinstance(v, str) and len(v.encode()) <= MAX_FILE and '\0' not in v for v in files.values())
                  and all(files[p] == original[p] for p in files if p not in data['editable'])

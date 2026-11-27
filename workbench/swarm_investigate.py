@@ -11,7 +11,7 @@ from threading import Event, Lock
 import time
 
 from model import claude_glm, codex_review
-from workbench import arena, autopilot, cli, investigate, model_profiles, swarm
+from workbench import arena, autopilot, cli, investigate, model_profiles, prompt_profiles, swarm
 from workbench.prompt_profiles import PSTACK_COMMIT
 
 
@@ -135,13 +135,14 @@ def freeze(manifest, repo, out):
     source_hashes = {lane['id']: _digest(_sources(repo, data['revision'], lane)) for lane in data['lanes']}
     record = {**data, **extra, 'source': SOURCE, 'pstack_commit': PSTACK_COMMIT, 'repo': str(repo),
               'source_hashes': source_hashes}
+    _, provenance = prompt_profiles.specialist('swarm-investigation')
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = output / 'plan.json'
     if path.exists() or path.is_symlink():
-        if swarm._read(path) != record:
+        if swarm._read(path) not in (record, {**record, 'worker_guidance': provenance}):
             raise ModelSwarmError('output already contains a different model swarm approval')
     else:
-        cli.write(path, record)
+        cli.write(path, {**record, 'worker_guidance': provenance})
     return {'plan': str(path), 'sha256': cli.digest(path)}
 
 
@@ -149,9 +150,11 @@ def _load(plan, sha256):
     if not isinstance(sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', sha256):
         raise ModelSwarmError('supply the approved model swarm plan SHA-256')
     data = swarm._read(Path(plan).expanduser(), sha256)
-    extras = {'source', 'pstack_commit', 'repo', 'source_hashes', 'model_profile', 'profile_choices'}
+    extras = {'source', 'pstack_commit', 'repo', 'source_hashes', 'model_profile', 'profile_choices', 'worker_guidance'}
     if data['source'] != SOURCE or data['pstack_commit'] != PSTACK_COMMIT:
         raise ModelSwarmError('invalid frozen model swarm version')
+    if 'worker_guidance' in data and data['worker_guidance'] != prompt_profiles.specialist('swarm-investigation')[1]:
+        raise ModelSwarmError('worker guidance differs from the approved prompt profile')
     manifest = {key: value for key, value in data.items() if key not in extras}
     _manifest(manifest)
     if 'model_profile' in data:
@@ -176,6 +179,8 @@ def _prompt(data, lane, evidence):
             'Omit your model and provider identity. Return at most five findings and five unknowns.\n'
             + json.dumps({'predicate': data['predicate'], 'revision': data['revision'],
                           'question': lane['question'], 'evidence': evidence}, ensure_ascii=False, sort_keys=True))
+    if 'worker_guidance' in data:
+        prompt = prompt_profiles.specialist('swarm-investigation')[0] + '\n\n' + prompt
     if len(prompt.encode()) > 88_000:
         raise ModelSwarmError('worker prompt exceeds the permitted size')
     return prompt
@@ -220,7 +225,7 @@ def _invoke(engine, prompt, seconds):
         if result.get('timed_out') or result.get('exit_code') != 0:
             raise ProviderUnavailable('Claude Code and GLM request failed or timed out')
         observed = result.get('model')
-        if not isinstance(observed, str) or observed.removesuffix('[1M]') != engine['model']:
+        if not isinstance(observed, str) or claude_glm.reported_model_id(observed) != engine['model']:
             raise ProviderUnavailable('Claude Code did not confirm the exact selected GLM model')
         return {'answer': result.get('stdout'), 'observed_model': observed}
     return {'answer': codex_review.review(prompt, engine['model'], seconds), 'observed_model': None}
@@ -228,7 +233,7 @@ def _invoke(engine, prompt, seconds):
 
 def _matches_engine(engine, observed):
     return (observed is None if engine['provider'] == 'openai' else
-            isinstance(observed, str) and observed.removesuffix('[1M]') == engine['model'])
+            isinstance(observed, str) and claude_glm.reported_model_id(observed) == engine['model'])
 
 
 def _observations(engine, reply):
@@ -279,6 +284,8 @@ def _worker(lane, data, evidence, directory, approval, calls):
         row = {'schema': cli.SCHEMA, 'plan_sha256': approval, 'id': lane['id'], 'attempt': number,
                'revision': data['revision'], 'engine': lane['engine'], 'source_sha256': _digest(evidence),
                'prompt_sha256': hashlib.sha256(brief.encode()).hexdigest()}
+        if 'worker_guidance' in data:
+            row['workflow_guidance'] = data['worker_guidance']
         try:
             reply = calls.call(lane['engine'], brief)
         except ProviderUnavailable as error:
@@ -422,7 +429,8 @@ def _audit_lane(path, approval, data, lane, evidence, row):
         raw = swarm._read(receipt, ref['sha256'])
         expected = {'plan_sha256': approval, 'id': ident, 'revision': data['revision'],
                     'engine': lane['engine'], 'attempt': index, 'source_sha256': _digest(evidence),
-                    'prompt_sha256': hashlib.sha256(brief.encode()).hexdigest()}
+                    'prompt_sha256': hashlib.sha256(brief.encode()).hexdigest(),
+                    'workflow_guidance': data.get('worker_guidance')}
         if (any(raw.get(key) != value for key, value in expected.items())
                 or type(raw.get('settled_ns')) is not int or raw['settled_ns'] < 0
                 or (settled is not None and raw['settled_ns'] <= settled)

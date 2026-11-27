@@ -16,7 +16,7 @@ from workbench.multiphase import PSTACK_SOURCE as MULTIPHASE_SOURCE
 from workbench.pickup import PSTACK_SOURCES as PICKUP_SOURCES
 from workbench.project_verify import PSTACK_COMMANDS as PROJECT_VERIFICATION_COMMANDS
 from workbench.pr_watch import PSTACK_SOURCE as PR_WATCH_SOURCE
-from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
+from workbench.prompt_profiles import PSTACK_COMMIT, source_stages
 from workbench.prototype import PSTACK_SOURCE as PROTOTYPE_SOURCE
 from workbench.stack_verify import PSTACK_SOURCES as STACK_VERIFICATION_SOURCES
 from workbench.stack_ship import PSTACK_SOURCE as STACK_SHIPPING_SOURCE
@@ -53,7 +53,7 @@ def main():
             'url': f"{catalog['source']}/blob/{catalog['commit']}/pstack/{source}",
             'native_guidance_stages': [
                 {'phase': phase, 'kind': kind}
-                for (phase, kind), (sources, _) in PROFILES.items() if source in sources
+                for phase, kind in source_stages(source)
             ],
             'native_commands': ([f'python3 -m workbench.investigate {mode}'
                                  for mode, path in INVESTIGATION_SOURCES.items() if path == source] +

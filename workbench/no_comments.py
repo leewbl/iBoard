@@ -13,7 +13,7 @@ import tokenize
 
 from model import codex_review
 from runner.sandbox import SandboxError, run_sandbox
-from workbench import autopilot, cli, interrogate_snapshot as snapshot, investigate, prototype
+from workbench import autopilot, cli, interrogate_snapshot as snapshot, investigate, prompt_profiles, prototype
 from workbench.automate_me import SHA, _digest, _file, _keep, _read, _require
 
 
@@ -233,7 +233,8 @@ def review(*, evidence, sha256, model, out, timeout=180, provider='openai', revi
     packet = _load(**ref, kind='comment-evidence')
     inputs = {'notes': _reviewable(packet), 'source': {name: data['text'] for name, data in packet['files'].items()},
               'authoritative_context': packet['anchors']}
-    prompt = ('Review the selected source as a fresh comment reviewer. Use only data supplied. '
+    guidance, provenance = prompt_profiles.specialist('comment-review')
+    prompt = (guidance + '\n\nReview the selected source as a fresh comment reviewer. Use only data supplied. '
               'Delete narration, redundant banners and dead comments. Keep only genuine external constraints '
               'or useful official context and cite the supplied source or history IDs. For correctness and '
               'type suppression, keep the behavior until root cause repair and flag the exact scoped symbol. '
@@ -264,7 +265,7 @@ def review(*, evidence, sha256, model, out, timeout=180, provider='openai', revi
             break
     data = {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': 'comment-review', 'evidence': ref,
             'model': model, 'provider': provider, 'prompt_sha256': attempts[-1], 'attempts': attempts,
-            'decisions': decisions, 'flags': flags}
+            'workflow_guidance': provenance, 'decisions': decisions, 'flags': flags}
     return {**_keep(out, data), 'deletions_offered': sum(row['action'] == 'delete' for row in decisions),
             'follow_up': sum(row['action'] in ('repair', 'encode') for row in decisions) + len(flags)}
 

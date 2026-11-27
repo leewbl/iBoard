@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 from test_benny import CHANNEL, Fixture, LINK, ROOT, RULES, TRIAGE, reply
 from test_runner import tiny_png
-from workbench import benny, benny_triage, cli
+from workbench import benny, benny_triage, cli, prompt_profiles
 
 
 OBSERVED = 'Renaming one local item clears its label.'
@@ -77,6 +77,9 @@ class BennyTriageTests(unittest.TestCase):
         self.assertEqual(result['evidence_sha256'], cli.digest(self.root/'draft/evidence.json'))
         self.assertEqual(self.tracker.search.call_count, 2)
         self.assertTrue(self.model.call_args.kwargs['private_workspace'])
+        guidance, receipt = prompt_profiles.specialist('benny-triage')
+        self.assertTrue(self.model.call_args.args[1].startswith(guidance + '\n\n'))
+        self.assertEqual(result['model']['workflow_guidance'], receipt)
         self.assertFalse(any(method == 'chat.postMessage' for _, method, _ in self.fixture.calls))
 
     def test_partial_search_or_unread_media_withholds_issue_draft(self):

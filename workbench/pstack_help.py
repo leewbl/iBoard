@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from workbench.pstack_catalog import CATALOG
-from workbench.prompt_profiles import PROFILES, PSTACK_COMMIT
+from workbench.prompt_profiles import PSTACK_COMMIT, source_stages
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -427,7 +427,7 @@ def _show(query, catalog):
     entry = entries[0]
     source = entry['source']
     routes = [_scenario(name, catalog) for name, scenario in SCENARIOS.items() if source == scenario.source]
-    stages = [f'{phase}/{kind}' for (phase, kind), (sources, _) in PROFILES.items() if source in sources]
+    stages = [f'{phase}/{kind}' for phase, kind in source_stages(source)]
     if routes:
         status = 'native-entry' if any(route['command'] for route in routes) else 'missing-local-files'
     else:

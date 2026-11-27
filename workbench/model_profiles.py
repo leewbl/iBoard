@@ -93,7 +93,7 @@ def _probe(choice, effort, seconds, editor, reviewer):
                          private_workspace=True, requested_model=model, requested_effort=effort)
         observed = raw.get('model')
         _require(raw.get('exit_code') == 0 and not raw.get('timed_out') and raw.get('trace_completed') is True
-                 and isinstance(observed, str) and observed.removesuffix('[1M]') == model
+                 and isinstance(observed, str) and claude_glm.reported_model_id(observed) == model
                  and raw.get('requested_effort') == effort, 'GLM did not confirm the requested model and complete')
         answer = json.loads(raw['stdout'])
     else:
@@ -151,7 +151,7 @@ def _available(record):
         if row['status'] != 'confirmed':
             continue
         observed = row['observed_model']
-        _require((isinstance(observed, str) and observed.removesuffix('[1M]') == item['model']
+        _require((isinstance(observed, str) and claude_glm.reported_model_id(observed) == item['model']
                   if item['provider'] == 'glm' else observed is None)
                  and datetime.fromisoformat(row['accepted_at']).tzinfo is not None, 'unconfirmed model identity')
         key = (item['provider'], item['model'], effort)
@@ -311,7 +311,7 @@ def resolve(profile, role, preference=None):
 def confirm_glm(route, raw):
     observed = raw.get('model')
     _require(raw.get('exit_code') == 0 and not raw.get('timed_out') and raw.get('trace_completed') is True
-             and isinstance(observed, str) and observed.removesuffix('[1M]') == route['model']
+             and isinstance(observed, str) and claude_glm.reported_model_id(observed) == route['model']
              and raw.get('requested_effort') == route['effort'], 'Claude Code did not confirm the approved invocation')
     return observed
 

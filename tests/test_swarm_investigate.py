@@ -81,6 +81,23 @@ class ModelSwarmTests(unittest.TestCase):
         with self.assertRaisesRegex(swarm.SwarmError, 'digest changed'):
             self.verify(approved, report)
 
+    def test_historical_plan_rebuilds_the_original_worker_prompt(self):
+        approved = self.freeze('previous-worker', [self.lane('left')])
+        path = Path(approved['plan'])
+        plan = cli.read(path)
+        plan.pop('worker_guidance')
+        cli.write(path, plan)
+        approved['sha256'] = cli.digest(path)
+
+        def invoke(engine, prompt, seconds):
+            self.assertTrue(prompt.startswith('Answer only the selected engineering question'))
+            return self.answer(engine, prompt)
+
+        report = model_swarm.run(**approved, out=self.root/'previous-worker', invoke=invoke)
+        self.assertEqual(self.verify(approved, report)['status'], 'PASS')
+        first_receipt = cli.read(report['lanes'][0]['attempts'][0]['path'])
+        self.assertNotIn('workflow_guidance', first_receipt)
+
     def test_stops_same_provider_after_error_but_reports_the_other_lane(self):
         lanes = [self.lane('first'), self.lane('parked'), self.lane('third', OPENAI)]
         approved = self.freeze('outage', lanes, parallelism=1)

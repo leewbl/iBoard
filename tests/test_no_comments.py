@@ -88,7 +88,10 @@ class CommentReviewTests(unittest.TestCase):
             return next(responses)
         result = no_comments.review(evidence=evidence['path'],sha256=evidence['sha256'],model='gpt-fixture',
                                     out=self.root/'review.json',reviewer=reviewer)
-        self.assertEqual(len(cli.read(result['path'])['attempts']),2)
+        packet = cli.read(result['path'])
+        self.assertEqual(len(packet['attempts']),2)
+        self.assertIn('agents/comment-sicko.md', packet['workflow_guidance']['sources'])
+        self.assertIn('Flag the exact local symbol', prompts[0])
         self.assertIn('root-cause flag leaves review scope',prompts[1])
 
     def test_untracked_source_is_in_scope_and_protected_bytes_survive(self):

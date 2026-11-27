@@ -542,7 +542,7 @@ def verify_model_calls(directory, config, result):
             observed = row['observed_model']
             if (row.get('requested_effort') != route['effort']
                     or (observed is not None if route['provider'] == 'openai' else (
-                        not isinstance(observed, str) or observed.removesuffix('[1M]') != route['model']))):
+                        not isinstance(observed, str) or claude_glm.reported_model_id(observed) != route['model']))):
                 raise ArenaError('Arena invocation does not confirm its approved model')
             complete.setdefault(purpose, []).append(reference)
     required = {'scorecard', 'cross-scorecard', 'independent-review', *(f'edit-{key}' for key in candidates)}

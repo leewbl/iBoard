@@ -15,6 +15,13 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def reported_model_id(name):
+    """Strip Claude Code's known context-window suffix from the reported name."""
+    if isinstance(name, str) and name.endswith(('[1M]', '[1m]')):
+        return name[:-4]
+    return name
+
+
 def _trace(stdout, workspace=None):
     events, final, model, truncated = [], None, None, False
     for line in stdout.splitlines():

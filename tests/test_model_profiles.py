@@ -72,6 +72,16 @@ class ModelProfileTests(unittest.TestCase):
         self.assertEqual([r['status'] for r in result['probes']], ['unverified', 'unverified', 'confirmed'])
         self.assertEqual([key for key, _, _ in self.calls], ['glm', 'openai'])
 
+    def test_context_window_suffix_preserves_exact_model_identity(self):
+        route = {**GLM, 'effort': 'low'}
+        for suffix in ('', '[1M]', '[1m]'):
+            record = self.editor(None, '', 30, requested_model=route['model'], requested_effort=route['effort'])
+            record['model'] = route['model'] + suffix
+            self.assertEqual(model_profiles.confirm_glm(route, record), record['model'])
+        for model in ('glm-other[1m]', 'glm-profile[128k]', 'glm-profile[1m][1M]'):
+            with self.subTest(model=model), self.assertRaisesRegex(ValueError, 'did not confirm'):
+                model_profiles.confirm_glm(route, {**record, 'model': model})
+
     def test_update_preserves_choices_requires_current_digest_and_leaves_snapshot(self):
         inventory, first = self.draft()
         installed = model_profiles.install(first['path'], first['sha256'], self.root/'profile.json')

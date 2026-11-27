@@ -4,7 +4,7 @@
 
 ## 工程原则
 
-这些原则可作为提示词行为约定或工程检查。原则本身没有 Cursor 专属运行接口。部分原则借助委派、性能工具或测试命令，其可用性由 iBoard 执行环境决定。
+24 条原则均有本地阶段提示词，内容和选择规则在 [pstack_principles.py](../../workbench/pstack_principles.py)。每段在模型实际调用时记录来源和哈希。设计比较、性能评测、迁移和并发约束只在对应事项适用。可执行门禁继续按所在工作流的实际证据判断。
 
 | 原则（源目录名省略 `principle-`） | 何时使用 | 操作结果或验收条件 | iBoard 接入 |
 | --- | --- | --- | --- |
@@ -37,13 +37,13 @@
 
 | 来源 | 何时使用 | 操作结果或验收条件 | iBoard 接入与宿主依赖 |
 | --- | --- | --- | --- |
-| [`agents/poteto-agent.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/agents/poteto-agent.md) | 父任务委派限定的读或写工作。 | 每个新任务优先新代理，在有上下文需求时才续用。父任务持有流程和待办，子代理读取入口及适用原则。 | Cursor 的模型字段、后台模式和安装目录需由 Claude 适配；iBoard 可用明确输入、预期产物和工具白名单约束委派，交付仍归工作台。已有独立验证者，任意子任务调度待实测。 |
-| [`agents/comment-sicko.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/agents/comment-sicko.md) | 评审指定 diff 或文件的注释。 | 检查真实代码与历史后识别冗余注释、保留许可证和确证的外部约束，报告文件、计数、需改造的符号和跳过原因。 | 需要范围限定的注释审查。已有证据终审侧重行为，未覆盖此项。保留项目约定和必要安全解释，检查前后不改变外部行为。 |
-| [`skills/poteto-mode/worker.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/poteto-mode/worker.md) | 父级启动受委派的工作者。 | 传递目标和验收条件，限制新增要求和外部写入，提出可核对的结果。上游默认短 PR 正文，长证据另存。 | 任务边界可作为委派契约；`publish.py` 已有证据摘要和目标检查。iBoard 的交付权限及用户指定的 PR 模式优先，Benny 的草稿 PR 另有边界。 |
+| [`agents/poteto-agent.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/agents/poteto-agent.md) | 父任务委派限定的读或写工作。 | 每个新任务优先新代理，在有上下文需求时才续用。父任务持有流程和待办，子代理读取入口及适用原则。 | iBoard 在已绑定的多阶段实现与修复、限定范围的并行调研中使用此角色。协调者固定范围、目标和门禁，模型回执记录实际使用的指导。Cursor 原生后台任务和会话恢复仍待验证。 |
+| [`agents/comment-sicko.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/agents/comment-sicko.md) | 评审指定 diff 或文件的注释。 | 检查真实代码与历史后识别冗余注释、保留许可证和确证的外部约束，报告文件、计数、需改造的符号和跳过原因。 | 原生 [注释审查](../../skills/no-comments/SKILL.md) 将该角色用于有明确文件和范围的评审，回执记录提示词来源。应用仅执行已批准的普通注释删除，并复核语法树，局部代码问题保留符号和建议。 |
+| [`skills/poteto-mode/worker.md`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/poteto-mode/worker.md) | 父级启动受委派的工作者。 | 传递目标和验收条件，限制新增要求和外部写入，提出可核对的结果。上游默认短 PR 正文，长证据另存。 | 多阶段执行与并行调研将该来源记入模型回执。工作者核对可见输入和所需产物，协调者保留授权及发布权。普通 PR 简报执行标题与篇幅约定，Benny 走草稿门禁。 |
 
 ## Benny 自动化包
 
-上游提供两条配合的流程，分别判断报告归属、验证已确认的产品缺陷。Benny 的运行动作与外部系统权限由独立配置决定。iBoard 当前仍处理用户明确选中的任务。接入先走本地结构化输入和可验证证据，连接 Slack、追踪器及远端写入须另按目标授权。
+上游提供分诊和缺陷修复两条流程。iBoard 按选定报告接入，把来源保持、先核对已有修复、写入由协调者持有和仅提交草稿等约束放入分诊与修复调用，回执保留源提示词路径。真实 Slack 自动触发和 Cursor 编辑器部署仍需各自验证。
 
 | 文件（相对 `automations/benny/`） | 何时使用 | 操作结果或验收条件 | iBoard 接入与宿主依赖 |
 | --- | --- | --- | --- |

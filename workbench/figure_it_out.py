@@ -277,7 +277,7 @@ class Experiment:
                                      + prompt, min(300, self.remaining()), capture_trace=True, file_tools_only=True,
                                      requested_model=self.spec['model'], private_workspace=True)
                 _require(result.get('exit_code') == 0 and not result.get('timed_out')
-                         and str(result.get('model')).removesuffix('[1M]') == self.spec['model'],
+                         and claude_glm.reported_model_id(result.get('model')) == self.spec['model'],
                          'the approved GLM edit did not finish; stop new calls')
                 head, _ = self.engine.snapshot(work, self.head, self.head,
                                                message='Verify one approved custom-playbook hypothesis')
@@ -398,7 +398,7 @@ def _audit_unit(repo, approved, spec, root, phase, unit, prior, parent, containe
         label = f'phase-{key}-{index}'
         head = row['candidate']
         _require(row['parent'] == parent and row['hypothesis'] == hypothesis['description']
-                 and row.get('model', '').removesuffix('[1M]') == (spec['model'] if hypothesis['commit'] is None else '')
+                 and claude_glm.reported_model_id(row.get('model', '')) == (spec['model'] if hypothesis['commit'] is None else '')
                  and (hypothesis['commit'] is None or head == hypothesis['commit']), 'a hypothesis candidate changed')
         patch = _diff(repo, unit, parent, head, lambda: 15)
         _require(_receipt(root, row['patch'], label + '.patch', 15_000) == patch.encode(), 'patch differs from Git')

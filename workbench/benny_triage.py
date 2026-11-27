@@ -10,7 +10,7 @@ import time
 
 from model import glm_vision
 from model.claude_glm import execute
-from workbench import benny, benny_media, cli, delivery, investigate, pr_watch, project_verify
+from workbench import benny, benny_media, cli, delivery, investigate, pr_watch, project_verify, prompt_profiles
 from workbench.benny_slack import Slack, SlackError
 from workbench.prompt_profiles import PSTACK_COMMIT
 
@@ -289,7 +289,8 @@ def triage(*, slack, receipt, sha256, out, repo=None, revision=None, selections=
     if provider_failed:
         report['reason'] = 'configured media model failed; triage stopped'
         return finish()
-    prompt = _prompt(evidence, routes, missing_media)
+    guidance, provenance = prompt_profiles.specialist('benny-triage')
+    prompt = guidance + '\n\n' + _prompt(evidence, routes, missing_media)
     if len(prompt.encode()) > 55_000:
         report['reason'] = 'selected evidence exceeds the model context limit'
         return finish()
@@ -302,7 +303,8 @@ def triage(*, slack, receipt, sha256, out, repo=None, revision=None, selections=
                 run = model(Path(temporary), request, remaining(), read_only=True, file_tools_only=True,
                             capture_trace=True, private_workspace=True, requested_model=model_name)
             report['model'] = {'provider': run.get('provider'), 'model': run.get('model'), 'exit_code': run.get('exit_code'),
-                               'timed_out': run.get('timed_out'), 'prompt_sha256': hashlib.sha256(request.encode()).hexdigest()}
+                               'timed_out': run.get('timed_out'), 'prompt_sha256': hashlib.sha256(request.encode()).hexdigest(),
+                               'workflow_guidance': provenance}
             attempts.append(report['model'])
             if run.get('exit_code') != 0 or run.get('timed_out'):
                 raise ValueError('configured model did not produce a triage decision')

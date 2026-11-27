@@ -2,7 +2,11 @@
 
 import hashlib
 
+from workbench import pstack_agents
+from workbench.pstack_principles import PRINCIPLES
+
 PSTACK_COMMIT = '41e400932eca14f289e7db717a70455256b6d388'
+DELEGATED_PHASES = ('implementation', 'repair')
 TYPESCRIPT_SOURCES = (
     'skills/typescript-best-practices/SKILL.md', 'skills/typescript-best-practices/references/patterns.md',
     'skills/principle-type-system-discipline/SKILL.md', 'skills/principle-boundary-discipline/SKILL.md',
@@ -84,20 +88,54 @@ PROFILES = {
 }
 
 
-def guidance(phase, kind):
-    if phase.startswith(('repair-', 'ci-repair-')):
-        phase = 'repair'
-    profile = PROFILES.get((phase, kind)) or PROFILES.get((phase, '*'))
-    if profile is None:
-        return '', {}
-    sources, instruction = profile
-    if phase in ('plan', 'implementation', 'repair', 'final-review'):
-        sources = (*sources, *TYPESCRIPT_SOURCES)
-        instruction += ' ' + TYPESCRIPT_GUIDANCE
+def _bundle(phase, kind, sections):
+    instruction = '\n'.join(text for _, text in sections)
+    parts = [{'sources': list(sources), 'sha256': hashlib.sha256(text.encode()).hexdigest()}
+             for sources, text in sections]
     return instruction, {
         'pstack_commit': PSTACK_COMMIT,
         'phase': phase,
         'kind': kind,
-        'sources': list(sources),
+        'sources': list(dict.fromkeys(source for sources, _ in sections for source in sources)),
         'guidance_sha256': hashlib.sha256(instruction.encode()).hexdigest(),
+        'sections': parts,
     }
+
+
+def guidance(phase, kind, *, delegated=False, benny=False):
+    if phase.startswith(('repair-', 'ci-repair-')):
+        phase = 'repair'
+    profile = PROFILES.get((phase, kind)) or PROFILES.get((phase, '*'))
+    sections = [profile] if profile else []
+    sections.extend(((path,), text) for path, (phases, text) in PRINCIPLES.items() if phase in phases)
+    if not sections:
+        return '', {}
+    if phase in ('plan', 'implementation', 'repair', 'final-review'):
+        sections.append((TYPESCRIPT_SOURCES, TYPESCRIPT_GUIDANCE))
+    if delegated and phase in DELEGATED_PHASES:
+        sections.extend((pstack_agents.DELEGATE, pstack_agents.WORKER_CONTRACT))
+    if benny:
+        sections.append(pstack_agents.BENNY_REPAIR)
+    return _bundle(phase, kind, sections)
+
+
+def specialist(name):
+    return _bundle(name, '*', pstack_agents.SPECIALISTS[name])
+
+
+def source_stages(source):
+    phases = ('plan', 'baseline-review', 'implementation', 'repair', 'final-review')
+    labels = []
+    for phase in phases:
+        if source in guidance(phase, '*')[1].get('sources', ()):
+            labels.append((phase, '*'))
+        else:
+            labels.extend((phase, kind) for kind in ('bug', 'feature', 'refactor')
+                          if source in guidance(phase, kind)[1].get('sources', ()))
+        if phase in DELEGATED_PHASES and source in (*pstack_agents.DELEGATE[0], *pstack_agents.WORKER_CONTRACT[0]):
+            labels.append((phase, 'delegated'))
+        if source in pstack_agents.BENNY_REPAIR[0]:
+            labels.append((phase, 'benny'))
+    labels.extend((name, '*') for name, sections in pstack_agents.SPECIALISTS.items()
+                  if any(source in paths for paths, _ in sections))
+    return labels

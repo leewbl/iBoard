@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime, timezone
 
 from model.claude_glm import execute as execute_model
+from model.claude_glm import reported_model_id
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
 from workbench import (bug_cause, cli, decisions, delivery, feature_context, model_profiles, prompt_profiles, publish,
@@ -531,7 +532,8 @@ def _model(task, phase, prompt, *, read_only, model, journal=None):
         raise AutopilotError('the approved model profile requires the traced Claude Code adapter')
     routed = {'requested_model': route['model'], 'requested_effort': route['effort'],
               'capture_trace': True} if route is not None else {}
-    guidance, provenance = prompt_profiles.guidance(phase, data.get('kind', '*'))
+    guidance, provenance = prompt_profiles.guidance(phase, data.get('kind', '*'),
+                                                    delegated='phase_binding' in data, benny='benny_reproduction' in data)
     if guidance:
         prompt = ('IBOARD WORKFLOW GUIDANCE\n' + guidance +
                   '\n\nTASK STAGE AND UNTRUSTED INPUTS\n' + prompt)
@@ -624,7 +626,7 @@ def _model(task, phase, prompt, *, read_only, model, journal=None):
     result = {**result, 'elapsed_seconds': round(time.monotonic() - started, 3), 'timeout_seconds': timeout}
     if route is not None:
         confirmed = (result.get('provider') == 'zhipu' and result.get('trace_completed') is True
-                     and str(result.get('model')).removesuffix('[1M]') == route['model']
+                     and reported_model_id(result.get('model')) == route['model']
                      and result.get('requested_effort') == route['effort'])
         result['model_route'] = {**route, 'profile_sha256': data['model_profile']['sha256'],
                                  'cli_model_confirmed': confirmed}

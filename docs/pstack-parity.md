@@ -14,7 +14,7 @@ python3 -m workbench.pstack_catalog show skills/poteto-mode/playbooks/bug-fix.md
 python3 scripts/update_pstack_catalog.py /path/to/pinned-cursor-plugins --check
 ```
 
-iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)已接入 bug/feature 规划、基线审查、实现、修复和终审。模型回执的 `workflow_guidance` 记录来源路径和实际所用提示词的哈希。目录用于查询，上游文档和脚本不会被直接交给执行器。
+iBoard 原生的[阶段提示词](../workbench/prompt_profiles.py)将 24 条工程原则分配到规划、基线审查、实现、修复和终审。四份代理提示词按职责接入多阶段委派、并行调研、注释审查和 Benny。模型回执的 `workflow_guidance` 记录固定上游提交、实际使用的来源和分段提示词哈希。运行时只使用 iBoard 编写并审查的对应规则。
 
 [`/agent-workbench:poteto-help`](../skills/poteto-help/SKILL.md) 或 `python3 -m workbench.pstack_help` 可查询场景、技能和工作流程。查询结果给出本地命令、指南、所需证据和适用条件。只纳入阶段提示词的条目标成 `guidance-only`，缺少经核对的本地入口时显示 `catalog-only`。
 
