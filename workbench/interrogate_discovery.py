@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import time
 
-from workbench import arena, cli, interrogate, model_profiles, swarm
+from workbench import arena, cli, interrogate, interrogate_snapshot, model_profiles, swarm
 
 
 SOURCE = 'skills/interrogate/SKILL.md'
@@ -66,7 +66,7 @@ def _merge(config, suggested, required):
 
 
 def propose(*, repo, baseline, candidate, intent, catalog, scope, out, required=(),
-            invoke=model_profiles.read_only):
+            invoke=model_profiles.read_only, snapshot=None):
     root = Path(out).expanduser().resolve()
     repo = Path(repo).expanduser().resolve(strict=True)
     _require(not root.is_relative_to(repo), 'retain discovery evidence outside the inspected repository')
@@ -78,6 +78,12 @@ def propose(*, repo, baseline, candidate, intent, catalog, scope, out, required=
     _require('model_profile' in config, 'functional discovery needs an approved model panel')
     ids = {item['id'] for item in config['probes']}
     _require(len(required) == len(set(required)) and set(required) <= ids, 'unknown or duplicate required check')
+    if snapshot is not None:
+        captured = interrogate_snapshot.load(snapshot, repo=repo, baseline=baseline, candidate=candidate)
+        if scope is None:
+            scope = (captured['paths'] if captured['selection'] == 'explicit'
+                     else interrogate_snapshot._changed(repo, baseline, candidate))
+    _require(scope is not None, 'select a discovery scope with --file or --snapshot')
     diff, excerpts = _source(repo, baseline, candidate, scope)
     drivers = interrogate._sources(repo, baseline, candidate, config)
     prompt = _prompt(intent, config, diff, excerpts)
@@ -96,6 +102,8 @@ def propose(*, repo, baseline, candidate, intent, catalog, scope, out, required=
             'required': list(required), 'change_sha256': interrogate._hash(diff),
             'drivers': {name: row['sha256'] for name, row in drivers.items()},
             'reviewers': {}, 'selected': []}
+    if snapshot is not None:
+        plan['snapshot'] = snapshot
     try:
         panel = interrogate.run_profile_panel(config, prompt, remaining, invoke)
         choices = {}
@@ -129,6 +137,8 @@ def load(plan, sha256):
     _require(len(data['required']) == len(set(data['required'])) and set(data['required']) <= ids,
              'required probe list changed')
     repo, base, head = data['repo'], data['baseline'], data['candidate']
+    if 'snapshot' in data:
+        interrogate_snapshot.load(data['snapshot'], repo=repo, baseline=base, candidate=head)
     interrogate._expect_intent(data['intent'], data['request_sha256'])
     diff, excerpts = _source(repo, base, head, data['scope'])
     drivers = interrogate._sources(repo, base, head, config)
@@ -149,18 +159,20 @@ def load(plan, sha256):
 
 def execute(plan, sha256, out, *, run=interrogate.run):
     data, config = load(plan, sha256)
+    snapshot_args = {'snapshot': data['snapshot']} if 'snapshot' in data else {}
     return run(**{field: data[field] for field in ('repo', 'baseline', 'candidate', 'intent', 'request_sha256')},
                config=config, out=out,
-               discovery={'path': str(Path(plan).expanduser().resolve()), 'sha256': sha256})
+               discovery={'path': str(Path(plan).expanduser().resolve()), 'sha256': sha256}, **snapshot_args)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     first = sub.add_parser('propose')
-    for key in ('repo', 'baseline', 'candidate', 'issue-file', 'catalog', 'out'):
+    for key in ('repo', 'baseline', 'issue-file', 'catalog', 'out'):
         first.add_argument('--' + key, required=True)
-    first.add_argument('--file', dest='scope', action='append', required=True)
+    interrogate_snapshot.candidate_options(first)
+    first.add_argument('--file', dest='scope', action='append')
     first.add_argument('--required', action='append', default=[])
     second = sub.add_parser('execute')
     for key in ('plan', 'sha256', 'out'):
@@ -170,7 +182,10 @@ def main(argv=None):
     try:
         if action == 'propose':
             intent = Path(args.pop('issue_file')).expanduser().read_text(encoding='utf-8')
-            result = propose(**args, intent=intent)
+            path, digest = args.pop('snapshot'), args.pop('snapshot_sha256')
+            args['candidate'], snapshot = interrogate_snapshot.resolve_candidate(
+                repo=args['repo'], baseline=args['baseline'], candidate=args['candidate'], path=path, sha256=digest)
+            result = propose(**args, intent=intent, snapshot=snapshot)
         else:
             result = execute(**args)
     except ERRORS as error:

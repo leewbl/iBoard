@@ -78,6 +78,11 @@ SCENARIOS = {
         'skills/correct/SKILL.md', 'correct freeze',
         'Distinct historical misses, repaired controls, and the same guard passing on current code',
         'Supply exact bad/fix commits and a reviewed probe. The harness replays the selected source in offline Docker.'),
+    'review-worktree': Scenario(
+        'Review uncommitted changes in independent sandboxes', 'skills/interrogate/SKILL.md',
+        'skills/interrogate/SKILL.md', 'interrogate_snapshot',
+        'Hash-bound candidate and retained functional review receipts',
+        'Capture selected worktree files or the visible diff. The original branch and staging remain intact.'),
     'discover-functional-checks': Scenario(
         'Select existing product checks for an exact code change', 'skills/interrogate/SKILL.md',
         'skills/interrogate/SKILL.md', 'interrogate_discovery propose',

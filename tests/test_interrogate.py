@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from workbench import cli, interrogate, interrogate_discovery, model_profiles
+from workbench import cli, interrogate, interrogate_discovery, interrogate_snapshot, model_profiles
 
 
 class InterrogateTests(unittest.TestCase):
@@ -239,6 +239,41 @@ class InterrogateTests(unittest.TestCase):
         file.write_bytes(file.read_bytes()+b' ')
         with self.assertRaisesRegex(ValueError, 'evidence digest'):
             interrogate_discovery.load(result['plan'], result['sha256'])
+
+    def test_snapshot_flows_through_discovery_and_verification_after_source_moves(self):
+        self._profile()
+        catalog = self.directory / 'catalog.json'
+        cli.write(catalog, {'schema': 1, **self.config})
+        state = self.repo / 'state.mjs'
+        state.write_text("export default 'active'; // review this draft\n")
+        frozen = interrogate_snapshot.freeze(repo=self.repo, baseline=self.baseline,
+                                             out=self.directory / 'snapshot.json', files=['state.mjs'])
+        ref = {'path': frozen['snapshot'], 'sha256': frozen['sha256']}
+        self.candidate = frozen['candidate']
+        plan = interrogate_discovery.propose(repo=self.repo, baseline=self.baseline, candidate=self.candidate,
+            intent=self.intent, catalog=catalog, scope=None, out=self.directory / 'discover',
+            required=['init'], snapshot=ref,
+            invoke=lambda route, prompt, seconds: self._profile_reply(route, {'cases': []}))
+        self.assertEqual(plan['status'], 'ready', plan.get('reason'))
+        self.assertEqual(plan['scope'], ['state.mjs'])
+        state.write_text("export default 'different later edit';\n")
+
+        def sandbox(workspace, *args, **kwargs):
+            self.assertIn('review this draft', (workspace / 'state.mjs').read_text())
+            return self._sandbox(workspace, *args, **kwargs)
+
+        result = interrogate_discovery.execute(plan['plan'], plan['sha256'], self.out,
+            run=lambda **args: self._run(**args, sandbox=sandbox,
+                profile_invoke=lambda route, prompt, seconds: self._profile_reply(
+                    route, self._answer(prompt, 'clear'))))
+        self.assertEqual(result['status'], 'clear', result.get('reason'))
+        self.assertEqual(result['snapshot'], ref)
+        self.assertEqual(self._validate()['status'], 'clear')
+        no_snapshot = {key: value for key, value in result.items() if key != 'snapshot'}
+        with self.assertRaisesRegex(interrogate.InterrogateError, 'different intent or configuration'):
+            self._validate(no_snapshot)
+        self.assertIn('different later edit', state.read_text())
+        self.assertEqual(len(self.calls), 2)
 
     def test_discovery_does_not_accept_model_authored_commands(self):
         self._profile()

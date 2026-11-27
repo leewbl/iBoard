@@ -11,7 +11,8 @@ import time
 
 from model import codex_review, glm_review
 from runner.sandbox import SandboxError, run_sandbox
-from workbench import arena, autopilot, cli, model_profiles, prototype, swarm_investigate, workflow
+from workbench import (arena, autopilot, cli, interrogate_snapshot, model_profiles, prototype, swarm_investigate,
+                       workflow)
 
 
 PSTACK_SOURCE = 'skills/interrogate/SKILL.md'
@@ -350,21 +351,21 @@ def _clean(workspace, candidate, remaining):
             and not _git(workspace, 'status', '--porcelain', '--untracked-files=all', timeout=min(remaining(), 15)))
 
 
-def _verify_discovery(reference, repo, baseline, candidate, request_sha256, config):
+def _verify_discovery(reference, repo, baseline, candidate, request_sha256, config, snapshot):
     from workbench import interrogate_discovery
 
     if set(reference) != {'path', 'sha256'}:
         raise InterrogateError('invalid Interrogate discovery reference')
     plan, selected = interrogate_discovery.load(reference['path'], reference['sha256'])
     if (plan['repo'], plan['baseline'], plan['candidate'], plan['request_sha256'], selected) != (
-            str(Path(repo).resolve()), baseline, candidate, request_sha256, config):
+            str(Path(repo).resolve()), baseline, candidate, request_sha256, config) or plan.get('snapshot') != snapshot:
         raise InterrogateError('discovery evidence belongs to a different intent or configuration')
 
 
 def run(*, repo, baseline, candidate, request_sha256, intent, config, out, seconds_limit=None,
         sandbox=run_sandbox, glm=glm_review.review, openai=codex_review.review,
         resolve_image=prototype._image_id, build_image=workflow.build_source_image,
-        profile_invoke=model_profiles.read_only, discovery=None):
+        profile_invoke=model_profiles.read_only, discovery=None, snapshot=None):
     repo = Path(repo).expanduser().resolve(strict=True)
     config = settings(config)
     if seconds_limit is not None and (type(seconds_limit) is not int or seconds_limit < 1):
@@ -379,8 +380,10 @@ def run(*, repo, baseline, candidate, request_sha256, intent, config, out, secon
         return left
 
     _expect_intent(intent, request_sha256)
+    frozen = None if snapshot is None else interrogate_snapshot.load(
+        snapshot, repo=repo, baseline=baseline, candidate=candidate)
     if discovery is not None:
-        _verify_discovery(discovery, repo, baseline, candidate, request_sha256, config)
+        _verify_discovery(discovery, repo, baseline, candidate, request_sha256, config, snapshot)
     _commit_pair(repo, baseline, candidate)
     sources = _sources(repo, baseline, candidate, config)
     root = Path(out).expanduser().resolve()
@@ -396,6 +399,8 @@ def run(*, repo, baseline, candidate, request_sha256, intent, config, out, secon
     worktrees = {}
     if discovery is not None:
         report['discovery'] = discovery
+    if frozen is not None:
+        report['snapshot'] = snapshot
     try:
         image = resolve_image(config['image'], remaining)
         for side in SIDES:
@@ -404,6 +409,8 @@ def run(*, repo, baseline, candidate, request_sha256, intent, config, out, secon
             worktrees[side] = workspace
             if not _clean(workspace, candidate, remaining):
                 raise InterrogateError('Interrogate probe worktree is not clean and pinned')
+            if frozen is not None:
+                interrogate_snapshot.check_checkout(workspace, frozen)
         if config['source_mode'] == 'image':
             image = build_image(worktrees['a'], baseline, image, remaining())
         if not IMAGE.fullmatch(image):
@@ -502,8 +509,11 @@ def _validate_receipt(path, receipt, repo, baseline, candidate, request_sha256, 
     if (_config_digest(config) != receipt['config_sha256']
             or (expected_config is not None and settings(expected_config) != config)):
         raise InterrogateError('Interrogate review configuration changed')
+    snapshot = receipt.get('snapshot')
+    if snapshot is not None:
+        interrogate_snapshot.load(snapshot, repo=repo, baseline=baseline, candidate=candidate)
     if 'discovery' in receipt:
-        _verify_discovery(receipt['discovery'], repo, baseline, candidate, request_sha256, config)
+        _verify_discovery(receipt['discovery'], repo, baseline, candidate, request_sha256, config, snapshot)
     if not IMAGE.fullmatch(receipt['image']):
         raise InterrogateError('Interrogate image identity changed')
     _commit_pair(repo, baseline, candidate)
@@ -551,15 +561,19 @@ def _validate_receipt(path, receipt, repo, baseline, candidate, request_sha256, 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ('repo', 'baseline', 'candidate', 'issue-file', 'config', 'out'):
+    for key in ('repo', 'baseline', 'issue-file', 'config', 'out'):
         parser.add_argument('--' + key, required=True)
+    interrogate_snapshot.candidate_options(parser)
     args = parser.parse_args(argv)
     try:
         intent = Path(args.issue_file).read_bytes().decode('utf-8')
         config = settings(json.loads(Path(args.config).read_text(encoding='utf-8')),
                           directory=Path(args.config).expanduser().parent)
-        receipt = run(repo=args.repo, baseline=args.baseline, candidate=args.candidate,
-                      request_sha256=_hash(intent), intent=intent, config=config, out=args.out)
+        candidate, snapshot = interrogate_snapshot.resolve_candidate(
+            repo=args.repo, baseline=args.baseline, candidate=args.candidate,
+            path=args.snapshot, sha256=args.snapshot_sha256)
+        receipt = run(repo=args.repo, baseline=args.baseline, candidate=candidate,
+                      request_sha256=_hash(intent), intent=intent, config=config, out=args.out, snapshot=snapshot)
     except ERRORS as error:
         parser.error(str(error))
     print(json.dumps(receipt, ensure_ascii=False, indent=2))

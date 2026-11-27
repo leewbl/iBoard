@@ -36,6 +36,20 @@ python3 -m workbench.interrogate --repo "$TARGET_REPO" --baseline "$BASELINE" \
   --out "$CHALLENGE_EVIDENCE"
 ```
 
+## Review uncommitted work
+
+Create a local snapshot from an exact baseline that is an ancestor of the working branch. Repeat `--file` to name specific paths, or omit it to capture the worktree diff and unignored new files. The visible file bytes take precedence over staged versions. The temporary index starts at HEAD, so changes outside an explicit selection stay in the original checkout. A local `refs/iboard/interrogate/` ref retains the candidate for auditing.
+
+```sh
+python3 -m workbench.interrogate_snapshot --repo "$TARGET_REPO" --baseline "$BASELINE" \
+  --file path/to/changed-source --out "$SNAPSHOT"
+python3 -m workbench.interrogate --repo "$TARGET_REPO" --baseline "$BASELINE" \
+  --snapshot "$SNAPSHOT" --snapshot-sha256 "$SNAPSHOT_SHA" \
+  --issue-file "$REQUEST" --config "$PROBE_CONFIG" --out "$CHALLENGE_EVIDENCE"
+```
+
+Use the SHA-256 printed by the snapshot command. Discovery accepts the same snapshot options in place of `--candidate`. With a snapshot, discovery can derive the scope from its selected paths or its full baseline-to-candidate diff. The plan and result retain the snapshot digest. Each independent worktree must reproduce the captured bytes and modes before it runs a probe. Use the committed-candidate entry point when there are no draft changes. Snapshot paths support bounded regular files and deletions. Resolve index conflicts or select a full checkout before capturing work.
+
 ## Discover functional checks for a diff
 
 Create a catalog using the same profiled configuration with `"schema":1`. Include vetted, tracked probes for ordinary behaviors such as defaults, repeated operations, compatibility and boundary inputs. Reviewers receive the selected diff and the catalog case names and behavior descriptions. Each proposal must select an existing case and cite a changed line by ID. The coordinator preserves every required probe and combines the reviewers' selections in catalog order.
@@ -48,4 +62,4 @@ python3 -m workbench.interrogate_discovery execute --plan "$DISCOVERY/plan.json"
   --sha256 "$APPROVED_PLAN_SHA" --out "$CHALLENGE_EVIDENCE"
 ```
 
-Review the selected cases before approving execution. The plan binds the exact request, diff, tracked probe bytes, model profile and proposal receipts. It runs only approved catalog commands. It retains empty or invalid proposals without treating them as verified coverage. Findings come from the repeated runtime observations and remain separate from what reviewers nominated. Workspace-only drafts can be reviewed once captured in an exact candidate commit.
+Review the selected cases before approving execution. The plan binds the exact request, diff, tracked probe bytes, model profile and proposal receipts. It runs only approved catalog commands. It retains empty or invalid proposals without treating them as verified coverage. Findings come from the repeated runtime observations and remain separate from what reviewers nominated.
