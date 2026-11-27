@@ -38,4 +38,19 @@ Use `python3 -m workbench.resource_cleanup inventory --measure-size` for the sta
 
 After approval for exact IDs, use `python3 -m workbench.resource_cleanup freeze --select RESOURCE_ID --out ABSOLUTE_PLAN`. Use `apply --plan ABSOLUTE_PLAN --sha256 APPROVED_DIGEST --out ABSOLUTE_RECEIPT` on the same module. Repeat `--select` to approve multiple IDs. Cache cleanup checks for live use, compares the directory tree metadata, and confirms path absence under the same cache parent. Simulator deletion addresses the native UUID. Keep devices that are running, default-set devices that are still available, and runtime images with registered devices or without a verified deletable flag. The receipt confirms a path or native ID is gone before recording it as removed. The plan's journal tracks outstanding requests across receipt destinations. Recheck with the same plan to observe an outstanding result.
 
-The `poteto-mode` worktree cleanup playbook also exposes `resource-inventory`, `resource-freeze`, and `resource-apply`. Package-manager cache maintenance is tracked separately.
+The `poteto-mode` worktree cleanup playbook also exposes `resource-inventory`, `resource-freeze`, and `resource-apply`.
+
+## Package caches
+
+Use `python3 -m workbench.package_cache inventory --manager MANAGER` with `uv`, `pnpm`, `brew`, or `yarn`. Read the resolved paths and review holds before approving an exact scope. If any path in a scope must be kept, leave that scope out.
+
+| Manager | Scope and operation |
+| --- | --- |
+| uv | The cache resolved by `uv cache dir` or an explicit `--cache-dir`. Requires a uv cache tag and uses native offline pruning. |
+| pnpm | The versioned store and the metadata cache. Pass `--cache-dir` when native configuration omits it. To select a store on another volume, pass its parent directory with `--store-dir`. Native store pruning uses both approved paths. |
+| Homebrew | One completed file listed under the download cache. Pass its exact path with `--select`. Installed formulae and casks are outside this action's scope. |
+| Yarn | For Classic, pass the entire versioned cache root with `--cache-dir`. For modern Yarn, use the native global folder or pass it with `--cache-dir`. The latter scopes the action to the global `cache` child. |
+
+Run `freeze --manager MANAGER --out ABSOLUTE_PLAN` with the same scope options after approval, then `apply --plan ABSOLUTE_PLAN --sha256 APPROVED_DIGEST --out ABSOLUTE_RECEIPT`. Keep both artifacts outside the cleanup scope. The runner checks the native tool and the approved cache contents again. The receipt records allocated cache bytes and free volume bytes before and after. Volume figures also reflect concurrent disk activity. If native execution cannot be confirmed, the receipt stays pending and reapplying that digest only returns the existing record.
+
+`poteto-mode` exposes the three stages as `package-cache-inventory`, `package-cache-freeze`, and `package-cache-apply`. [uv](https://docs.astral.sh/uv/concepts/cache/) · [pnpm](https://pnpm.io/cli/store) · [Homebrew](https://docs.brew.sh/Tips-and-Tricks#pre-download-a-file-for-a-formula) · [Yarn Classic](https://classic.yarnpkg.com/en/docs/cli/cache/) · [Yarn](https://yarnpkg.com/cli/cache/clean)

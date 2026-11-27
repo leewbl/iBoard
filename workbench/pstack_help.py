@@ -312,6 +312,11 @@ SCENARIOS = {
         'skills/worktree-cleanup/SKILL.md', 'resource_cleanup inventory',
         'Native resource IDs, observed usage, exact cleanup approval and confirmed disk changes',
         'Select individual resources. Simulator coverage depends on the selected Xcode installation.'),
+    'package-caches': Scenario(
+        'Review package caches and reclaim an exactly approved scope',
+        'skills/poteto-mode/playbooks/worktree-cleanup.md', 'skills/worktree-cleanup/SKILL.md#package-caches',
+        'package_cache inventory', 'Native cache paths, approved scope digest and before/after receipt',
+        'Choose uv, pnpm, Homebrew or Yarn. Homebrew approval selects one completed download.'),
     'autonomous-run': Scenario(
         'Drive an approved task to a frozen outcome', 'skills/poteto-mode/playbooks/autonomous-run.md',
         'skills/autonomous-run/SKILL.md', 'autonomous_run freeze',
