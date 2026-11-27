@@ -78,6 +78,11 @@ SCENARIOS = {
         'skills/correct/SKILL.md', 'correct freeze',
         'Distinct historical misses, repaired controls, and the same guard passing on current code',
         'Supply exact bad/fix commits and a reviewed probe. The harness replays the selected source in offline Docker.'),
+    'automate-me': Scenario(
+        'Turn recurring working conventions into a personal skill', 'skills/automate-me/SKILL.md',
+        'skills/automate-me/SKILL.md', 'automate_me collect',
+        'Workspace-scoped text evidence, cross-session proposals and a draft of the confirmed rules',
+        'Select transcripts explicitly. Approve the evidence digest before the read-only model call.'),
     'review-worktree': Scenario(
         'Review uncommitted changes in independent sandboxes', 'skills/interrogate/SKILL.md',
         'skills/interrogate/SKILL.md', 'interrogate_snapshot',
