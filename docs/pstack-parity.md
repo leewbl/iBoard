@@ -106,7 +106,7 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 公开功能目录是核对入口。每个功能仍需单独记录指令、测试环境、通过条件和运行证据。Lauren Tan 的生产案例用于理解工作方式，交付规模与团队内部环境另需实际测量。
 
-[`workbench.worktree_cleanup`](../skills/worktree-cleanup/SKILL.md) 可先只读盘点 Git 工作树，再冻结明确批准的路径。删除前逐条复核原始基线、任务记录、当前使用清单、开放 PR 和文件状态，保留分支并记录实际删除和磁盘观测。宿主会话自动盘点、IDE 与 Xcode 资源回收仍待接入。
+[`workbench.worktree_cleanup`](../skills/worktree-cleanup/SKILL.md) 可先只读盘点 Git 工作树，再冻结明确批准的路径。它自动检查当前用户的进程工作目录、打开文件及已观察到进程对应的 Claude Code 工作区，删除前再次检查占用。macOS 和断网 Linux 容器均用真实 Git 工作树验证了批准后出现占用会阻止删除。进程退出后同一份批准可继续，Git 分支保留。休眠或置顶的会话仍需宿主侧清单协助，IDE 与 Xcode 资源回收待接入。
 
 [`workbench.blind_eval`](../skills/blind-eval/SKILL.md) 给各方案同一个任务，在独立目录运行 Claude Code + GLM。评审通过匿名代码、成功的实际文件读取和断网 Docker 运行结果给分。两个独立 OpenAI 会话使用同一份评分标准。审计可离线重建评审输入并核对回执。此入口已支持固定文本源文件的对比，其他宿主轨迹和媒体产物待接入。
 

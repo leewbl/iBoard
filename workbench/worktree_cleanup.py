@@ -9,12 +9,14 @@ import shutil
 import subprocess
 import sys
 
-from workbench import cli, pr_watch, stack_rebase, swarm
+from workbench import cli, pr_watch, stack_rebase, swarm, worktree_usage
 from workbench.task_lock import task_lock
 
 
 SOURCE = 'skills/poteto-mode/playbooks/worktree-cleanup.md'
 ERRORS = (*swarm.ERRORS, pr_watch.WatchError, cli.WorkbenchError)
+LIVE_HOLD = 'live local process or Claude session'
+LIVE_UNKNOWN = 'live local usage could not be verified'
 
 
 class CleanupError(ValueError):
@@ -153,7 +155,7 @@ def _status(path):
     return counts, samples
 
 
-def _describe(repo, row, base, registry, holds, pulls, *, checkout, measure_size):
+def _describe(repo, row, base, registry, holds, pulls, *, checkout, measure_size, usage, live):
     path = Path(row['path'])
     status = {**row, 'reasons': []}
     reasons = status['reasons']
@@ -163,7 +165,7 @@ def _describe(repo, row, base, registry, holds, pulls, *, checkout, measure_size
     branch = (row['branch'] or '').removeprefix('refs/heads/')
     prs = [item['number'] for item in pulls if item['headRefOid'] == row['head']
            or branch and item['headRefName'] == branch]
-    status.update(tasks=task_refs, retained=protected, open_prs=prs, measured_bytes=None)
+    status.update(tasks=task_refs, retained=protected, live_usage=live, open_prs=prs, measured_bytes=None)
     if row['primary'] or row['bare'] or checkout.is_relative_to(path) or Path.cwd().resolve().is_relative_to(path):
         reasons.append('primary or current checkout')
     if row['locked'] or row['prunable']:
@@ -172,6 +174,10 @@ def _describe(repo, row, base, registry, holds, pulls, *, checkout, measure_size
         reasons.append('retained iBoard task or verification evidence')
     if protected:
         reasons.append('active or pinned usage')
+    if live:
+        reasons.append(LIVE_HOLD)
+    if not row['primary'] and usage['status'] != 'available':
+        reasons.append(LIVE_UNKNOWN)
     if prs:
         reasons.append('open PR')
     if not path.is_dir() or path.is_symlink() or path.resolve() != path:
@@ -229,11 +235,14 @@ def inventory(repo, base_ref='origin/HEAD', *, holds=None, tasks_roots=(), desti
     registry = _registry(roots)
     digest, keep = _holds(holds)
     prs = _pr_heads(destination, reader)
-    entries = [_describe(repo, row, base, registry, keep, prs, checkout=repo, measure_size=measure_size)
+    usage, active = worktree_usage.scan([row['path'] for row in checkouts])
+    entries = [_describe(repo, row, base, registry, keep, prs, checkout=repo, measure_size=measure_size,
+                         usage=usage, live=active.get(row['path'], []))
                for row in checkouts]
     return {'schema': cli.SCHEMA, 'source': SOURCE, 'repo': str(repo), 'base_ref': base_ref, 'base': base,
             'at': cli.now(), 'tasks_roots': [str(root) for root in roots], 'holds_sha256': digest,
-            'destination': destination, 'disk_free_bytes': shutil.disk_usage(repo).free, 'worktrees': entries}
+            'destination': destination, 'disk_free_bytes': shutil.disk_usage(repo).free,
+            'live_usage': usage, 'worktrees': entries}
 
 
 def _identity(row):
@@ -289,6 +298,7 @@ def apply(plan, sha256, *, holds, out, reader=None):
             raise CleanupError('cleanup receipt identifies a different approval')
         report['status'] = 'running'
         report['blocked'] = {}
+        report['live_usage'] = {}
         cli.write(path, report)
         try:
             for selected in data['selected']:
@@ -305,6 +315,8 @@ def apply(plan, sha256, *, holds, out, reader=None):
                     if current or Path(name).exists():
                         raise CleanupError('a previously removed path is now occupied')
                     continue
+                report['live_usage'][name] = {'observation': check['live_usage'],
+                                              'matches': current['live_usage'] if current else []}
                 if current is None or current['bucket'] != 'candidate' or _identity(current) != selected:
                     report['blocked'][name] = current['reasons'] if current and current['reasons'] else ['worktree changed']
                     cli.write(path, report)
@@ -314,6 +326,12 @@ def apply(plan, sha256, *, holds, out, reader=None):
                             or _git(name, 'rev-parse', '--verify', 'HEAD').decode().strip() != selected['head']
                             or any(_status(name)[0].values())):
                         raise CleanupError('usage, HEAD, or worktree files changed during preflight')
+                    usage, active = worktree_usage.scan([name])
+                    report['live_usage'][name] = {'observation': usage, 'matches': active.get(name, [])}
+                    if usage['status'] != 'available':
+                        raise CleanupError(LIVE_UNKNOWN)
+                    if active.get(name):
+                        raise CleanupError(LIVE_HOLD)
                     # Git repeats its own dirty and locked checks. Preserve branches and avoid force/prune.
                     _git(repo, 'worktree', 'remove', '--', name, timeout=60)
                     if Path(name).exists() or any(row['path'] == name for row in _records(repo)):
