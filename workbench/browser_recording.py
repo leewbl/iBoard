@@ -151,7 +151,8 @@ def _review_inputs(report, sha256, expected):
         raise ValueError('media review needs a complete offline browser run')
     commit = run['commit']
     recording, screenshot = Path(run['recording_path']), Path(run['screenshot_path'])
-    if (recording.parent != report.parent or screenshot.parent != report.parent or screenshot.is_symlink()
+    parent = report.parent.resolve()
+    if (recording.parent != parent or screenshot.parent != parent or screenshot.is_symlink()
             or not screenshot.is_file() or screenshot.stat().st_size > glm_vision.MAX_IMAGE_BYTES
             or not receipt(run, recording, commit)):
         raise ValueError('browser recording or screenshot is unavailable')
@@ -186,7 +187,7 @@ def audit_review(report, sha256, expected, receipt_path, receipt_sha256):
     report = Path(report).expanduser().absolute()
     receipt_path = Path(receipt_path).expanduser().absolute()
     if (receipt_path.is_symlink() or not receipt_path.is_file() or receipt_path.stat().st_size > 8192
-            or receipt_path.parent != report.parent):
+            or receipt_path.parent.resolve() != report.parent.resolve()):
         raise ValueError('browser media review receipt is unavailable')
     raw = receipt_path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != receipt_sha256:

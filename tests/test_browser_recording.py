@@ -78,6 +78,22 @@ class BrowserRecordingTests(unittest.TestCase):
         self.assertEqual(timeout,90)
         self.assertEqual(review['samples'][-1]['page'],2)
 
+    def test_media_review_accepts_an_alias_to_the_artifact_directory(self):
+        self.record()
+        alias = self.root/'alias'
+        alias.symlink_to(self.root, target_is_directory=True)
+        aliased_report, review_path = alias/self.report.name, alias/'review.json'
+        vision = Mock(return_value='{"verdict":"visible","reason":"Label visible.","references":["F2","FINAL"]}')
+        expected = 'Final label appears.'
+        digest = cli.digest(self.report)
+        proof = browser_recording.review(aliased_report, digest, expected, review_path, inspect=vision)
+        self.assertEqual(browser_recording.audit_review(self.report, digest, expected, review_path,
+                                                       cli.digest(review_path)), proof)
+        indirect = self.root/'linked.json'
+        indirect.symlink_to(self.report)
+        with self.assertRaisesRegex(ValueError, 'bounded sandbox receipt'):
+            browser_recording.audit_review(indirect, digest, expected, review_path, cli.digest(review_path))
+
     def test_media_changed_during_review_cannot_get_a_receipt(self):
         self.record()
         review_path=self.root/'review.json'
