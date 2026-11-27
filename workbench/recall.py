@@ -1,74 +1,28 @@
-"""Recover project history from selected Claude Code chats and current Git/GitHub evidence."""
+"""Recover project history from selected native chats and current Git/GitHub evidence."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from html import escape
 import json
+import os
 from pathlib import Path
 import re
 import time
 
 from model import codex_review
-from workbench import cli, delivery
-from workbench.automate_me import ERRORS, UUIDISH, _citations, _date, _digest, _encode, _file, _keep, _read, _require
+from workbench import cli, delivery, recall_discovery, recall_sessions
+from workbench.automate_me import ERRORS, _citations, _date, _digest, _encode, _file, _keep, _read, _require
 from workbench.reflect import _scrub
 
 
 REPO_NAME = r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
 BRANCH = re.compile(r'[A-Za-z0-9][A-Za-z0-9_./-]{0,119}')
 SECTIONS = {'capsule': 5, 'threads': 10, 'problems': 5}
-ROLES = ('user', 'assistant')
 
 
 def _excerpt(value):
     return _scrub(value)[:1500]
-
-
-def _transcript(path, repo, start, end, current):
-    _require(path.suffix == '.jsonl', 'select Claude Code JSONL transcripts')
-    raw = _read(path, 5_000_000)
-    ident, seen, turns, omitted = None, set(), [], 0
-    for line, data in enumerate(raw.splitlines(), 1):
-        if not data.strip():
-            continue
-        row = json.loads(data)
-        _require(isinstance(row, dict), 'transcript rows must be JSON objects')
-        role = row.get('type')
-        if role not in ROLES or row.get('isMeta') or row.get('isSidechain'):
-            continue
-        cwd = row.get('cwd')
-        if not isinstance(cwd, str) or not Path(cwd).is_absolute() or Path(cwd).resolve() != repo:
-            continue
-        session = row.get('sessionId')
-        _require(isinstance(session, str) and UUIDISH.fullmatch(session) and ident in (None, session),
-                 'transcript mixes session IDs or lacks its ID')
-        ident = session
-        stamp = _date(row['timestamp'])
-        uid = row.get('uuid', line)
-        if session == current or (start and stamp < start) or stamp > end or uid in seen:
-            continue
-        message = row.get('message')
-        if not isinstance(message, dict) or message.get('role') != role:
-            continue
-        content = message.get('content')
-        if isinstance(content, list):
-            if role == 'user' and any(isinstance(block, dict) and block.get('type') == 'tool_result'
-                                      for block in content):
-                continue
-            content = '\n'.join(block['text'] for block in content
-                                if isinstance(block, dict) and block.get('type') == 'text'
-                                and isinstance(block.get('text'), str))
-        if not isinstance(content, str) or content.startswith(
-                ('<local-command-', '<command-', '<bash-', '<task-notification')):
-            continue
-        seen.add(uid)
-        clean = _scrub(content)
-        if not clean:
-            continue
-        omitted += len(clean) > 1500
-        turns.append({'line': line, 'role': role, 'at': stamp.isoformat(), 'text': clean[:1500]})
-    return ident, turns, omitted, _digest(raw)
 
 
 def _related(records, topic):
@@ -94,11 +48,41 @@ def _artifacts(forge, pr, issue, branch, history):
     return sorted(selected)
 
 
-def collect(repo, out, session, *, topic=None, since=None, until=None, all_history=False,
-            current_session=None, forge=None, pr=(), issue=(), branch=(), shared_note=()):
+def _sources(repo, start, current, session, cursor_session, codex_session, discovery, home):
+    entries = {}
+    for host, files in (('claude', session), ('cursor', cursor_session), ('codex', codex_session)):
+        for value in files:
+            path = _file(value)
+            _require(entries.get(path, (host, True))[0] == host, 'one source file cannot use several transcript formats')
+            entries[path] = (host, True)
+    skipped, audit = [], []
+    for host in dict.fromkeys(discovery):
+        found, omitted, scan = recall_discovery.discover(host, repo, start, current, home=home)
+        audit.append(scan)
+        skipped.extend(omitted)
+        for path in found:
+            entries.setdefault(path, (host, False))
+    ordered = []
+    for path, (host, explicit) in entries.items():
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            if explicit:
+                raise
+            skipped.append({'file': str(path), 'host': host, 'reason': 'transcript moved after discovery'})
+            continue
+        ordered.append((mtime, path, host, explicit))
+    return sorted(ordered, reverse=True), skipped, audit
+
+
+def collect(repo, out, session=(), *, topic=None, since=None, until=None, all_history=False,
+            current_session=None, forge=None, pr=(), issue=(), branch=(), shared_note=(),
+            cursor_session=(), codex_session=(), discover=(), home=None):
     repo = Path(repo).expanduser().resolve(strict=True)
     _require(Path(cli.git(repo, 'rev-parse', '--show-toplevel')).resolve() == repo, 'use the workspace root')
-    _require(1 <= len(session) <= 12 and len(shared_note) <= 6, 'choose 1–12 sessions and up to six shared notes')
+    _require((session or cursor_session or codex_session or discover)
+             and len(session) + len(cursor_session) + len(codex_session) <= 12 and len(shared_note) <= 6,
+             'select up to twelve transcript files or discover a native host, plus up to six shared notes')
     _require(not (since and all_history), 'all history and an explicit start are mutually exclusive')
     _require(topic is None or (topic.strip() == topic and 1 <= len(topic) <= 120 and '\n' not in topic),
              'choose a single-line topic')
@@ -110,24 +94,36 @@ def collect(repo, out, session, *, topic=None, since=None, until=None, all_histo
     end = _date(until) if until else datetime.now(timezone.utc)
     start = _date(since) if since else None if all_history else end - timedelta(days=7)
     _require(start is None or start <= end, 'the time window ends before it starts')
-    transcripts = sorted({_file(file) for file in session},
-                         key=lambda file: (file.stat().st_mtime_ns, str(file)), reverse=True)
-    history, sessions, skipped = {}, [], []
+    current = current_session or os.environ.get('CODEX_THREAD_ID')
+    transcripts, skipped, scans = _sources(repo, start, current, session, cursor_session, codex_session, discover, home)
+    history, sessions = {}, []
     seen_sessions = set()
-    for file in transcripts:
-        ident, turns, omitted, digest = _transcript(file, repo, start, end, current_session)
-        related = _related(turns, topic)
-        if not related or ident in seen_sessions:
-            skipped.append({'file': str(file), 'reason': 'out of scope, current, duplicate, or no matching text'})
+    for _, file, host, explicit in transcripts:
+        try:
+            info = file.stat()
+            ident, turns, omitted, digest = recall_sessions.transcript(file, repo, start, end, current, host=host)
+            actual = file.stat()
+            _require((info.st_ino, info.st_size, info.st_mtime_ns) == (actual.st_ino, actual.st_size, actual.st_mtime_ns),
+                     'transcript changed while its evidence was read')
+        except (OSError, ValueError, KeyError, TypeError):
+            if explicit:
+                raise
+            skipped.append({'file': str(file), 'host': host, 'reason': 'could not read stable native transcript metadata'})
             continue
-        seen_sessions.add(ident)
+        related = _related(turns, topic)
+        key = (host, ident)
+        if not related or key in seen_sessions:
+            skipped.append({'file': str(file), 'host': host, 'reason': 'out of scope, current, duplicate, or no matching text'})
+            continue
+        _require(len(sessions) < 12, 'more than twelve chats matched; narrow the topic or time window')
+        seen_sessions.add(key)
         ids = []
         for row in related:
             key = f'T{len(history) + 1}'
-            history[key] = {**row, 'session': ident}
+            history[key] = {**row, 'session': ident, 'host': host}
             ids.append(key)
         sessions.append({'id': ident, 'file': str(file), 'sha256': digest,
-                         'mtime_ns': file.stat().st_mtime_ns, 'excerpts': ids, 'shortened': omitted})
+                         'host': host, 'mtime_ns': info.st_mtime_ns, 'excerpts': ids, 'shortened': omitted})
         _require(len(_encode({key: history[key] for key in ids}).encode()) <= 28_000,
                  'narrow the topic or time window for large session exports')
 
@@ -153,8 +149,10 @@ def collect(repo, out, session, *, topic=None, since=None, until=None, all_histo
     _require(len(_encode(shared).encode()) <= 16_000, 'select shorter shared notes')
     packet = {'schema': cli.SCHEMA, 'kind': 'recall-evidence', 'repo': str(repo), 'forge': forge,
               'scope': {'topic': topic, 'since': start.isoformat() if start else None, 'until': end.isoformat()},
-              'sessions': sessions, 'skipped': skipped, 'history': history, 'shared': shared,
+              'sessions': sessions, 'skipped': skipped, 'discovery': scans, 'history': history, 'shared': shared,
               'artifacts': _artifacts(forge, pr, issue, branch, {**history, **shared})}
+    _require(len(json.dumps(packet, indent=2, ensure_ascii=False).encode()) < 480_000,
+             'narrow the time range or topic to fit the recall evidence limit')
     return {**_keep(out, packet), 'sessions': len(sessions), 'excerpts': len(history), 'shared': len(shared)}
 
 
@@ -263,7 +261,8 @@ def summarize(evidence, sha256, out, *, model, timeout=240, reviewer=codex_revie
             for offset in range(0, len(sessions), 2):
                 for session, (rows, digest) in zip(sessions[offset:offset + 2],
                                                  pool.map(mine, sessions[offset:offset + 2])):
-                    receipts.append({'session': session['id'], 'prompt_sha256': digest})
+                    receipts.append({'session': session['id'], 'host': session.get('host', 'claude'),
+                                     'prompt_sha256': digest})
                     findings.extend(rows)
         context = {'findings': findings}
     else:
@@ -312,7 +311,9 @@ def markdown(path, sha256):
             for key in item['citations']:
                 row = data['citations'][key]
                 if 'session' in row:
-                    cites.append(f"chat {row['session']}:{row['line']}")
+                    host = row.get('host', 'claude')
+                    label = {'claude': 'chat', 'cursor': 'Cursor chat', 'codex': 'Codex chat'}[host]
+                    cites.append(f"{label} {row['session']}:{row['line']}")
                 elif 'commit' in row:
                     cites.append(f"git {row['commit'][:12]}")
                 elif 'url' in row:
@@ -341,7 +342,9 @@ def main(argv=None):
     capture = sub.add_parser('collect')
     for name in ('repo', 'out'):
         capture.add_argument('--' + name, required=True)
-    capture.add_argument('--session', action='append', required=True)
+    for option in ('session', 'cursor-session', 'codex-session'):
+        capture.add_argument('--' + option, action='append', default=[])
+    capture.add_argument('--discover', action='append', choices=recall_sessions.HOSTS, default=[])
     for name in ('topic', 'since', 'until', 'current-session', 'forge'):
         capture.add_argument('--' + name)
     capture.add_argument('--all-history', action='store_true')

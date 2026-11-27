@@ -143,7 +143,7 @@ SCENARIOS = {
         'Recover project decisions and outstanding work from previous chats', 'skills/recall/SKILL.md',
         'skills/recall/SKILL.md', 'recall collect',
         'A cited handoff, current Git and GitHub artifact states, and one concrete next action',
-        'Select Claude Code transcripts and shared notes. Review the digest before submitting excerpts to the model.'),
+        'Discover Claude Code, Cursor or Codex chats in the selected workspace, or choose exact transcripts. Inspect the snapshot before model review.'),
     'review-worktree': Scenario(
         'Review uncommitted changes in independent sandboxes', 'skills/interrogate/SKILL.md',
         'skills/interrogate/SKILL.md', 'interrogate_snapshot',

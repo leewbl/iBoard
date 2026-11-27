@@ -18,7 +18,7 @@ Summarize inherited evidence, outstanding blockers, and the next safe step. Use 
 
 ## Pick up a prior conversation, branch, or PR
 
-For a selected Claude Code conversation, use the [recall workflow](../recall/SKILL.md) to recover decisions and unfinished work. Give the resulting report and its digest to the pickup command. A report with one GitHub PR or just one local branch can supply the target. Choose the target explicitly when the report is ambiguous. If the user starts from a branch or GitHub PR, the recall report is optional.
+For a selected local Claude Code, Cursor or Codex conversation, use the [recall workflow](../recall/SKILL.md) to recover decisions and unfinished work. Give the resulting report and its digest to the pickup command. A report with one GitHub PR or just one local branch can supply the target. Choose the target explicitly when the report is ambiguous. If the user starts from a branch or GitHub PR, the recall report is optional.
 
 ```sh
 python3 -m workbench.pickup_history --repo "$TARGET_REPO" \
