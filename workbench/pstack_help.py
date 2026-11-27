@@ -99,6 +99,11 @@ SCENARIOS = {
         'skills/bug-cause/SKILL.md', 'start --kind bug --require-root-cause',
         'Same-entrypoint trigger and control on the baseline and candidate, with an independent verdict',
         'Use a committed driver with one variable argument and an observable faulty and healthy outcome.'),
+    'diagnose-repeated-failure': Scenario(
+        'Test a common assumption before another repair',
+        'skills/principle-attack-the-premise/SKILL.md', 'docs/pstack-parity.md', 'autopilot',
+        'Two versioned failed checks, the diagnostic plan and its isolated observations',
+        'Activates during task execution when two different candidates fail the same supported sandbox check.'),
     'swarm': Scenario(
         'Verify required paths or compare candidates in parallel', 'skills/swarm/SKILL.md',
         'skills/swarm/SKILL.md', 'swarm freeze',
