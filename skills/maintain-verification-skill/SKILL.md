@@ -29,6 +29,8 @@ The coordinator runs the declared offline journeys and uses the source evidence 
 
 To retry workers whose replies were blocked, pass the earlier report and digest with `--retry-report` and `--retry-sha256`, and choose a new output directory. The retry pins the same source, map and model, retains all completed findings, and calls the model only for blocked workers. Keep both receipts for audit.
 
+If the skill bundle changed on the same Git revision, also pass `--previous-skill "$PREVIOUS_BUNDLE"`. iBoard verifies the earlier report against that bundle and retains a completed worker result only when that feature's input bytes match. Workers review changed and new inputs under the same model.
+
 ```sh
 python3 -m workbench.project_verify maintain --repo "$TARGET_REPO" --revision "$REVISION" \
   --skill "$SKILL_DIR" --image "$LOCAL_IMAGE" --out "$EVIDENCE_DIR"

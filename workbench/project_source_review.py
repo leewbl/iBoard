@@ -173,8 +173,13 @@ def _outcome(rows):
     return "reviewed" if statuses == {"aligned"} else "review-required"
 
 
+def _reusable_rows(lanes, original):
+    return {name: original["rows"][name] for name, lane in lanes.items()
+            if original["inputs"].get(name) == lane and original["rows"][name]["status"] != "blocked"}
+
+
 def review(*, repo, revision, skill, provider, model, out, parallelism=2, timeout=240,
-           retry_report=None, retry_sha256=None, invoke=workers._invoke):
+           retry_report=None, retry_sha256=None, previous_skill=None, invoke=workers._invoke):
     repo = Path(repo).expanduser().resolve(strict=True)
     repo = Path(cli.git(repo, "rev-parse", "--show-toplevel", timeout=20)).resolve(strict=True)
     revision = cli.sha(repo, revision, timeout=20)
@@ -188,15 +193,20 @@ def review(*, repo, revision, skill, provider, model, out, parallelism=2, timeou
     digest, lanes = _input(repo, revision, bundle)
     prompts = {name: _prompt(lane) for name, lane in lanes.items()}
     _require(bool(retry_report) == bool(retry_sha256), "retry requires a source review report and its digest")
+    _require(not previous_skill or retry_report, "a previous skill requires its source review report")
     reused = {}
     previous = None
     if retry_report:
         path = _file(retry_report)
-        original = audit(repo, revision, bundle, path, retry_sha256)
+        prior_bundle = Path(previous_skill).expanduser().resolve(strict=True) if previous_skill else bundle
+        _require(not output.is_relative_to(prior_bundle), "keep source review evidence outside the previous skill")
+        original = audit(repo, revision, prior_bundle, path, retry_sha256)
         _require(original["engine"] == engine, "source review retry must use the same model")
-        reused = {name: row for name, row in original["rows"].items() if row["status"] != "blocked"}
-        _require(len(reused) < len(lanes), "source review has no blocked workers to retry")
+        reused = _reusable_rows(lanes, original)
+        _require(previous_skill or len(reused) < len(lanes), "source review has no blocked workers to retry")
         previous = {"path": str(path), "sha256": retry_sha256, "reused": list(reused)}
+        if previous_skill:
+            previous["mode"] = "refresh"
     output.mkdir(mode=0o700, parents=True)
     calls = workers.Calls(invoke, timeout)
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
@@ -242,13 +252,16 @@ def audit(repo, revision, skill, path, sha256):
     rows = record["rows"]
     if "retry_of" in record:
         previous = record["retry_of"]
-        _require(set(previous) == {"path", "sha256", "reused"} and previous["sha256"] != sha256,
+        fields = {"path", "sha256", "reused"}
+        refresh = previous.get("mode") == "refresh"
+        _require(set(previous) == (fields | {"mode"} if refresh else fields) and previous["sha256"] != sha256,
                  "invalid source review retry reference")
         original = json.loads(_read(previous["path"], 2_800_000, previous["sha256"]))
-        reused = [name for name in lanes if original["rows"][name]["status"] != "blocked"]
-        _require(original["engine"] == engine and original["revision"] == revision and original["inputs"] == lanes
-                 and original["contract_sha256"] == digest and previous["reused"] == reused
-                 and len(reused) < len(lanes) and all(rows[name] == original["rows"][name] for name in reused),
+        reused = _reusable_rows(lanes, original)
+        same_bundle = original["inputs"] == lanes and original["contract_sha256"] == digest
+        _require(original["engine"] == engine and original["revision"] == revision
+                 and (refresh or (same_bundle and len(reused) < len(lanes)))
+                 and previous["reused"] == list(reused) and all(rows[name] == row for name, row in reused.items()),
                  "source review retry did not retain the exact completed worker results")
     _require(_outcome(rows) == record["status"] and _reconcile(rows) == record["recipe_groups"],
              "source review reconciliation changed")
@@ -263,6 +276,7 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("--retry-report")
     parser.add_argument("--retry-sha256")
+    parser.add_argument("--previous-skill")
     try:
         result = review(**vars(parser.parse_args(argv)))
     except ERRORS as error:

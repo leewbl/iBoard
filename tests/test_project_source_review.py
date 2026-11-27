@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from shutil import copytree
 import tempfile
 import unittest
 from threading import Barrier, Event
@@ -227,6 +228,36 @@ class ProjectSourceReviewTests(unittest.TestCase):
         original_path.write_bytes(original_path.read_bytes() + b'\n')
         with self.assertRaisesRegex(ValueError, 'evidence digest changed'):
             self.audit(receipt)
+
+    def test_refresh_only_reviews_changed_feature_inputs(self):
+        dispatched = []
+
+        def invoke(engine, prompt, seconds):
+            context = self.context(prompt)
+            dispatched.append(context['feature'])
+            return self.reply(context)
+
+        previous = self.root / 'previous-skill'
+        copytree(self.skill, previous)
+        original = self.review(invoke)
+        old = self.audit(original)
+        with (self.skill / 'helpers' / 'second.sh').open('a', encoding='utf-8') as handle:
+            handle.write('# Revised setup instructions.\n')
+        dispatched.clear()
+        options = {'retry_report': original['path'], 'retry_sha256': original['sha256']}
+        with self.assertRaisesRegex(ValueError, 'inputs or feature coverage changed'):
+            self.review(invoke, 'not-a-refresh', **options)
+        receipt = self.review(invoke, 'refresh', previous_skill=previous, **options)
+        record = self.audit(receipt)
+        self.assertEqual(dispatched, ['second'])
+        self.assertEqual(record['retry_of']['reused'], ['first'])
+        self.assertEqual(record['rows']['first'], old['rows']['first'])
+        self.assertNotEqual(record['rows']['second']['input_sha256'], old['rows']['second']['input_sha256'])
+        record['retry_of']['reused'].append('second')
+        path = Path(receipt['path'])
+        path.write_text(json.dumps(record), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'exact completed worker results'):
+            self.audit({**receipt, 'sha256': cli.digest(path)})
 
     def test_refuses_symlinked_feature_documents_before_sending_source(self):
         features = self.skill / 'features'
