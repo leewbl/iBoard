@@ -1,6 +1,7 @@
 """Inventory Git worktrees and remove an explicitly approved clean, merged subset."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import shutil
 import subprocess
 import sys
 
-from workbench import cli, pr_watch, stack_rebase, swarm, worktree_usage
+from workbench import cli, pr_watch, stack_rebase, swarm, worktree_recent, worktree_usage
 from workbench.task_lock import task_lock
 
 
@@ -17,6 +18,8 @@ SOURCE = 'skills/poteto-mode/playbooks/worktree-cleanup.md'
 ERRORS = (*swarm.ERRORS, pr_watch.WatchError, cli.WorkbenchError)
 LIVE_HOLD = 'live local process or Claude session'
 LIVE_UNKNOWN = 'live local usage could not be verified'
+RECENT_REVIEW = 'recent chat usage requires review'
+RECENT_UNKNOWN = 'recent chat usage could not be verified'
 
 
 class CleanupError(ValueError):
@@ -64,11 +67,12 @@ def _absolute(path):
 
 def _holds(path):
     if path is None:
-        return None, []
+        return None, [], {}
     original = _absolute(path)
     digest = cli.digest(original)
     data = swarm._read(original, digest)
-    if set(data) != {'schema', 'entries'} or not isinstance(data['entries'], list) or len(data['entries']) > 800:
+    if (set(data) not in ({'schema', 'entries'}, {'schema', 'entries', 'reviewed_recent'}) or
+            not isinstance(data['entries'], list) or len(data['entries']) > 800):
         raise CleanupError('invalid worktree usage snapshot')
     holds = []
     for item in data['entries']:
@@ -77,7 +81,19 @@ def _holds(path):
                 or len(item['reason']) > 500 or not item['reason'].isprintable()):
             raise CleanupError('a retained checkout needs an absolute path and a reason')
         holds.append({'path': str(_absolute(item['path']).resolve()), 'reason': item['reason']})
-    return digest, holds
+    reviews = data.get('reviewed_recent', [])
+    reviewed = {}
+    if not isinstance(reviews, list) or len(reviews) > 800:
+        raise CleanupError('invalid recent chat review list')
+    for item in reviews:
+        if (not isinstance(item, dict) or set(item) != {'path', 'sha256'} or
+                not isinstance(item['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', item['sha256'])):
+            raise CleanupError('recent chat review needs a worktree path and exact evidence digest')
+        path = str(_absolute(item['path']).resolve())
+        if path in reviewed:
+            raise CleanupError('duplicate recent chat review')
+        reviewed[path] = item['sha256']
+    return digest, holds, reviewed
 
 
 def _registry(roots):
@@ -221,7 +237,7 @@ def _summary_path(path, checkouts):
 
 
 def inventory(repo, base_ref='origin/HEAD', *, holds=None, tasks_roots=(), destination=None, measure_size=False,
-              reader=None):
+              inspect_recent_chats=False, reader=None):
     repo = _absolute(repo).resolve(strict=True)
     if (not isinstance(base_ref, str) or not base_ref or len(base_ref) > 300
             or not base_ref.isprintable() or base_ref.startswith('-')):
@@ -233,26 +249,49 @@ def inventory(repo, base_ref='origin/HEAD', *, holds=None, tasks_roots=(), desti
         base = None
     roots = [_absolute(root).resolve(strict=True) for root in tasks_roots]
     registry = _registry(roots)
-    digest, keep = _holds(holds)
+    digest, keep, reviewed = _holds(holds)
     prs = _pr_heads(destination, reader)
     usage, active = worktree_usage.scan([row['path'] for row in checkouts])
     entries = [_describe(repo, row, base, registry, keep, prs, checkout=repo, measure_size=measure_size,
                          usage=usage, live=active.get(row['path'], []))
                for row in checkouts]
-    return {'schema': cli.SCHEMA, 'source': SOURCE, 'repo': str(repo), 'base_ref': base_ref, 'base': base,
-            'at': cli.now(), 'tasks_roots': [str(root) for root in roots], 'holds_sha256': digest,
-            'destination': destination, 'disk_free_bytes': shutil.disk_usage(repo).free,
-            'live_usage': usage, 'worktrees': entries}
+    report = {'schema': cli.SCHEMA, 'source': SOURCE, 'repo': str(repo), 'base_ref': base_ref, 'base': base,
+              'at': cli.now(), 'tasks_roots': [str(root) for root in roots], 'holds_sha256': digest,
+              'destination': destination, 'disk_free_bytes': shutil.disk_usage(repo).free,
+              'live_usage': usage, 'worktrees': entries}
+    if inspect_recent_chats:
+        recent, matches = worktree_recent.scan([row['path'] for row in checkouts])
+        report['recent_chats'] = recent
+        for row in entries:
+            if row['primary']:
+                continue
+            sightings = matches.get(row['path'], [])
+            row['recent_chats'] = sightings
+            if sightings:
+                material = json.dumps({'path': row['path'], 'sightings': sightings}, sort_keys=True).encode()
+                row['recent_chat_sha256'] = hashlib.sha256(material).hexdigest()
+                if reviewed.get(row['path']) != row['recent_chat_sha256']:
+                    row['reasons'].append(RECENT_REVIEW)
+            if recent['status'] != 'available':
+                row['reasons'].append(RECENT_UNKNOWN)
+            if row['reasons']:
+                row['bucket'] = 'keep'
+    return report
 
 
 def _identity(row):
-    return {key: row[key] for key in ('path', 'head', 'branch', 'identity')}
+    result = {key: row[key] for key in ('path', 'head', 'branch', 'identity')}
+    if 'recent_chat_sha256' in row:
+        result['recent_chat_sha256'] = row['recent_chat_sha256']
+    return result
 
 
-def freeze(repo, base_ref, selected, out, *, holds, tasks_roots=(), destination=None, reader=None):
+def freeze(repo, base_ref, selected, out, *, holds, tasks_roots=(), destination=None, inspect_recent_chats=False,
+           reader=None):
     if not selected or len(selected) > 64 or len(set(selected)) != len(selected):
         raise CleanupError('select one to 64 distinct, explicitly approved worktrees')
-    snapshot = inventory(repo, base_ref, holds=holds, tasks_roots=tasks_roots, destination=destination, reader=reader)
+    snapshot = inventory(repo, base_ref, holds=holds, tasks_roots=tasks_roots, destination=destination,
+                         inspect_recent_chats=inspect_recent_chats, reader=reader)
     index = {row['path']: row for row in snapshot['worktrees']}
     if snapshot['base'] is None or snapshot['holds_sha256'] is None:
         raise CleanupError('reclamation requires a known base and an explicit usage snapshot')
@@ -268,6 +307,8 @@ def freeze(repo, base_ref, selected, out, *, holds, tasks_roots=(), destination=
     record = {key: snapshot[key] for key in ('schema', 'source', 'repo', 'base_ref', 'base', 'tasks_roots',
                                               'holds_sha256', 'destination', 'disk_free_bytes')}
     record['selected'] = identities
+    if inspect_recent_chats:
+        record['inspect_recent_chats'] = True
     if plan.exists() or plan.is_symlink():
         raise CleanupError('cleanup approval path must be unused')
     cli.write(plan, record)
@@ -291,7 +332,7 @@ def apply(plan, sha256, *, holds, out, reader=None):
     anchor = common / 'HEAD'
     with task_lock(anchor, lock_name='.iboard-worktree-cleanup.lock', reentrant=False):
         before = shutil.disk_usage(repo).free
-        report = (swarm._read(path) if path.exists() or path.is_symlink() else
+        report = (swarm._read(path, limit=1_000_000) if path.exists() or path.is_symlink() else
                   {'schema': cli.SCHEMA, 'source': SOURCE, 'plan_sha256': sha256, 'repo': str(repo),
                    'base': data['base'], 'free_before_bytes': before, 'removed': {}})
         if report.get('plan_sha256') != sha256:
@@ -299,6 +340,8 @@ def apply(plan, sha256, *, holds, out, reader=None):
         report['status'] = 'running'
         report['blocked'] = {}
         report['live_usage'] = {}
+        if data.get('inspect_recent_chats'):
+            report['recent_chats'] = {}
         cli.write(path, report)
         try:
             for selected in data['selected']:
@@ -307,7 +350,8 @@ def apply(plan, sha256, *, holds, out, reader=None):
                 name = selected['path']
                 estimate = None if name in report['removed'] else _size(Path(name))
                 check = inventory(repo, data['base_ref'], holds=holds, tasks_roots=data['tasks_roots'],
-                                  destination=data['destination'], reader=reader)
+                                  destination=data['destination'],
+                                  inspect_recent_chats=data.get('inspect_recent_chats', False), reader=reader)
                 if check['base'] != data['base']:
                     raise CleanupError('PR base changed after cleanup was approved')
                 current = next((row for row in check['worktrees'] if row['path'] == name), None)
@@ -317,6 +361,13 @@ def apply(plan, sha256, *, holds, out, reader=None):
                     continue
                 report['live_usage'][name] = {'observation': check['live_usage'],
                                               'matches': current['live_usage'] if current else []}
+                if 'recent_chats' in check:
+                    report['recent_chats'][name] = {'observation': check['recent_chats'],
+                                                    'matches': current['recent_chats'] if current else []}
+                if current and current.get('recent_chat_sha256') != selected.get('recent_chat_sha256'):
+                    report['blocked'][name] = [*current['reasons'], 'recent chat evidence changed after approval']
+                    cli.write(path, report)
+                    continue
                 if current is None or current['bucket'] != 'candidate' or _identity(current) != selected:
                     report['blocked'][name] = current['reasons'] if current and current['reasons'] else ['worktree changed']
                     cli.write(path, report)
@@ -362,6 +413,7 @@ def main(argv=None):
         command.add_argument('--holds', required=action == 'freeze')
         command.add_argument('--tasks-root', action='append', default=[], dest='tasks_roots')
         command.add_argument('--destination')
+        command.add_argument('--inspect-recent-chats', action='store_true')
         if action == 'inventory':
             command.add_argument('--measure-size', action='store_true')
         else:

@@ -108,6 +108,8 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [`workbench.worktree_cleanup`](../skills/worktree-cleanup/SKILL.md) 可先只读盘点 Git 工作树，再冻结明确批准的路径。它自动检查当前用户的进程工作目录、打开文件及已观察到进程对应的 Claude Code 工作区，删除前再次检查占用。macOS 和断网 Linux 容器均用真实 Git 工作树验证了批准后出现占用会阻止删除。进程退出后同一份批准可继续，Git 分支保留。休眠或置顶的会话仍需宿主侧清单协助，IDE 与 Xcode 资源回收待接入。
 
+开启近期会话扫描后，盘点会从 Codex、Claude Code 和 Cursor 本地记录中列出关联会话及对应证据摘要。真实 Codex 会话从主工作树启动并在兄弟工作树实际执行命令，退出后产生的会话记录拦下了原清理批准。重新核对该记录及批准指定路径后，临时工作树才移除，分支保留。Claude Code 子会话和 Cursor 路径识别已有格式夹具验证。
+
 [`workbench.blind_eval`](../skills/blind-eval/SKILL.md) 给各方案同一个任务，在独立目录运行 Claude Code + GLM。评审通过匿名代码、成功的实际文件读取和断网 Docker 运行结果给分。两个独立 OpenAI 会话使用同一份评分标准。审计可离线重建评审输入并核对回执。此入口已支持固定文本源文件的对比，其他宿主轨迹和媒体产物待接入。
 
 [`workbench.correct`](../skills/correct/SKILL.md) 将重复错误对应到实际历史提交与所选防护层级。在断网 Docker 中，用同一探针核对每次错误、对应修复和当前实现。iBoard 的 OpenClaw 发布门禁现在为每条必测路径核对两个独立 Docker 容器；历史回放还检验了未登记回执和缺失 Gateway 重启两类防护。

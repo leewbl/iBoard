@@ -304,9 +304,9 @@ SCENARIOS = {
         'Requires an explicit named task. Release is a separate action after the current step has finished.'),
     'worktree-cleanup': Scenario(
         'Inventory registered worktrees before considering cleanup', 'skills/poteto-mode/playbooks/worktree-cleanup.md',
-        'skills/worktree-cleanup/SKILL.md', 'worktree_cleanup inventory',
-        'Registered paths, Git state, protected references and a fresh check on each approved removal',
-        'Inventory is read-only. Removal requires approval of specific worktrees and a refreshed usage snapshot.'),
+        'skills/worktree-cleanup/SKILL.md', 'worktree_cleanup inventory --inspect-recent-chats',
+        'Registered paths, Git state, live occupancy, recent chat evidence and checks on each approved removal',
+        'Inventory is read-only. Removal requires exact selected paths, reviewed chat evidence and refreshed host holds.'),
     'autonomous-run': Scenario(
         'Drive an approved task to a frozen outcome', 'skills/poteto-mode/playbooks/autonomous-run.md',
         'skills/autonomous-run/SKILL.md', 'autonomous_run freeze',
