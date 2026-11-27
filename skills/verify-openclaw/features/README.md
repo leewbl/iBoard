@@ -5,7 +5,10 @@
 | [skills-inspect](skills-inspect.md) | List local skills and view the details of a named skill | CLI JSON for list, detail and an absent name, unchanged fixture files, Docker cleanup |
 | [config-validate](config-validate.md) | Check the validity of a local configuration | Exit codes and JSON for valid and invalid port types, unchanged fixture inputs, Docker cleanup |
 
-The core `audit` runs the four journeys above. A compiled Control UI image with Chromium supports two more journeys.
+The core `audit` runs the four journeys above. A compiled Control UI image with Chromium supports three more journeys.
 
 - [`control-ui-connected`](../SKILL.md#drive) checks the login form, the authenticated Gateway session-list response and the empty Sessions page.
-- [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and an authenticated read of the same updated session after the Gateway restarts. The PR gate requires this journey for changes under `ui/src/pages/sessions/`, `ui/src/lib/sessions/`, or to `ui/src/lib/session-rename.ts` or `ui/src/styles/sessions.css`.
+- [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and an authenticated read of the same updated session after the Gateway restarts.
+- [`control-ui-session-delete`](../SKILL.md#selected-session-deletion) checks cancellation, deletion of one selected session, and persistence after restart with the unselected session still present under the same ID.
+
+The PR gate requires both write journeys for changes under `ui/src/pages/sessions/` or `ui/src/lib/sessions/`, or to `ui/src/styles/sessions.css`. Changes to `ui/src/lib/session-rename.ts` require rename, and changes to `src/gateway/server-methods/sessions-delete.ts` require deletion.

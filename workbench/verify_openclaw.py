@@ -21,22 +21,25 @@ JOURNEYS = {
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
 SESSION_RENAME = 'control-ui-session-rename'
+SESSION_DELETE = 'control-ui-session-delete'
+SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE)
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
     SESSION_RENAME: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS'),
+    SESSION_DELETE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_DELETE_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
 def _timeout(journey):
-    return 480 if journey == SESSION_RENAME else 320
+    return 480 if journey in SESSION_WRITES else 320
 
 
 def _journey(journey):
     helper, marker = (BROWSER_JOURNEYS if journey in BROWSER_JOURNEYS else JOURNEYS)[journey]
     command = ['node', f'/workspace/{helper}']
-    if journey == SESSION_RENAME:
-        command.append('session-rename')
+    if journey in SESSION_WRITES:
+        command.append(journey.removeprefix('control-ui-'))
     return helper, marker, command
 
 
@@ -47,7 +50,7 @@ def _browser_evidence(report, screenshot):
                 or cli.digest(screenshot) != report.get('screenshot_sha256')):
             return False
         marker = _journey(report['journey'])[1]
-        restart_required = report['journey'] == SESSION_RENAME
+        restart_required = report['journey'] in SESSION_WRITES
         lines = report['stdout'].splitlines()
         if report.get('stdout_truncated') or len(lines) != (5 if restart_required else 4) or lines[-1] != marker:
             return False
@@ -75,9 +78,22 @@ def _browser_evidence(report, screenshot):
                 and ui.get('gatewayPid') == restarted_pid):
             return False
         mutation = ui['mutation']
+        if not (mutation.get('key') == 'agent:main:iboard-browser-verification'
+                and isinstance(mutation.get('sessionId'), str) and mutation['sessionId'].strip()):
+            return False
+        if report['journey'] == SESSION_DELETE:
+            survivor = mutation['survivor']
+            return (readback['count'] == 1 and readback.get('archived') == 'all'
+                    and mutation.get('method') == 'sessions.delete' and mutation.get('responseKey') == mutation['key']
+                    and (mutation.get('expectedSessionId'), mutation.get('requestCount'),
+                         mutation.get('afterCancelCount')) == (mutation['sessionId'], 1, 2)
+                    and type(mutation['requestCount']) is int and type(mutation['afterCancelCount']) is int
+                    and all(mutation.get(key) is True for key in (
+                        'canceledWithoutWrite', 'deleted', 'freshContextReadback', 'targetAbsent'))
+                    and survivor.get('key') == 'agent:main:iboard-browser-survivor'
+                    and isinstance(survivor.get('sessionId'), str) and survivor['sessionId'].strip() != ''
+                    and survivor['sessionId'] != mutation['sessionId'])
         return (readback['count'] > 0 and mutation.get('method') == 'sessions.patch'
-                and mutation.get('key') == 'agent:main:iboard-browser-verification'
-                and isinstance(mutation.get('sessionId'), str) and bool(mutation['sessionId'])
                 and mutation.get('originalLabel') == 'iBoard verification fixture'
                 and mutation.get('finalLabel') == 'iBoard verification persisted'
                 and all(mutation.get(key) is True for key in ('canceledWithoutWrite', 'accepted', 'freshContextReadback')))
@@ -187,9 +203,12 @@ def required_journeys(data, head):
         selected.extend(('skills-check', 'skills-inspect'))
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
         selected.append('config-validate')
-    if any(path in ('ui/src/lib/session-rename.ts', 'ui/src/styles/sessions.css')
-           or path.startswith(('ui/src/pages/sessions/', 'ui/src/lib/sessions/')) for path in paths):
+    sessions_ui = any(path == 'ui/src/styles/sessions.css'
+                      or path.startswith(('ui/src/pages/sessions/', 'ui/src/lib/sessions/')) for path in paths)
+    if sessions_ui or 'ui/src/lib/session-rename.ts' in paths:
         selected.append(SESSION_RENAME)
+    if sessions_ui or 'src/gateway/server-methods/sessions-delete.ts' in paths:
+        selected.append(SESSION_DELETE)
     return selected
 
 
@@ -299,7 +318,7 @@ def main(argv=None):
     parser.add_argument("--image", required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument('--screenshot', type=Path, help='PNG evidence path for a Control UI browser journey')
-    parser.add_argument("--timeout", type=int, help='seconds (default: 480 for session rename, otherwise 320)')
+    parser.add_argument("--timeout", type=int, help='seconds (default: 480 for session writes, otherwise 320)')
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
     if (args.journey in BROWSER_JOURNEYS) != (args.screenshot is not None):

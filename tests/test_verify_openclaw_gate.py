@@ -24,8 +24,8 @@ class GatewayGateTests(unittest.TestCase):
         self.addCleanup(changed_paths.stop)
 
     def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None,
-                skills_inspect_image=None, config_image=None, rename=False, browser_receipt=True,
-                same_container=False, restart=None):
+                skills_inspect_image=None, config_image=None, rename=False, delete=False,
+                browser_receipt=True, same_container=False, restart=None, deletion=None, list_scope='all'):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -37,7 +37,9 @@ class GatewayGateTests(unittest.TestCase):
         if config_image is not None:
             journeys['config-validate'] = config_image
         if rename:
-            journeys['control-ui-session-rename'] = gateway_image
+            journeys[verify_openclaw.SESSION_RENAME] = gateway_image
+        if delete:
+            journeys[verify_openclaw.SESSION_DELETE] = gateway_image
         for journey, image in journeys.items():
             helper, marker, command = verify_openclaw._journey(journey)
             for actor in ('builder', 'independent-verifier'):
@@ -45,11 +47,14 @@ class GatewayGateTests(unittest.TestCase):
                 path = self.root / f'{name}.json'
                 container = journey if same_container else name
                 extra = {'stdout': marker + '\n', 'create_stdout': hashlib.sha256(container.encode()).hexdigest()}
-                if journey == 'control-ui-session-rename':
+                if journey in verify_openclaw.BROWSER_JOURNEYS:
                     png = path.with_suffix('.png')
                     png.write_bytes(name.encode())
-                    extra.update(stdout=self.browser_stdout(journey, fresh=browser_receipt, restart=restart),
-                                 screenshot_path=str(png.resolve()), screenshot_sha256=cli.digest(png))
+                    rename_evidence = journey == verify_openclaw.SESSION_RENAME
+                    stdout = self.browser_stdout(journey, fresh=browser_receipt if rename_evidence else True,
+                                                 restart=restart if rename_evidence else None, deletion=deletion,
+                                                 list_scope=list_scope)
+                    extra.update(stdout=stdout, screenshot_path=str(png.resolve()), screenshot_sha256=cli.digest(png))
                 cli.write(path, {
                     'journey': journey, 'actor': actor, 'commit': report_head or self.head,
                     'image': image, 'verified_image_id': image,
@@ -70,26 +75,37 @@ class GatewayGateTests(unittest.TestCase):
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
         })
 
-    def browser_stdout(self, journey, *, fresh=True, restart=None):
-        rename = journey == 'control-ui-session-rename'
+    def browser_stdout(self, journey, *, fresh=True, restart=None, deletion=None, list_scope='all'):
+        writing = journey in verify_openclaw.SESSION_WRITES
         healthy = {'ready': True, 'live': True, 'origin': 'http://127.0.0.1:18789'}
         clean_exit = {'code': 0, 'signal': None}
         events = [
             {'phase': 'doctor', 'gatewayPid': 19, **healthy},
             {'phase': 'ui', 'route': '/sessions', 'servedCommit': self.head, 'screenshot': True,
-             'gatewayPid': 71 if rename else 19,
+             'gatewayPid': 71 if writing else 19,
              'handshake': {'protocol': 4, 'method': 'token', 'role': 'operator'},
-             'readback': {'method': 'sessions.list', 'count': int(rename)}},
+             'readback': {'method': 'sessions.list', 'count': int(writing)}},
             {'phase': 'cleanup', 'exit': clean_exit, 'scratchRemoved': True},
         ]
-        if rename:
+        if journey == verify_openclaw.SESSION_RENAME:
             events[1]['mutation'] = {'method': 'sessions.patch', 'key': 'agent:main:iboard-browser-verification',
                                      'sessionId': 'fixture-session-id', 'originalLabel': 'iBoard verification fixture',
                                      'finalLabel': 'iBoard verification persisted', 'canceledWithoutWrite': True,
                                      'accepted': True, 'freshContextReadback': fresh}
-            if restart is not False:
-                events.insert(1, {'phase': 'restart', **healthy, 'gatewayPid': 71,
-                                  'previousPid': 19, 'previousExit': clean_exit, 'portClosed': True, **(restart or {})})
+        if journey == verify_openclaw.SESSION_DELETE:
+            events[1]['readback']['archived'] = list_scope
+            events[1]['mutation'] = {
+                'method': 'sessions.delete', 'key': 'agent:main:iboard-browser-verification',
+                'sessionId': 'fixture-session-id', 'expectedSessionId': 'fixture-session-id',
+                'responseKey': 'agent:main:iboard-browser-verification',
+                'requestCount': 1, 'afterCancelCount': 2, 'canceledWithoutWrite': True,
+                'deleted': True, 'freshContextReadback': fresh, 'targetAbsent': True,
+                'survivor': {'key': 'agent:main:iboard-browser-survivor', 'sessionId': 'other-id'},
+                **(deletion or {}),
+            }
+        if writing and restart is not False:
+            events.insert(1, {'phase': 'restart', **healthy, 'gatewayPid': 71,
+                              'previousPid': 19, 'previousExit': clean_exit, 'portClosed': True, **(restart or {})})
         return '\n'.join([*(json.dumps(event) for event in events), verify_openclaw._journey(journey)[1], ''])
 
     def test_publish_and_republish_block_before_any_github_call(self):
@@ -191,11 +207,14 @@ class GatewayGateTests(unittest.TestCase):
     def test_sessions_ui_delivery_rechecks_browser_receipts_before_writing(self):
         self.changed_paths.return_value = 'ui/src/pages/sessions/page-dialog.ts\0'
         github = Mock()
-        cases = ({}, {'rename': True, 'browser_receipt': False}, {'rename': True, 'same_container': True},
-                 {'rename': True, 'restart': False}, {'rename': True, 'restart': {'portClosed': False}},
-                 {'rename': True, 'restart': {'gatewayPid': 19}},
-                 {'rename': True, 'restart': {'gatewayPid': 73}},
-                 {'rename': True, 'restart': {'previousExit': {'code': None, 'signal': 'SIGKILL'}}})
+        cases = ({}, {'delete': True}, {'rename': True}, *(
+            {'rename': True, 'delete': True, **options} for options in (
+                {'browser_receipt': False}, {'same_container': True},
+                {'restart': False}, {'restart': {'portClosed': False}},
+                {'restart': {'gatewayPid': 19}}, {'restart': {'gatewayPid': 73}},
+                {'restart': {'previousExit': {'code': None, 'signal': 'SIGKILL'}}},
+            )
+        ))
         for options in cases:
             with self.subTest(options=options):
                 self.reports(**options)
@@ -205,7 +224,7 @@ class GatewayGateTests(unittest.TestCase):
                     with self.assertRaisesRegex(publish.PublishError, 'control-ui-session-rename'):
                         publish.publish(self.task, self.destination, github=github)
         self.assertEqual(github.mock_calls, [])
-        self.reports(rename=True)
+        self.reports(rename=True, delete=True)
         receipts = verify_openclaw.require(self.data, self.head, self.destination)
         _, verifier = receipts['control-ui-session-rename']
         self.data.update(kind='feature', delivery_repo=self.destination)
@@ -217,6 +236,33 @@ class GatewayGateTests(unittest.TestCase):
         (self.root / 'control-ui-session-rename-independent-verifier.png').write_bytes(b'exchanged image')
         with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'control-ui-session-rename'):
             verify_openclaw.require(self.data, self.head, self.destination)
+
+    def test_session_delete_gate_requires_cancellation_target_and_survivor_after_restart(self):
+        self.changed_paths.return_value = 'src/gateway/server-methods/sessions-delete.ts\0'
+        self.assertEqual(verify_openclaw.required_journeys(self.data, self.head),
+                         ['gateway-health', verify_openclaw.SESSION_DELETE])
+        self.assertTrue(verify_openclaw.needs_browser(self.data, self.head))
+        mismatches = ({'deleted': False}, {'targetAbsent': False}, {'requestCount': 2},
+                      {'canceledWithoutWrite': False}, {'afterCancelCount': 1},
+                      {'expectedSessionId': 'wrong-id'}, {'responseKey': 'other-key'}, {'freshContextReadback': False},
+                      {'survivor': {'key': 'agent:main:iboard-browser-survivor',
+                                    'sessionId': 'fixture-session-id'}})
+        github = Mock()
+        with patch.object(cli, 'read', return_value=self.data), \
+                patch.object(cli, 'gate', return_value=(self.head, [])), \
+                patch.object(publish.delivery, '_independent_verification'):
+            for fields in mismatches:
+                with self.subTest(fields=fields):
+                    self.reports(delete=True, deletion=fields)
+                    with self.assertRaisesRegex(publish.PublishError, 'control-ui-session-delete'):
+                        publish.publish(self.task, self.destination, github=github)
+        self.assertEqual(github.mock_calls, [])
+        self.reports(delete=True, list_scope='active')
+        with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'control-ui-session-delete'):
+            verify_openclaw.require(self.data, self.head, self.destination)
+        self.reports(delete=True)
+        passed = verify_openclaw.require(self.data, self.head, self.destination)
+        self.assertEqual(len(passed[verify_openclaw.SESSION_DELETE]), 2)
 
     def test_collect_keeps_failed_browser_run_for_task_recovery(self):
         self.changed_paths.return_value = 'ui/src/lib/session-rename.ts\0'
