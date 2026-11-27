@@ -59,7 +59,7 @@ class GitHubReader(delivery.GitHub):
 
     def open_pulls(self, repo):
         return self._call('pr', 'list', '--repo', repo, '--state', 'open', '--limit', '201',
-                          '--json', 'number,headRefName,baseRefName,isCrossRepository')
+                          '--json', 'number,headRefName,headRefOid,baseRefName,isCrossRepository')
 
     def thread_page(self, repo, number, cursor):
         owner, name = repo.split('/')

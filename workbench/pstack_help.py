@@ -122,6 +122,11 @@ SCENARIOS = {
         'skills/pause-safely/SKILL.md', 'run_control hold',
         'An operator request ID and the verifiable checkpoint shown by run_control show',
         'Requires an explicit named task. Release is a separate action after the current step has finished.'),
+    'worktree-cleanup': Scenario(
+        'Inventory registered worktrees before considering cleanup', 'skills/poteto-mode/playbooks/worktree-cleanup.md',
+        'skills/worktree-cleanup/SKILL.md', 'worktree_cleanup inventory',
+        'Registered paths, Git state, protected references and a fresh check on each approved removal',
+        'Inventory is read-only. Removal requires approval of specific worktrees and a refreshed usage snapshot.'),
     'autonomous-run': Scenario(
         'Drive an approved task to a frozen outcome', 'skills/poteto-mode/playbooks/autonomous-run.md',
         'skills/autonomous-run/SKILL.md', 'autonomous_run freeze',
