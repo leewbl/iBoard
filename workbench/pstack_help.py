@@ -63,6 +63,11 @@ SCENARIOS = {
         'skills/swarm/SKILL.md', 'swarm_investigate freeze',
         'Citation-validated findings per selected scope and a frozen comparison rule when requested',
         'Explicit GLM or OpenAI models receive selected source excerpts in restricted read-only sessions.'),
+    'blind-eval': Scenario(
+        'Compare task variants under the same request and a hidden rubric', 'skills/poteto-mode/playbooks/eval.md',
+        'skills/blind-eval/SKILL.md', 'blind_eval freeze',
+        'Observed input reads, offline execution receipts, cited scorecards and an auditable recommendation',
+        'The runner uses selected committed files, separate GLM workspaces, and two blinded OpenAI review sessions.'),
     'test-first': Scenario(
         'Use the same regression test before and after a fix', 'skills/tdd/SKILL.md',
         'skills/tdd/SKILL.md', 'start --kind bug', 'Two baseline failures at the expected assertion and two isolated candidate passes',

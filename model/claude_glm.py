@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _trace(stdout):
+def _trace(stdout, workspace=None):
     events, final, model, truncated = [], None, None, False
     for line in stdout.splitlines():
         try:
@@ -43,6 +43,13 @@ def _trace(stdout):
                 truncated |= len(block['text']) > 4000
             elif kind == 'tool_use':
                 event = {'type':'tool_use', 'tool':block.get('name'), 'id':block.get('id')}
+                args = block.get('input')
+                if workspace is not None and event['tool'] == 'Read' and isinstance(args, dict):
+                    name = args.get('file_path')
+                    if isinstance(name, str) and len(name) <= 512 and name.isprintable():
+                        target = (workspace / name).resolve()
+                        if target.is_relative_to(workspace):
+                            event['path'] = str(target.relative_to(workspace))
             elif kind == 'tool_result':
                 event = {'type':'tool_result', 'id':block.get('tool_use_id'), 'error':block.get('is_error') is True}
             else:
@@ -57,7 +64,7 @@ def _trace(stdout):
 
 
 def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(),
-            file_tools_only=False, capture_trace=False, requested_model=None):
+            file_tools_only=False, capture_trace=False, requested_model=None, private_workspace=False):
     workspace = workspace.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not prompt.strip() or not 1 <= timeout <= 86400:
         raise ValueError("a workspace, nonempty prompt and valid timeout are required")
@@ -68,6 +75,8 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
         raise ValueError("bounded explicit evidence directories are required")
     if evidence_paths and not read_only:
         raise ValueError("evidence access is restricted to read-only model calls")
+    if private_workspace and (not file_tools_only or not capture_trace or evidence_paths):
+        raise ValueError("private workspaces require traced file tools and no additional directories")
     evidence_dirs = []
     home = Path.home().resolve()
     credential_root = ROOT.resolve()
@@ -114,6 +123,9 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
     }
     if read_only:
         settings["sandbox"]["filesystem"]["denyWrite"] = [str(workspace), *evidence_dirs]
+    if private_workspace:
+        settings["sandbox"]["filesystem"].update(denyRead=["/"], allowRead=[str(workspace)],
+                                                allowWrite=[str(workspace)])
     with tempfile.TemporaryDirectory(prefix="workbench-claude-") as tmp:
         path = Path(tmp) / "settings.json"
         path.write_text(json.dumps(settings), encoding="utf-8")
@@ -136,7 +148,7 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
         def result(exit_code, timed_out, stdout, stderr):
             stdout, stderr = stdout.replace(key, "[REDACTED]"), stderr.replace(key, "[REDACTED]")
-            values = _trace(stdout) if capture_trace else {'stdout':stdout}
+            values = _trace(stdout, workspace if private_workspace else None) if capture_trace else {'stdout':stdout}
             if capture_trace and exit_code == 0 and not values['trace_completed']:
                 exit_code = 1
             return {'exit_code':exit_code, 'timed_out':timed_out, 'stderr':stderr, **values}
