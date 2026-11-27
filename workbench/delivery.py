@@ -222,7 +222,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
     run_control.admit(task_path, DeliveryError)
     github = github or GitHub()
     data = cli.read(Path(task_path))
-    if 'verification_target' in data:
+    if 'verification_target' in data or 'baseline_replay' in data:
         raise DeliveryError('verification-only task does not authorize issue closure')
     issue = own_issue_number(data.get('source'), repo) if data.get('kind') == 'bug' else None
     if issue is None:
@@ -972,7 +972,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
     data = cli.read(Path(task_path))
     require_refactor_intake(task_path, data)
     run_control.admit(task_path, DeliveryError)
-    if 'verification_target' in data and stack_binding is None:
+    if 'baseline_replay' in data or ('verification_target' in data and stack_binding is None):
         raise DeliveryError('verification-only task does not authorize merging')
     if stack_binding is not None and (not isinstance(stack_binding, dict) or not callable(revalidate)
                                       or not {'head', 'base', 'head_branch'} <= stack_binding.keys()):

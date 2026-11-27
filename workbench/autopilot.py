@@ -98,6 +98,10 @@ def _ci_failure_evidence(github, repo, workflow_name, run_id, details, expected_
 def _remaining(data):
     if data['status'] != 'running':
         raise AutopilotError(f"task is {data['status']}; resume it explicitly")
+    return _budget_remaining(data)
+
+
+def _budget_remaining(data):
     if cli.enforce_budget(data):
         raise AutopilotError('task budget exhausted')
     # Keep individual operations bounded even when the task itself has no deadline.
@@ -904,6 +908,16 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             raise AutopilotError('cannot resume a legacy task with unbound input snapshots')
         state['input_digest'] = input_digest
     target = data.get('verification_target')
+    replay = data.get('baseline_replay')
+    if replay is not None or 'baseline_replay' in state:
+        from workbench import task_replay
+        try:
+            if phase_active is None or not state_exists:
+                raise AutopilotError('baseline replay must use its supervised verification entry point')
+            task_replay.validate_child(task, data, state)
+        except (AutopilotError, OSError, TypeError, ValueError, KeyError, cli.WorkbenchError) as error:
+            _pause(task, str(error))
+            raise AutopilotError(str(error)) from error
     if 'verification_target' in data or 'verification_target' in state:
         settings = {'image':image, 'pr_repo':pr_repo, 'source_mode':source_mode, 'candidate_image':candidate_image,
                     'build_source_image':build_source_image, 'memory_mb':memory_mb}
@@ -1146,7 +1160,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                    'Two baseline runs and an independent assessment confirmed the original behavior.',
                    decisions.artifact(task, second['report']), 'Independent baseline review passed.')
 
-        if state['phase'] in ('implement', 'adopting') and (data.get('adoption') or target or arena or replay_candidate):
+        if state['phase'] in ('implement', 'adopting') and (data.get('adoption') or target or arena or replay_candidate or replay):
             require_active()
             # Baseline checks append evidence to the persisted task. Re-read it
             # before recording adoption, or this earlier snapshot would erase it.
@@ -1164,6 +1178,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             elif replay_candidate:
                 candidate = replay_candidate
                 verify_candidate_scope(candidate)
+            elif replay:
+                candidate = replay['candidate']
             elif isinstance(adoption, dict) and (
                     isinstance(adoption.get('candidate_commit'), str)
                     and re.fullmatch(r'[0-9a-f]{40}', adoption['candidate_commit'])
@@ -1204,6 +1220,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 elif replay_candidate:
                     data['iterations'] += 1
                     event.update(source='phase-replay', selection=phase['replay']['proof'], iteration=data['iterations'])
+                elif replay:
+                    event.update(source='baseline-replay', selection=replay['patch'])
                 data['events'].append(event)
                 cli.write(task, data)
             state.update(phase='verify', candidate_commit=candidate)
@@ -1690,6 +1708,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 raise AutopilotError(f'existing PR verification failed; evidence saved at {failure_path}')
             if arena:
                 raise AutopilotError(f'Arena selection failed Feature verification; evidence saved at {failure_path}')
+            if replay:
+                raise AutopilotError(f'replayed candidate failed fresh verification; evidence saved at {failure_path}')
             if replay_candidate:
                 raise AutopilotError(f'replayed phase failed fresh verification; evidence saved at {failure_path}')
             if failure.get('execution_blocked'):
@@ -1745,6 +1765,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             return state
         if state['phase'] == 'delivery':
             require_active()
+            if replay:
+                _pause(task, 'baseline replay independently verified; delivery requires the original task authority')
+                return state
             _validate_adoption(task, cli.read(task), issue_path, image, pr_repo, source_mode, candidate_image,
                                build_source_image, memory_mb)
             if not pr_repo:

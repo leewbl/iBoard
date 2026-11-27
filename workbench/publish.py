@@ -611,7 +611,7 @@ def publish(task_path, repo, github=None):
     run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
     delivery.require_refactor_intake(task_path, data)
-    if 'verification_target' in data:
+    if 'verification_target' in data or 'baseline_replay' in data:
         raise PublishError('verification-only task does not authorize publishing')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
@@ -694,7 +694,7 @@ def republish(task_path, repo, number, previous_head, github=None):
     run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
     delivery.require_refactor_intake(task_path, data)
-    if 'verification_target' in data:
+    if 'verification_target' in data or 'baseline_replay' in data:
         raise PublishError('verification-only task does not authorize publishing')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')

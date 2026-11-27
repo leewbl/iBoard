@@ -140,7 +140,7 @@ def release(plan, sha256):
 
 def _snapshot(result):
     return {key: result[key] for key in ('status', 'attempts', 'proof', 'identity', 'reason',
-                                        'request', 'journal', 'iterations') if key in result}
+                                        'request', 'journal', 'iterations', 'reverification') if key in result}
 
 
 def _journal(path, sha256):
@@ -161,8 +161,12 @@ def show(plan, sha256):
                         for row in queue['members']]}
 
 
-def run(plan, sha256, *, once=False, drive=autonomous_run.run, sleep=time.sleep):
+def run(plan, sha256, *, once=False, reverify_stale_main=False, drive=autonomous_run.run, sleep=time.sleep,
+        observe_base=None):
     path, queue = _load(plan, sha256)
+    if reverify_stale_main and observe_base is None:
+        from workbench import task_replay
+        observe_base = task_replay.observe
     journal_path = path.with_name('group-run.json')
     with task_lock(path, lock_name=QUEUE_LOCK, reentrant=False):
         journal = _journal(journal_path, sha256)
@@ -184,7 +188,16 @@ def run(plan, sha256, *, once=False, drive=autonomous_run.run, sleep=time.sleep)
                     return {'status': 'held', 'request': control['request']}
                 if cli.digest(path) != sha256 or run_control.group(row['task']) != path:
                     raise QueueError('queue approval changed before the task took its slot')
-                return drive(row['plan'], row['sha256'], once=True)
+                result = drive(row['plan'], row['sha256'], once=True)
+                if reverify_stale_main and result['status'] == 'blocked':
+                    replay = observe_base(path, sha256, row)
+                    if replay:
+                        result = {**result, 'reverification': replay}
+                        if replay['status'] == 'held':
+                            result['status'] = 'held'
+                        elif replay['status'] == 'verified':
+                            result['reason'] = 'candidate reverified on current main; original PR delivery is pending'
+                return result
             except TaskBusy:
                 return {'status': 'active'}
             except ERRORS as error:
@@ -228,6 +241,7 @@ def main(argv=None):
         command.add_argument('--sha256', required=True)
         if action == 'run':
             command.add_argument('--once', action='store_true')
+            command.add_argument('--reverify-stale-main', action='store_true')
         if action == 'hold':
             command.add_argument('--reason', required=True)
     args = vars(parser.parse_args(argv))
