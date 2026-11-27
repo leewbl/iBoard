@@ -28,16 +28,34 @@ def _repository(repo, destination):
     return path
 
 
-def _source(slack, route, deadline):
+def _source(slack, route, deadline, *, notice=None):
     rules, frozen = route['rules'], route['snapshot']
     if benny.route(frozen, rules, route['selected_artifact']) != route['decision'] or (
             route['decision']['status'] != 'eligible-for-reproduction'):
         raise ValueError('Benny requires trusted bug or performance intake without a claimant or existing fix')
     slack.check_team(rules['workspace'], deadline)
     current = benny._snapshot(slack, frozen['location'], deadline)
+    if notice is not None:
+        if current['messages'].count(notice) != 1:
+            raise SlackError('Benny source changed or the confirmed reproduction notice is missing')
+        current = {**current, 'messages': [message for message in current['messages'] if message != notice]}
     if current != frozen or benny.route(current, rules)['status'] != 'eligible-for-reproduction':
         raise SlackError('Benny source changed or the fix is no longer available for this report')
     return current
+
+
+def _confirmed_notice(source_notice, reproduction, proof):
+    if source_notice is None:
+        return None
+    from workbench import benny_notice
+    return benny_notice.confirmed(source_notice, reproduction=reproduction, proof=proof)
+
+
+def _claim_ready_at(proof, notice=None):
+    started = datetime.fromisoformat(proof['finished_at']).timestamp()
+    if notice is not None:
+        started = max(started, benny._ticks(notice['ts']) / 1_000_000)
+    return started + proof['claim_seconds']
 
 
 def _remaining(deadline):
@@ -283,15 +301,15 @@ def verify_candidate(*, receipt, sha256, revision, out, seconds=600, sandbox=run
     return result
 
 
-def _check_repair_owner(slack, proof, fix_search, deadline, tracker=None):
+def _check_repair_owner(slack, proof, fix_search, deadline, tracker=None, *, notice=None):
     if (not 1 <= len(fix_search) <= 4 or any(not benny_triage._text(term, 140) or not term.isprintable()
                                                 or '"' in term or '\\' in term for term in fix_search)):
         raise ValueError('provide one to four approved precise GitHub fix-search phrases')
-    if time.time() < datetime.fromisoformat(proof['finished_at']).timestamp() + proof['claim_seconds']:
+    if time.time() < _claim_ready_at(proof, notice):
         raise ValueError('the configured ownership window is still open')
     _, route = benny.load_route(proof['route']['path'], proof['route']['sha256'])
     repo = _repository(proof['checkout'], proof['repository'])
-    source = _source(slack, route, deadline)
+    source = _source(slack, route, deadline, notice=notice)
     tracker = tracker or benny_triage.Tracker()
     if isinstance(tracker, pr_watch.GitHubReader):
         tracker.set_deadline(deadline)
@@ -299,12 +317,12 @@ def _check_repair_owner(slack, proof, fix_search, deadline, tracker=None):
     if not all(item['complete'] for item in searches) or any(
             item['item_type'] == 'pull' and (item['state'] == 'open' or item['merged']) for item in candidates.values()):
         raise ValueError('possible existing fix or incomplete tracker search; use the existing-fix route or narrow the phrases')
-    _source(slack, route, deadline)
+    _source(slack, route, deadline, notice=notice)
     return repo, source, searches
 
 
 def prepare_repair(*, slack, receipt, sha256, task_id, tasks_root, workspaces_root, seconds=1800, iterations=3,
-                   launch=start.start, tracker=None, fix_search=()):
+                   launch=start.start, tracker=None, fix_search=(), source_notice=None):
     path, proof, contract, _ = _approved(receipt, sha256)
     visual = _visual_condition(contract, 'baseline')
     if contract['journey'].get('screenshot') and not visual:
@@ -312,8 +330,13 @@ def prepare_repair(*, slack, receipt, sha256, task_id, tasks_root, workspaces_ro
     _limits(seconds, contract['memory_mb'])
     if type(iterations) is not int or not 1 <= iterations <= 20:
         raise ValueError('Benny repair needs a fixed iteration budget')
-    repo, source, _ = _check_repair_owner(slack, proof, fix_search, time.monotonic() + min(seconds, 90), tracker)
-    binding = {'path': str(path), 'sha256': sha256, 'base': proof['base'], 'fix_search': list(fix_search)}
+    reproduction = {'path': str(path), 'sha256': sha256}
+    notice = _confirmed_notice(source_notice, reproduction, proof)
+    repo, source, _ = _check_repair_owner(slack, proof, fix_search, time.monotonic() + min(seconds, 90), tracker,
+                                          notice=notice)
+    binding = {**reproduction, 'base': proof['base'], 'fix_search': list(fix_search)}
+    if source_notice is not None:
+        binding['source_notice'] = source_notice
 
     def prepare(**options):
         prepared = workflow.prepare(**options, base_commit=proof['base'])

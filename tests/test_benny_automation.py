@@ -419,3 +419,46 @@ class BennyAutomationTests(unittest.TestCase):
         self.assertEqual(cli.digest(receipt['path']), receipt['sha256'])
         self.assertEqual(cli.read(receipt['path'])['draft']['url'], url)
         self.assertFalse(self.source.fixture.sent)
+
+    def test_confirmed_reproduction_replies_once_then_repair_keeps_the_notice_receipt(self):
+        event = 'Ev987NOTICED'
+        _, reproduce, prepare = self.queue_repair(event)
+        self.opts['reproduce']['source_notice_identity'] = TRIAGE
+        cli.write(self.policy, self.opts)
+        writer = self.source.fixture.writer
+        self.source.fixture.reply_behavior = 'lost'
+        with patch.object(benny_reproduce, 'reproduce', side_effect=reproduce) as run, \
+             patch.object(benny_reproduce, 'prepare_repair', side_effect=prepare), \
+             patch.object(benny_draft, 'deliver', return_value={'status': 'draft'}) as draft:
+            result = self.work(event, source_notice_writer=writer)
+            self.assertEqual(self.work(event, source_notice_writer=writer), result)
+        run.assert_called_once()
+        draft.assert_called_once()
+        self.assertEqual(result['status'], 'draft')
+        self.assertEqual(cli.read(result['task'])['benny_reproduction']['source_notice'], result['source_notice'])
+        self.assertEqual(len(self.source.fixture.sent), 1)
+        sent = self.source.fixture.sent[0]
+        self.assertEqual((sent['channel'], sent['thread_ts']), (CHANNEL, ROOT))
+        self.assertIn('reproduced', sent['text'].lower())
+
+    def test_claim_after_source_notice_preserves_evidence_and_blocks_draft(self):
+        event = 'Ev987CLAIMED'
+        _, reproduce, prepare = self.queue_repair(event, claim_seconds=30)
+        self.opts['reproduce']['source_notice_identity'] = TRIAGE
+        cli.write(self.policy, self.opts)
+        writer = self.source.fixture.writer
+        self.source.fixture.reply_behavior = 'accepted'
+        with patch.object(benny_reproduce, 'reproduce', side_effect=reproduce) as run, \
+             patch.object(benny_reproduce, 'prepare_repair', side_effect=prepare), \
+             patch.object(benny_draft, 'deliver') as draft:
+            waiting = self.work(event, source_notice_writer=writer)
+            self.assertEqual(waiting['status'], 'waiting-claim')
+            self.source.fixture.pages[-1].append(reply(120, "I'll fix the label."))
+            ready = datetime.fromisoformat(waiting['ready_at']).timestamp()
+            with patch.object(benny_automation.time, 'time', return_value=ready + 1):
+                with self.assertRaisesRegex(ValueError, 'source changed|no longer available'):
+                    self.work(event, source_notice_writer=writer)
+        self.assertTrue(Path(waiting['source_notice']['path']).is_file())
+        self.assertEqual(len(self.source.fixture.sent), 1)
+        run.assert_called_once()
+        draft.assert_not_called()

@@ -10,7 +10,7 @@ from pathlib import Path
 import socket
 import time
 
-from workbench import (autopilot, benny, benny_deploy, benny_draft, benny_events, benny_handoff, benny_operations,
+from workbench import (autopilot, benny, benny_deploy, benny_draft, benny_events, benny_handoff, benny_notice, benny_operations,
                        benny_repair, benny_reproduce, benny_triage, cli, delivery, project_verify, publish, start)
 from workbench.benny_slack import CHANNEL, STAMP, USER, Slack, SlackWriter
 from workbench.task_lock import TaskBusy, task_lock
@@ -134,7 +134,7 @@ def _policy(path, role):
         raise ValueError('worker policy needs the selected Benny role')
     own = all_roles[role]
     permitted = (TRIAGE_OPTIONS | {'apply_verdict', 'labels', 'followup_seconds'} if role == 'triage'
-                 else REPRO_OPTIONS | VISUAL_OPTIONS | {'claim_seconds', 'repair', 'operations'})
+                 else REPRO_OPTIONS | VISUAL_OPTIONS | {'claim_seconds', 'repair', 'operations', 'source_notice_identity'})
     if own.keys() - permitted:
         raise ValueError('unknown option for the selected Benny role')
     if role == 'triage' and type(own.get('apply_verdict', False)) is not bool:
@@ -148,6 +148,8 @@ def _policy(path, role):
     if 'operations' in own and (not isinstance(operations, dict) or operations.keys() != {'channel', 'identity'}
             or not benny._matches(CHANNEL, operations['channel']) or not benny._matches(USER, operations['identity'])):
         raise ValueError('Benny operations needs an explicit Slack channel and writer identity')
+    if 'source_notice_identity' in own and not benny._matches(USER, own['source_notice_identity']):
+        raise ValueError('Benny source notice needs an explicit Slack writer identity')
     own = {**own}
     for key in ('routing_map', 'manifest', 'helpers', 'oracle'):
         if key in own and own[key] is not None:
@@ -207,11 +209,13 @@ def _retained_reproduction(path, route, project, prior):
     return reference, proof
 
 
-def _retained_task(task, workspace, reference, proof, repair, phase):
+def _retained_task(task, workspace, reference, proof, repair, phase, source_notice):
     if task.resolve() != task or not task.is_file() or workspace.resolve() != workspace or not workspace.is_dir():
         raise ValueError('interrupted Benny task preparation has no complete task to resume')
     data = cli.read(task)
     binding = {**reference, 'base': proof['base'], 'fix_search': repair['fix_search']}
+    if source_notice:
+        binding['source_notice'] = source_notice
     if (data.get('id') != task.parent.name or data.get('repo') != str(workspace)
             or data.get('benny_reproduction') != binding
             or data.get('base_commit') != proof['base']
@@ -232,7 +236,21 @@ def _report_repair_failure(operations, task):
         pass
 
 
-def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, prior=None, operations=None):
+def _report_reproduction(path, reference, proof, *, identity, slack, writer, operations, retained):
+    if retained is None:
+        link = None
+        if operations:
+            thread = operations.status('Reproduced')
+            link = slack.permalink(thread['channel'], thread['root'], time.monotonic() + 30)
+        retained = benny_notice.publish(path=path, reproduction=reference, slack=slack, writer=writer,
+                                        identity=identity, operations_link=link)
+    if path.is_symlink() or retained != _ref(path):
+        raise ValueError('Benny source notice changed after it was confirmed')
+    return retained, benny_reproduce._confirmed_notice(retained, reference, proof)
+
+
+def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, prior=None, operations=None,
+               source_writer=None):
     if route['status'] == 'verify-existing':
         confirmed = benny.verify(slack=slack, receipt=route['receipt'], sha256=route['sha256'],
                                  out=out/'existing', **runtime)
@@ -249,29 +267,42 @@ def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, 
         reference = _ref(path)
     result = {'status': proof['status'], 'reproduction': reference}
     repair = opts.get('repair')
-    if not repair or proof['status'] != 'reproduced':
+    if proof['status'] != 'reproduced':
         return result
-    ready_at = datetime.fromisoformat(proof['finished_at']).timestamp() + proof['claim_seconds']
+    notice = None
+    if identity := opts.get('source_notice_identity'):
+        retained = prior.get('source_notice') if prior else None
+        if prior and prior.get('phase') != 'reproducing' and retained is None:
+            raise ValueError('Benny repair checkpoint lost its confirmed source notice')
+        result['source_notice'], notice = _report_reproduction(out/'source-notice.json', reference, proof,
+                                                               identity=identity, slack=slack, writer=source_writer,
+                                                               operations=operations, retained=retained)
+    if not repair:
+        return result
+    ready_at = benny_reproduce._claim_ready_at(proof, notice)
     if time.time() < ready_at:
         return {**result, 'status': 'waiting-claim', 'ready_at': datetime.fromtimestamp(ready_at, timezone.utc).isoformat()}
     task_id = 'benny-' + _hash(out.name)[:32]
     task = out/'tasks'/task_id/'task.json'
     phase = prior.get('phase') if prior else None
+    notice_reference = result.get('source_notice')
+    bindings = {key: result[key] for key in ('reproduction', 'source_notice') if key in result}
     if phase in ('prepare-repair', 'repair'):
         if prior.get('task') != str(task):
             raise ValueError('Benny checkpoint refers to a different repair task')
-        _retained_task(task, out/'worktrees'/task_id, reference, proof, repair, phase)
+        _retained_task(task, out/'worktrees'/task_id, reference, proof, repair, phase, notice_reference)
     else:
         if operations:
             operations.status('Reproduced')
-        checkpoint(phase='prepare-repair', reproduction=reference, task=str(task))
+        checkpoint(phase='prepare-repair', task=str(task), **bindings)
         prepared = benny_reproduce.prepare_repair(
             slack=slack, receipt=reference['path'], sha256=reference['sha256'], task_id=task_id,
             tasks_root=out/'tasks', workspaces_root=out/'worktrees', fix_search=repair['fix_search'],
+            source_notice=notice_reference,
             **{key: repair[key] for key in ('seconds', 'iterations') if key in repair})
         if Path(prepared['task']) != task:
             raise ValueError('Benny prepared a task outside its dispatch checkpoint')
-    checkpoint(phase='repair', reproduction=reference, task=str(task))
+    checkpoint(phase='repair', task=str(task), **bindings)
     if operations:
         operations.status('Attempting bounded fix')
     run = benny_draft.deliver if repair.get('draft') else benny_repair.run_repair
@@ -283,7 +314,7 @@ def _reproduce(route, opts, runtime, *, project, rules, slack, out, checkpoint, 
     return {**result, 'status': completed['status'], 'task': str(task), 'repair': completed}
 
 
-def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, out, checkpoint, prior=None):
+def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, source_writer, out, checkpoint, prior=None):
     opening = OPERATIONS_START.get(route['status'])
     if opening is None:
         return {'status': route['status']}
@@ -309,7 +340,7 @@ def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, out, c
                 checkpoint()
             prior = None
         result = _reproduce(route, opts, runtime, project=project, rules=rules, slack=slack, out=out,
-                            checkpoint=checkpoint, prior=prior, operations=operations)
+                            checkpoint=checkpoint, prior=prior, operations=operations, source_writer=source_writer)
     if operations:
         checkpoint(phase='reporting-operations', outcome=result)
         if result['status'] == 'draft':
@@ -320,7 +351,7 @@ def _reproduction_dispatch(route, opts, *, project, rules, slack, writer, out, c
     return result
 
 
-def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations_writer=None):
+def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations_writer=None, source_notice_writer=None):
     """Run the named event against the frozen project and operator policy once."""
     rules = benny._rules(rules)
     project, deployment = _binding(repo, rules)
@@ -333,6 +364,9 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations
     opts, policy_digest = _policy(policy, role)
     if role == 'triage' and opts.get('apply_verdict') and writer is None:
         raise ValueError('authorized triage writes require a separate Slack writer')
+    source_notice_writer = source_notice_writer or writer
+    if opts.get('source_notice_identity') and source_notice_writer is None:
+        raise ValueError('Benny source notice requires an authorized Slack writer')
     operations_writer = operations_writer or writer
     if ops := opts.get('operations'):
         if operations_writer is None or ops['channel'] == rules['channel']:
@@ -386,13 +420,15 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None, operations
                                  checkpoint=checkpoint)
         else:
             result = _reproduction_dispatch({**route, 'root': event['root']}, opts, project=project, rules=rules,
-                                            slack=slack, writer=operations_writer, out=directory, checkpoint=checkpoint,
+                                            slack=slack, writer=operations_writer, source_writer=source_notice_writer,
+                                            out=directory, checkpoint=checkpoint,
                                             prior=prior)
         cli.write(record_path, {**record, **result})
         return {**record, **result}
 
 
-def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=None, seconds=300, max_events=8,
+def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=None, source_notice_writer=None,
+          seconds=300, max_events=8,
           poll_seconds=2):
     """Consume queued events for a bounded admission window, including claim-window continuations."""
     if (type(seconds) is not int or not 1 <= seconds <= 3600 or type(max_events) is not int
@@ -419,7 +455,8 @@ def watch(*, repo, rules, state, policy, slack, writer=None, operations_writer=N
                 continue
             try:
                 result = work(repo=repo, rules=rules, state=store, policy=policy, event_id=ident,
-                              slack=slack, writer=writer, operations_writer=operations_writer)
+                              slack=slack, writer=writer, operations_writer=operations_writer,
+                              source_notice_writer=source_notice_writer)
             except TaskBusy:
                 continue
             except ERRORS as error:
@@ -458,6 +495,7 @@ def main(argv=None):
                 command.add_argument('--' + key, required=True)
             command.add_argument('--writer-token-file')
             command.add_argument('--operations-writer-token-file')
+            command.add_argument('--source-notice-writer-token-file')
             if action == 'work':
                 command.add_argument('--event-id', required=True)
             else:
@@ -477,9 +515,11 @@ def main(argv=None):
             slack = Slack(args.pop('token_file'))
             token = args.pop('writer_token_file')
             operations_token = args.pop('operations_writer_token_file')
+            source_token = args.pop('source_notice_writer_token_file')
             runner = work if action == 'work' else watch
             result = runner(rules=rules, slack=slack, writer=SlackWriter(token) if token else None,
-                            operations_writer=SlackWriter(operations_token) if operations_token else None, **args)
+                            operations_writer=SlackWriter(operations_token) if operations_token else None,
+                            source_notice_writer=SlackWriter(source_token) if source_token else None, **args)
             print(json.dumps(result, ensure_ascii=False))
     except ERRORS as error:
         parser.error(str(error))

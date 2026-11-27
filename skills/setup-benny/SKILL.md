@@ -39,6 +39,12 @@ In the worker policy, add `"operations": {"channel": "G0123456789", "identity": 
 
 The coordinator creates one status message per approved report in the operations channel and updates it as the run progresses. After the verified draft is confirmed, the coordinator adds its GitHub link as a reply to that message. The event retains `operations.json` with the root, updates, reply and pending write intent. Restarting after an uncertain response reconciles that intent against Slack. A missing or ambiguous create receipt stops automatic posting and preserves the journal. Without an operations channel, the CLI and event receipts carry the status.
 
+### Optional reproduction reply in the report thread
+
+Set `source_notice_identity` inside the `reproduce` worker policy to an approved Slack user ID. Pass the corresponding owner-only credential file with `--source-notice-writer-token-file`, or reuse `--writer-token-file` for the same identity. The coordinator posts one concise reply only after both offline probes confirm the report. When the operations thread is enabled, the coordinator updates it first and then includes its link in the reply. A trusted tracker issue is linked when present.
+
+The claim window starts from the later of confirmed reproduction and reply time. Later ownership checks recognize only the exact confirmed reply recorded in `source-notice.json`. Any additional message, edit or claim still pauses repair or draft delivery. An uncertain write is reconciled with the original thread. The coordinator preserves the intent when Slack cannot confirm the reply.
+
 ## Read or verify one approved report
 
 Copy [configuration.example.json](configuration.example.json) to a project-specific file outside the target checkout. Fill in the Slack workspace, source channel, configured triage identity, GitHub target and time limits. Use a separate configuration for another source channel. Store the Slack credential in an owner-only file and supply it to iBoard as a path through `--token-file`. Keep it out of the project, configuration and any model prompt.

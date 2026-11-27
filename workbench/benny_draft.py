@@ -108,7 +108,10 @@ def deliver(*, task, slack, fix_search=(), tracker=None, github=None, repair=ben
         accepted = repair(task=task, slack=slack, fix_search=fix_search, tracker=tracker)
         data = cli.read(task)
         binding = data['benny_reproduction']
-        _, proof, contract, _ = benny_reproduce._approved(binding['path'], binding['sha256'])
+        proof_path, proof, contract, _ = benny_reproduce._approved(binding['path'], binding['sha256'])
+        reproduction = {'path': str(proof_path), 'sha256': binding['sha256']}
+        source_notice = binding.get('source_notice')
+        benny_reproduce._confirmed_notice(source_notice, reproduction, proof)
         _, route = benny.load_route(proof['route']['path'], proof['route']['sha256'])
         source = route['snapshot']['permalink']
         repo = proof['repository']
@@ -129,6 +132,8 @@ def deliver(*, task, slack, fix_search=(), tracker=None, github=None, repair=ben
                 'after_sha256': accepted['candidate']['sha256'], 'review_sha256': accepted['independent']['sha256'],
                 'criteria_sha256': cli.criteria_digest(data), 'diff_sha256': _diff(data, head),
                 'title': title, 'body_sha256': _sha(body)}
+        if source_notice is not None:
+            plan['source_notice_sha256'] = source_notice['sha256']
         path = task.with_name('benny-draft.json')
         record = _journal(path, plan)
         digest = cli.digest(task)
@@ -137,6 +142,7 @@ def deliver(*, task, slack, fix_search=(), tracker=None, github=None, repair=ben
             latest = cli.read(task)
             if cli.digest(task) != digest:
                 raise ValueError('Benny task record changed before delivery')
+            benny_reproduce._confirmed_notice(source_notice, reproduction, proof)
             current, issues = cli.evidence_gate(latest, head)
             if current != head or issues:
                 raise ValueError('Benny draft requires current acceptance evidence and a clean candidate')
@@ -195,13 +201,14 @@ def deliver(*, task, slack, fix_search=(), tracker=None, github=None, repair=ben
             if binding.get('fix_search') and fix_search and list(fix_search) != terms:
                 raise ValueError('Benny draft cannot change the approved GitHub search')
             deadline = time.monotonic() + min(90, budget)
-            benny_reproduce._check_repair_owner(slack, proof, terms, deadline, tracker)
+            notice = benny_reproduce._confirmed_notice(source_notice, reproduction, proof)
+            benny_reproduce._check_repair_owner(slack, proof, terms, deadline, tracker, notice=notice)
             if isinstance(publisher, delivery.GitHub):
                 publisher.set_task_deadline(data)
             actual, existing = remote_state()
             if actual != expected_branch or existing:
                 raise ValueError('Benny report branch or pull request changed immediately before delivery')
-            benny_reproduce._source(slack, route, deadline)
+            benny_reproduce._source(slack, route, deadline, notice=notice)
             local_gate()
             run_control.admit(task)
             autopilot._budget_remaining(data)

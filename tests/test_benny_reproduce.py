@@ -1,4 +1,5 @@
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -41,6 +42,15 @@ class BennyReproductionTests(unittest.TestCase):
     def receipt(self):
         path = self.root/'before/result.json'
         return dict(receipt=path, sha256=cli.digest(path))
+
+    def publish_notice(self, reproduction=None):
+        from workbench import benny_notice
+        if reproduction is None:
+            receipt = self.receipt()
+            reproduction = {'path': str(receipt['receipt']), 'sha256': receipt['sha256']}
+        self.source.reply_behavior = 'accepted'
+        return benny_notice.publish(path=self.root/'source-notice.json', reproduction=reproduction,
+                                    slack=self.source.slack, writer=self.source.writer, identity=test_benny.TRIAGE)
 
     def after(self, **override):
         def derive(repo, base, head, image, timeout, *, rebuild_openclaw_ui):
@@ -139,6 +149,38 @@ class BennyReproductionTests(unittest.TestCase):
         self.source.pages[0].append(test_benny.reply(2, 'I am working on this'))
         with self.assertRaisesRegex(ValueError, 'source changed'):
             self.prepare()
+        self.tracker.search.assert_not_called()
+
+    def test_only_the_confirmed_notice_can_be_removed_from_the_frozen_source_comparison(self):
+        self.reproduce()
+        notice = self.publish_notice()
+        with self.assertRaisesRegex(ValueError, 'source changed'):
+            self.prepare()
+        posted = self.source.pages[-1][-1]
+        self.assertIn('reproduced', posted['text'].casefold())
+        text = posted['text']
+        with patch.dict(posted, text=text + ' Edited'):
+            with self.assertRaisesRegex(ValueError, 'confirmed reproduction notice is missing'):
+                self.prepare(source_notice=notice)
+        self.source.pages[-1].append(test_benny.reply(95, "I'll fix it"))
+        with self.assertRaisesRegex(ValueError, 'source changed'):
+            self.prepare(source_notice=notice)
+        self.source.pages[-1].pop()
+        self.tracker.search.assert_not_called()
+        task = Path(self.prepare(source_notice=notice)['task'])
+        self.assertEqual(cli.read(task)['benny_reproduction']['source_notice'], notice)
+        self.assertEqual(len(self.source.sent), 1)
+
+    def test_ownership_window_extends_from_the_confirmed_notice(self):
+        completed = self.reproduce(claim_seconds=60)
+        before = float(test_benny.ROOT) - 120
+        path = self.receipt()['receipt']
+        cli.write(path, {**completed, 'finished_at': datetime.fromtimestamp(before, timezone.utc).isoformat()})
+        notice = self.publish_notice()
+        posted_at = float(self.source.pages[-1][-1]['ts'])
+        with patch.object(benny_reproduce.time, 'time', return_value=posted_at + 59):
+            with self.assertRaisesRegex(ValueError, 'ownership window'):
+                self.prepare(source_notice=notice)
         self.tracker.search.assert_not_called()
 
     def test_local_handoff_preserves_actual_baseline_and_requires_dedicated_delivery(self):

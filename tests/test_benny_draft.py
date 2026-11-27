@@ -104,6 +104,14 @@ class BennyDraftTests(unittest.TestCase):
         return benny_draft.deliver(task=self.task, slack=self.source.source.slack, tracker=self.source.tracker,
                                    github=self.open)
 
+    def bind_notice(self):
+        data = cli.read(self.task)
+        binding = data['benny_reproduction']
+        notice = self.source.publish_notice({'path': binding['path'], 'sha256': binding['sha256']})
+        binding['source_notice'] = notice
+        cli.write(self.task, data)
+        return notice
+
     def test_draft_uses_exact_fork_and_evidence_and_reconciles_without_more_writes(self):
         first = self.deliver()
         self.assertEqual((first['head'], first['pr'], first['status']), (self.head, 27, 'draft'))
@@ -119,6 +127,7 @@ class BennyDraftTests(unittest.TestCase):
         self.assertEqual(self.open.requests, ['push', 'create'])
 
     def test_source_claim_between_push_and_creation_stops_after_exact_branch(self):
+        notice = self.bind_notice()
         push = self.open.push_new
 
         def claim(*args):
@@ -130,6 +139,7 @@ class BennyDraftTests(unittest.TestCase):
             self.deliver()
         self.assertEqual(self.open.requests, ['push'])
         self.assertEqual(self.open.head, self.head)
+        self.assertEqual(cli.read(self.journal)['plan']['source_notice_sha256'], notice['sha256'])
 
     def test_new_claim_during_remote_lookup_blocks_first_write(self):
         real = self.open.pulls

@@ -97,7 +97,10 @@ class RepairRun:
                 or data.get('root_cause') != bug_cause.MODE
                 or data['base_commit'] != self.binding['base'] or issue != task.with_name('issue.txt')):
             raise ValueError('task no longer matches the approved Benny repair')
-        _, proof, contract, _ = benny_reproduce._approved(self.binding['path'], self.binding['sha256'])
+        path, proof, contract, _ = benny_reproduce._approved(self.binding['path'], self.binding['sha256'])
+        if self.binding.get('source_notice') is not None:
+            benny_reproduce._confirmed_notice(self.binding['source_notice'],
+                                             {'path': str(path), 'sha256': self.binding['sha256']}, proof)
         visual = benny_reproduce._visual_condition(contract, 'baseline')
         if (proof['base'] != self.binding['base'] or proof['image'] != image or contract['memory_mb'] != memory_mb
                 or source_mode != 'image' or build_source_image is not True
@@ -115,17 +118,23 @@ class RepairRun:
         current = cli.read(self.task)
         if current.get('benny_reproduction') != self.binding:
             raise ValueError('Benny repair ownership proof changed')
-        _, proof, _, _ = benny_reproduce._approved(self.binding['path'], self.binding['sha256'])
+        path, proof, _, _ = benny_reproduce._approved(self.binding['path'], self.binding['sha256'])
+        notice = benny_reproduce._confirmed_notice(self.binding.get('source_notice'),
+                                                  {'path': str(path), 'sha256': self.binding['sha256']}, proof)
         deadline = time.monotonic() + min(90, autopilot._remaining(current))
         try:
-            _, _, searches = benny_reproduce._check_repair_owner(self.slack, proof, self.fix_search, deadline, self.tracker)
+            _, _, searches = benny_reproduce._check_repair_owner(self.slack, proof, self.fix_search, deadline,
+                                                                  self.tracker, notice=notice)
         except delivery.DeliveryError as error:
             raise ValueError(f'Benny tracker confirmation failed: {error}') from error
         autopilot._remaining(current)
-        cli.write(self.task.with_name(f'benny-ownership-{uuid.uuid4().hex}.json'), {
+        ownership = {
             'schema': cli.SCHEMA, 'route_sha256': proof['route']['sha256'], 'at': cli.now(),
             'reproduction_sha256': self.binding['sha256'], 'repository': proof['repository'], 'searches': searches,
-        })
+        }
+        if notice is not None:
+            ownership['source_notice_sha256'] = self.binding['source_notice']['sha256']
+        cli.write(self.task.with_name(f'benny-ownership-{uuid.uuid4().hex}.json'), ownership)
 
     def compare(self, current, commit, image):
         if current.get('benny_reproduction') != self.binding:
