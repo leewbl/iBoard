@@ -125,6 +125,11 @@ SCENARIOS = {
         'skills/maintain-formal-verification-skill/SKILL.md', 'formal_verify maintain',
         'Commit review, as-installed result, new verification, negative control and a separate diff',
         'An independently reproduced witness is required to report a product bug.'),
+    'draw-statechart': Scenario(
+        'Model-check a TLA+ specification and draw shortest violation paths', 'skills/statechart/SKILL.md',
+        'skills/statechart/SKILL.md', 'statechart check',
+        'TLC report, shortest paths, raw logs, Mermaid and Pele SVG within the graph budget',
+        'Prepare a local pinned Java, TLC and Pele image before running the check offline.'),
     'check-performance': Scenario(
         'Verify a performance claim against a baseline', 'skills/benchmark-checklist/SKILL.md',
         'skills/benchmark-checklist/SKILL.md', 'benchmark', 'Controlled workload, execution samples and comparable results'),

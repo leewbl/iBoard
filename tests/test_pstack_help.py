@@ -27,6 +27,7 @@ class PstackHelpTests(unittest.TestCase):
             'maintain-verify': 'project_verify maintain',
             'create-formal-verify': 'formal_verify create',
             'maintain-formal-verify': 'formal_verify maintain',
+            'draw-statechart': 'statechart check',
         }
         for name, command in expected.items():
             with self.subTest(name=name):

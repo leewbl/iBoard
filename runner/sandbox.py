@@ -29,6 +29,10 @@ PROFILE_ARTIFACTS = {
     '.cpuprofile': ('cpu.cpuprofile', 16 * 1024 * 1024),
     '.heapsnapshot': ('heap.heapsnapshot', 64 * 1024 * 1024),
 }
+STATECHART_FILE_LIMIT = 16 * 1024 * 1024
+STATECHART_TOTAL_LIMIT = 64 * 1024 * 1024
+STATECHART_REQUIRED = {'report.md', 'runtime.json', 'tlc.out'}
+STATECHART_OPTIONAL = {'chart.mmd', 'chart.svg', 'render-error.txt'}
 
 
 class SandboxError(Exception):
@@ -106,6 +110,21 @@ def _copy_artifact(directory, name, output, limit, description, *, validate=None
 def _copy_screenshot(directory, output):
     return _copy_artifact(directory, 'screenshot.png', output, MAX_SCREENSHOT, 'screenshot',
                           validate=_validated_png)
+
+
+def _copy_statechart(directory, output):
+    files = sorted(Path(directory).iterdir())
+    names = {file.name for file in files}
+    if (len(files) > 128 or not STATECHART_REQUIRED <= names
+            or any(name not in STATECHART_REQUIRED | STATECHART_OPTIONAL
+                   and not re.fullmatch(r'tlc-[A-Za-z0-9_]{1,150}\.out', name) for name in names)):
+        raise SandboxError('statechart output did not match the expected artifact names')
+    if sum(file.lstat().st_size for file in files) > STATECHART_TOTAL_LIMIT:
+        raise SandboxError('statechart artifacts exceeded the combined size limit')
+    target = Path(output)
+    target.mkdir(mode=0o700)
+    return {file.name: _copy_artifact(directory, file.name, target / file.name, STATECHART_FILE_LIMIT,
+                                     'statechart artifact') for file in files}
 
 
 def _diagnostic_output(invoke, args):
@@ -188,7 +207,7 @@ def _failure_diagnostics(invoke, docker, container_output, report, until):
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
                 workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None,
-                pids_limit=256):
+                statechart_output=None, pids_limit=256):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -198,6 +217,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     a SHA-256 digest of the original bytes, before UTF-8 decoding.
     Profile collection uses a scoped helper and copies its artifact out of a
     disposable container mount.
+    Statechart writes only named TLC reports and charts through a separate
+    mount, including a normal invariant-violation exit.
     ``invoke`` and ``find_executable`` permit unit testing without a Docker daemon.
     """
     docker = find_executable("docker")
@@ -218,6 +239,11 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 or screenshot_output is not None or regression or list(command[:2]) != [
                     'node', '/workspace/node-profile.mjs']):
             raise SandboxError("invalid scoped profile input")
+    if statechart_output is not None and (
+            not workspace_read_only or source_root != '/workspace' or workdir != '.'
+            or screenshot_output is not None or profile_output is not None or regression
+            or list(command[:2]) != ['node', '/workspace/run-statechart.mjs']):
+        raise SandboxError("invalid scoped statechart input")
     if regression and (not workspace_read_only or screenshot_output is not None):
         raise SandboxError("invalid read-only focused regression input")
     if regression_source is not None and (
@@ -310,7 +336,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
             tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr, \
             tempfile.TemporaryFile() as create_stdout, tempfile.TemporaryFile() as create_stderr:
         try:
-            if screenshot_output is not None or profile is not None:
+            if screenshot_output is not None or profile is not None or statechart_output is not None:
                 mount = ['--mount', f'type=bind,src={artifact_dir},dst=/artifacts']
                 if screenshot_output is not None:
                     mount.extend(['--env', 'WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png'])
@@ -345,6 +371,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                     report['profile_sha256'] = _copy_artifact(artifact_dir, filename, profile_output,
                                                              limit, 'runtime profile')
                     report['profile_path'] = str(Path(profile_output).resolve())
+                if statechart_output is not None and result.returncode in (0, 1):
+                    report['statechart_artifacts'] = _copy_statechart(artifact_dir, statechart_output)
         except subprocess.TimeoutExpired:
             report["timed_out"] = True
             report["error"] = "execution timed out"

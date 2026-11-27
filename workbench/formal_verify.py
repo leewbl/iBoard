@@ -44,7 +44,7 @@ def _anchor(anchor):
 def _spec(value):
     fields = {"id", "method", "tool_version", "checker", "replay", "minimum_explored",
               "source", "mutation", *PROMISE}
-    if not isinstance(value, dict) or not fields <= set(value) or set(value) - fields - {"support"}:
+    if not isinstance(value, dict) or not fields <= set(value) or set(value) - fields - {"support", "replay_tool_version"}:
         raise ValueError("manifest must specify one property, scope, checker, source anchors and mutation")
     project_verify._slug(value["id"])
     for key in ("property", "harm", "tool_version"):
@@ -62,6 +62,10 @@ def _spec(value):
             raise ValueError("checker and optional replay must be standalone .mjs, .py or .sh files")
     if replay == checker:
         raise ValueError("an independent replay requires a separate driver")
+    if "replay_tool_version" in value:
+        if replay is None:
+            raise ValueError("an independent tool version requires a replay driver")
+        project_verify._text(value["replay_tool_version"], "replay tool version")
     support = value.get("support", [])
     if (not isinstance(support, list) or len(support) > 12
             or any(not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,90}\.[a-zA-Z0-9_-]{1,10}", name)
@@ -163,7 +167,8 @@ def _outcome(raw, spec, *, replay=False):
         raise ValueError("driver must emit exactly one structured property result")
     outcome = json.loads(lines[0])
     fields = {"status", "tool_version", "explored", "counterexample"}
-    if (not isinstance(outcome, dict) or set(outcome) != fields or outcome["tool_version"] != spec["tool_version"]
+    tool_version = spec.get("replay_tool_version", spec["tool_version"]) if replay else spec["tool_version"]
+    if (not isinstance(outcome, dict) or set(outcome) != fields or outcome["tool_version"] != tool_version
             or type(outcome["explored"]) is not int or not 1 <= outcome["explored"] <= 10**12):
         raise ValueError("invalid property result or tool version")
     witness = outcome["counterexample"]

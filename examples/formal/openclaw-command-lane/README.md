@@ -16,3 +16,24 @@ python3 -m workbench.formal_verify create --repo "$OPENCLAW_REPO" \
 `verification.json` 应显示 40 种调度均通过。临时把容量判断从小于改为小于等于后，`mutation.json` 应报告反例：放入两个命令，第一条未结束，两条却都已启动。独立脚本用队列公开的活跃计数重放同一顺序。随后 `unmodified-replay.json` 应再次通过 40 种调度。工作台删掉临时工作树，并在输出目录生成可重跑的项目技能。
 
 重启、动态容量、组合队列、取消与超时需要各自声明属性和边界。
+
+## 用 TLC 生成状态图
+
+[CommandLane.tla](CommandLane.tla) 把入队、成功结束和拒绝结束映射为三个动作。在这个有限模型中，结束一个命令与立即补充同优先级的等待命令视为一步。常规配置要求同一时刻只运行一个命令。故障配置 [Overlap.cfg](Overlap.cfg) 放宽容量判断，保留同一个不变量。
+
+从官方来源准备 [TLC 1.7.4 JAR](https://github.com/tlaplus/tlaplus/releases/tag/v1.7.4)、[Temurin JRE 25.0.5.1+2](https://github.com/adoptium/temurin25-binaries/releases/tag/jdk-25.0.5.1%2B2) 对应 Docker 的 Linux arm64 或 amd64 压缩包，以及 [Pele 1.9.0 压缩包](https://registry.npmjs.org/pele/-/pele-1.9.0.tgz)。本机 Docker 需要已有基于 glibc 的 Node 24 镜像，例如 `node:24-slim`。准备命令先核对三个文件的哈希，再离线构建。
+
+```sh
+python3 -m workbench.statechart prepare --base-image "$LOCAL_NODE_IMAGE_ID" \
+  --java-archive "$JRE_TAR" --tlc-jar "$TLC_JAR" --pele-archive "$PELE_TAR"
+```
+
+用输出中的镜像 ID 运行验证。常规配置下，TLC 应验证 16 个不同状态并生成 Mermaid、SVG、报告和原始日志。把配置换成 `Overlap.cfg` 并使用新的证据目录，TLC 应返回 1，报告违反 `SingleActive` 的最短路径为连续两次入队。
+
+```sh
+model=examples/formal/openclaw-command-lane
+python3 -m workbench.statechart check "$model/CommandLane.tla" \
+  --view "$model/view.mjs" --image "$RUNTIME_IMAGE" --out "$EVIDENCE_DIR"
+```
+
+[模型验证契约](manifest-model.json) 还可用于 `workbench.formal_verify create`。用同一个准备命令在 OpenClaw 源码镜像上叠加工具，再将上面的有界检查示例改为 `--manifest "$model/manifest-model.json"`。适配器读实际的容量判断来选择模型配置。修改判断后由 TLC 找出反例，再由独立的 Node 驱动操作真实队列复现。这个映射只覆盖该判断和示例声明的行为，其他队列实现变化仍需检查模型是否同步。

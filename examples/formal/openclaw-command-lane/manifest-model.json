@@ -1,0 +1,61 @@
+{
+  "id": "openclaw-command-lane-model",
+  "method": "model-check",
+  "tool_version": "TLC 1.7.4",
+  "property": "When a command lane has capacity one, a second command callback cannot start while the first remains active.",
+  "harm": "Two commands in the same lane could modify shared session state at the same time.",
+  "bounds": [
+    "One lane, three commands, capacity fixed at one.",
+    "All legal orders of the three enqueue events and three settlement events, with each settlement either fulfilling or rejecting."
+  ],
+  "assumptions": [
+    "The model treats tested admission and the synchronous queue update as one atomic transition.",
+    "The adapter binds the model capacity guard to the exact comparison in the tracked implementation.",
+    "Settling a callback and pumping the next equal-priority queued callback are modeled together."
+  ],
+  "exclusions": [
+    "Gateway restarts, dynamic capacity, grouped lanes, task timeouts, abort signals, and four or more commands."
+  ],
+  "checker": "model-check.mjs",
+  "replay": "replay.mjs",
+  "minimum_explored": 16,
+  "source": [
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "function drainLane(",
+      "meaning": "The drain loop evaluates capacity before admitting the next callback."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "state.activeTasks.set(taskId, entry.sessionTarget)",
+      "meaning": "Admission accounts for active work before invoking callbacks."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "state.activeTasks.delete(taskId)",
+      "meaning": "Settlement releases capacity before pumping the same lane."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "export function enqueueCommandInLane<",
+      "meaning": "The check enqueues real callbacks through this public API."
+    },
+    {
+      "path": "src/process/command-queue.state.ts",
+      "contains": "export function enqueueLaneQueue(",
+      "meaning": "Equal-priority commands enter the production queue used in the exploration."
+    }
+  ],
+  "mutation": {
+    "path": "src/process/command-queue.ts",
+    "before": "state.activeTasks.size < state.maxConcurrent &&",
+    "after": "state.activeTasks.size <= state.maxConcurrent &&",
+    "meaning": "Permit a new admission even when every slot in the lane is occupied."
+  },
+  "replay_tool_version": "node v24.22.1",
+  "support": [
+    "CommandLane.tla",
+    "CommandLane.cfg",
+    "Overlap.cfg"
+  ]
+}

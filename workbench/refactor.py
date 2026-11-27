@@ -107,10 +107,10 @@ def _command(case):
     return [project_verify.ENGINES[Path(helper).suffix], '/workspace/' + helper, *case['args']]
 
 
-def _observe(raw, command, image, memory, containers):
+def _observe(raw, command, image, memory, containers, *, source_root='/app'):
     container = raw.get('create_stdout', '').strip()
     diagnostics = raw.get('runtime_diagnostics', {})
-    if (raw.get('command') != command or raw.get('image') != image or raw.get('source_root') != '/app'
+    if (raw.get('command') != command or raw.get('image') != image or raw.get('source_root') != source_root
             or raw.get('memory_mb') != memory or raw.get('workspace_read_only') is not True
             or raw.get('container_created') is not True or raw.get('cleanup_confirmed') is not True
             or raw.get('create_exit_code') != 0 or raw.get('timed_out') is not False or raw.get('error')
