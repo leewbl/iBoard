@@ -381,6 +381,11 @@ SCENARIOS = {
         'Capture CPU evidence from a live workload', 'skills/poteto-mode/playbooks/runtime-forensics.md',
         'skills/runtime-forensics/SKILL.md', 'runtime_forensics cpu', 'An offline Node profile and findings tied to Git source',
         'For memory retention use the documented heap mode.'),
+    'capture-browser-trace': Scenario(
+        'Capture and analyze a live Chromium trace in offline Docker',
+        'skills/poteto-mode/playbooks/runtime-forensics.md', 'skills/runtime-forensics/SKILL.md',
+        'browser_forensics', 'A raw CDP stream, SQLite analysis and source binding or an explicit unverified location',
+        'The page must be on the selected container loopback and use a preinstalled Chromium.'),
     'analyze-trace': Scenario(
         'Examine an existing runtime capture', 'skills/poteto-mode/playbooks/trace-forensics.md',
         'skills/trace-forensics/SKILL.md', 'trace_forensics', 'The original artifact digest and findings that refer to decoded data',

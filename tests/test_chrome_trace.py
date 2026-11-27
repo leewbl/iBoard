@@ -36,7 +36,7 @@ class ChromeTraceTests(unittest.TestCase):
             event('B', 21, name='inner', cat='app'),
             event('E', 35, name='outer', cat='app', s='proc', id='001'),
             event('X', 25, name='FunctionCall', cat='devtools.timeline', dur=3.25, tts=16, tdur=2,
-                  args={'data': {'functionName': 'draw', 'url': 'https://example.invalid/app.js', 'lineNumber': 0}}),
+                  args={'data': {'functionName': 'draw', 'url': 'https://example.invalid/app.js', 'lineNumber': 1}}),
             event('E', 27, name='inner', cat='app', tid=8),
             event('E', 22, name='inner', cat='app'),
             event('E', 30, name='outer', cat='app', s='wrong', id='001'),

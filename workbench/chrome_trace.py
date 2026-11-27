@@ -101,11 +101,12 @@ def _id2(value):
     return None
 
 
-def _call_frame(value):
+def _call_frame(value, *, first_line=0):
     frame = _mapping(value)
     line = _integer(frame.get('lineNumber'))
     path = _text(frame.get('url')) or None
-    return _text(frame.get('functionName')) or None, path, line + 1 if path and line is not None else None
+    return (_text(frame.get('functionName')) or None, path,
+            line + 1 - first_line if path and line is not None and line >= first_line else None)
 
 
 def _explicit_frame(event, data):
@@ -113,7 +114,9 @@ def _explicit_frame(event, data):
     # provide an explicit callFrame; an arbitrary event URL is not a frame.
     value = event.get('callFrame') or data.get('callFrame') or _mapping(event.get('args')).get('callFrame')
     if value is None and event.get('name') == 'FunctionCall':
-        value = data
+        # Blink serializes a 1-based SourceLocation here. Profiler CallFrame
+        # records use zero-based source coordinates.
+        return _call_frame(data, first_line=1)
     return _call_frame(value)
 
 

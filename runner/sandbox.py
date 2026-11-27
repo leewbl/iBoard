@@ -29,6 +29,7 @@ DIAGNOSTIC_TIMEOUT = 3
 PROFILE_ARTIFACTS = {
     '.cpuprofile': ('cpu.cpuprofile', 16 * 1024 * 1024),
     '.heapsnapshot': ('heap.heapsnapshot', 64 * 1024 * 1024),
+    '.cdptrace': ('trace.cdptrace', 32 * 1024 * 1024),
 }
 STATECHART_FILE_LIMIT = 16 * 1024 * 1024
 STATECHART_TOTAL_LIMIT = 64 * 1024 * 1024
@@ -246,10 +247,12 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("recording requires a distinct JSONL output and screenshot in a read-only /app run")
     profile = None
     if profile_output is not None:
-        profile = PROFILE_ARTIFACTS.get(Path(profile_output).suffix)
+        suffix = Path(profile_output).suffix
+        profile = PROFILE_ARTIFACTS.get(suffix)
+        helper = 'capture-browser.mjs' if suffix == '.cdptrace' else 'node-profile.mjs'
         if (profile is None or not workspace_read_only or source_root != '/app' or workdir != '.'
                 or screenshot_output is not None or regression or list(command[:2]) != [
-                    'node', '/workspace/node-profile.mjs']):
+                    'node', '/workspace/' + helper]):
             raise SandboxError("invalid scoped profile input")
     if statechart_output is not None and (
             not workspace_read_only or source_root != '/workspace' or workdir != '.'

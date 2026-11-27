@@ -1,6 +1,6 @@
 ---
 name: runtime-forensics
-description: Diagnose a slow, stuck, or memory-heavy Node workload using offline Docker evidence and tracked source.
+description: Diagnose a slow, stuck, memory-heavy or visually unstable workload with offline Node or Chromium evidence.
 disable-model-invocation: true
 ---
 
@@ -14,6 +14,32 @@ Choose an explicitly selected, repeatable workload on a local, nonproduction ima
 
 `--window-ms` captures a responsive diagnostic child during a bounded run and ends that disposable process so its profile can flush. Without a window, capture happens as the child exits. The outer sandbox timeout bounds an unresponsive run. The artifact can contain data from the workload. Use test inputs and share only the reduced finding unless the raw artifact is needed.
 
-Use a comparison revision and local image when there is a specific hypothesis. Hold the entry, arguments and limits fixed. Compare the observed signals and cite the relevant source. If the cause depends on a browser trace or a different runtime, record the gap and pick an appropriate isolated capture.
+Use a comparison revision and local image when there is a specific Node hypothesis. Hold the entry, arguments and limits fixed. Compare the observed signals and cite the relevant source.
+
+For a browser symptom, use the source-verified image with Playwright and
+Chromium already installed. Select the tracked Node server and its loopback
+page. Give the workload's real selectors when it needs an action or an observation.
+
+```sh
+python3 -m workbench.browser_forensics --repo /path/to/project \
+  --revision HEAD --image LOCAL_IMAGE --entry server.mjs --port 18789 \
+  --route / --click '#start' --observe '#animated-panel' \
+  --window-ms 1200 --pause-animations --out /tmp/iboard-browser-evidence
+```
+
+The tool records Chrome Trace Events through the DevTools Protocol and imports
+them into SQLite. The trace marks the action and the observation window. A
+frame maps to a tracked line when the selected renderer observed the script
+bytes, they match the Git blob, and the line is within it. A URL also seen on
+another renderer thread stays unverified. Transformed bundles still need
+source-map support.
+
+With `--pause-animations`, both trials use the same image, source, action and
+observation window. A fixed CDP intervention pauses the browser animation
+clock in the second trial. Report a change only for the same unique named
+animation observed across both trials. This tests the animation's clock and
+does not by itself identify a separate rendering or application fault.
+Keep raw traces and SQLite evidence with the run. They can contain application
+test data, including request URLs.
 
 Report the observed signal, source, comparison, raw artifact and cleanup status. Hand confirmed product findings to the bug or performance workflow. Keep an infrastructure failure attached to its run so automated repair can preserve the candidate without spending a repair iteration.
