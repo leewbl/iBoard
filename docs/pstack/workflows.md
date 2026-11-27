@@ -42,7 +42,7 @@
 | [`technical-writing`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/technical-writing/SKILL.md) | 写或审技术文档、RFC、PR、提交说明 | 依据用途选择教程、操作、参考或解释，并消除语义歧义 | 原始资料、目标受众与仓库约定 | [原生入口](../../skills/technical-writing/SKILL.md)支持文档、README、RFC、PR 说明和提交信息，提供审阅、改写和按源码起草。导出前核对原文和独立事实审查。 |
 | [`typescript-best-practices`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/typescript-best-practices/SKILL.md) | 阅读或编辑 TypeScript | 以类型和边界校验维持不变量，检查具体改动的类型与运行行为 | TypeScript 工具链及项目约定，参考模式文件 | [原生入口](../../skills/typescript-best-practices/SKILL.md)在任务提示词引入类型与边界规则。断网容器使用真实编译器核对同一项目的基线和候选，独立复跑拒绝缺失覆盖，源码复验检查编译器无法证明的谓词等问题。运行时行为沿用任务的独立验收。 |
 | [`unslop`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/unslop/SKILL.md) | 删去文本中重复、空泛或冗长表达 | 保留事实、语义与证据的简洁稿 | 目标文本与事实记录 | [原生入口](../../skills/unslop/SKILL.md)沿用固定规则编号审阅或改写原文。保存差异，核对数字、代码和链接，再由独立会话检查事实、语气和原意。 |
-| [`why`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/why/SKILL.md) | 问为何采用原设计、某版本行为或阈值 | 引用原提交、PR 讨论和相关记录，分清记录与推断 | Git 历史与只读 forge 查询 | 有原生只读入口，可引用本地提交记录和明确指定、关联提交的 GitHub PR。自动查找关联 PR 及其他历史资料待接入。 |
+| [`why`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/why/SKILL.md) | 问为何采用原设计、某版本行为或阈值 | 引用原提交、PR 讨论和相关记录，分清记录与推断 | Git 历史与只读 forge 查询 | [原生只读入口](../../skills/investigate/SKILL.md)可指定 PR，也可用 `--discover-prs` 优先按选中行的提交查找关联 PR，再补查近期文件历史。浅克隆要核对 PR 的实际改动路径，结果保留已读讨论、来源和取证缺口。其他历史资料待接入。 |
 
 ## `poteto-mode` 工作流程
 

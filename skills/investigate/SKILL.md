@@ -19,4 +19,14 @@ python3 -m workbench.investigate how --repo /path/to/repo \
 
 For `why`, `teach` or `investigation`, include an explicitly selected GitHub review with `--pr https://github.com/owner/repo/pull/123`. Its head or merge commit must appear in the collected Git evidence. The history stage uses the PR title and body plus the first five entries from each discussion category.
 
+Use `--discover-prs owner/repo` to discover the associated GitHub reviews for
+the selected code. The lookup starts with the commits Git attributes the
+selected lines to, then checks recent file history. It makes up to six
+commit lookups and reads up to two associated PRs with the first two entries
+from each discussion category. For a shallow checkout, it also checks that a
+selected path appears in the PR's first page of changed files before using
+the discussion. Empty lookups, unavailable records and partial discussion
+are recorded separately. Use the upstream repository name when examining a
+fork for upstream design history.
+
 The selected committed text, history and requested discussion are sent to the configured GLM provider. The model cannot modify the repository or execute project commands. Read the report's final stage, resolve the cited evidence IDs to source lines, commits or discussion URLs, and state any limitations that affect the answer. A blocked report is a blocked investigation.
