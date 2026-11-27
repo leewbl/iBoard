@@ -246,6 +246,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
             or Path(recording_output).resolve() == Path(screenshot_output).resolve()):
         raise SandboxError("recording requires a distinct JSONL output and screenshot in a read-only /app run")
     profile = None
+    profile_file_limit = None
     if profile_output is not None:
         suffix = Path(profile_output).suffix
         profile = PROFILE_ARTIFACTS.get(suffix)
@@ -254,6 +255,10 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 or screenshot_output is not None or regression or list(command[:2]) != [
                     'node', '/workspace/' + helper]):
             raise SandboxError("invalid scoped profile input")
+        if helper == 'node-profile.mjs' and list(command[2:3]) == ['heap-allocations']:
+            if suffix != '.heapsnapshot':
+                raise SandboxError("invalid scoped profile input for heap allocation tracking")
+            profile_file_limit = profile[1]
     if statechart_output is not None and (
             not workspace_read_only or source_root != '/workspace' or workdir != '.'
             or screenshot_output is not None or profile_output is not None or regression
@@ -343,6 +348,10 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
               "tmpfs_mb": TMPFS_MB,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
               "exit_code": None, "create_exit_code": None, "timed_out": False, "cleanup_confirmed": False}
+    if profile_file_limit is not None:
+        create[create.index('--workdir'):create.index('--workdir')] = [
+            '--ulimit', f'fsize={profile_file_limit}:{profile_file_limit}']
+        report['profile_file_limit_bytes'] = profile_file_limit
     if regression_file is not None:
         report.update(regression_file=regression_file,
                       regression_input='isolated-input' if regression_source is not None else 'verified-image')

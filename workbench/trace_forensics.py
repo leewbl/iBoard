@@ -130,7 +130,7 @@ def _import(out, path, loaded, repo, revision, root, class_name):
             if kind == 'cpu':
                 finding = profile_trace.import_cpu(db, data, locate)
             elif kind == 'heap':
-                finding = profile_trace.import_heap(db, data, class_name)
+                finding = profile_trace.import_heap(db, data, class_name, locate)
             elif kind == 'chrome':
                 finding = chrome_trace.import_trace(db, data)
             else:

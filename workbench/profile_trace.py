@@ -2,6 +2,7 @@
 
 from collections import Counter
 
+from workbench import heap_allocations
 from workbench.runtime_forensics import ForensicsError, summarize_heap
 
 
@@ -117,9 +118,10 @@ def import_cpu(db, profile, locate):
                                   'The last sample has zero assigned time. Ancestors provide context.'}
 
 
-def import_heap(db, profile, class_name):
+def import_heap(db, profile, class_name, locate=None):
     # Reuse the live profiler's strong-reference interpretation for the same format.
-    finding = summarize_heap(profile, class_name)
+    allocations = heap_allocations.parse(profile, locate)
+    finding = summarize_heap(profile, class_name, allocations=allocations)
     meta = profile['snapshot']['meta']
     nodes, edges, strings = (profile[key] for key in ('nodes', 'edges', 'strings'))
     nf, ef = meta['node_fields'], meta['edge_fields']
@@ -140,7 +142,7 @@ def import_heap(db, profile, class_name):
             label = strings[_integer(nodes[at + name], 0, len(strings) - 1)]
             yield (index, _integer(nodes[at + identity], 0, 2**63 - 1), kind, label,
                    _integer(nodes[at + size], 0, 2**63 - 1), nodes[at + degree],
-                   _integer(nodes[at + trace], 0, 2**31 - 1) if trace is not None else None)
+                   heap_allocations.trace_id(nodes[at + trace], allocations) if trace is not None else None)
 
     def edge_rows():
         index = 0
@@ -164,7 +166,9 @@ def import_heap(db, profile, class_name):
         CREATE INDEX heap_edges_origin ON heap_edges(origin);
         CREATE INDEX heap_edges_target ON heap_edges(target);
     ''')
-    if class_name is not None:
+    if allocations is not None:
+        heap_allocations.write_tables(db, allocations)
+    elif class_name is not None:
         observed = db.execute(
             "SELECT COUNT(*) FROM heap_nodes WHERE kind='object' AND label=? AND trace_node_id>0", (class_name,)
         ).fetchone()[0]

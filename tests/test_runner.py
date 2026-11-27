@@ -391,9 +391,11 @@ class SandboxTests(unittest.TestCase):
     def test_scoped_profile_copies_only_the_fixed_artifact_to_an_owner_only_file(self):
         pinned = 'sha256:' + 'a' * 64
         payload = b'{"profile":true}\n'
-        for suffix, filename in (('.cpuprofile', 'cpu.cpuprofile'), ('.heapsnapshot', 'heap.heapsnapshot')):
-            with self.subTest(suffix=suffix):
-                destination = self.workspace / ('saved' + suffix)
+        for mode, suffix, filename in (('cpu', '.cpuprofile', 'cpu.cpuprofile'),
+                                       ('heap', '.heapsnapshot', 'heap.heapsnapshot'),
+                                       ('heap-allocations', '.heapsnapshot', 'heap.heapsnapshot')):
+            with self.subTest(mode=mode):
+                destination = self.workspace / (mode + suffix)
                 ephemeral = []
 
                 def invoke(args, **kwargs):
@@ -407,13 +409,18 @@ class SandboxTests(unittest.TestCase):
                         self.assertNotEqual(directory, destination.parent)
                         self.assertIn('--network=none', args)
                         self.assertIn(f'type=bind,src={self.workspace.resolve()},dst=/workspace,readonly', args)
+                        if mode == 'heap-allocations':
+                            self.assertEqual(args[args.index('--ulimit') + 1], 'fsize=67108864:67108864')
+                        else:
+                            self.assertNotIn('--ulimit', args)
                     return self.fake(args, **kwargs)
 
-                report = run_sandbox(self.workspace, 'example:latest', ['node', '/workspace/node-profile.mjs'],
+                report = run_sandbox(self.workspace, 'example:latest', ['node', '/workspace/node-profile.mjs', mode],
                                      10, invoke=invoke, find_executable=lambda _: '/usr/bin/docker',
                                      source_root='/app', workspace_read_only=True, profile_output=destination)
                 self.assertEqual(report['image'], pinned)
                 self.assertEqual(report['profile_path'], str(destination.resolve()))
+                self.assertEqual(report.get('profile_file_limit_bytes'), 64 << 20 if mode == 'heap-allocations' else None)
                 self.assertRegex(report['profile_sha256'], r'^[0-9a-f]{64}$')
                 self.assertEqual(destination.read_bytes(), payload)
                 self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
@@ -428,6 +435,7 @@ class SandboxTests(unittest.TestCase):
             (['node', '/workspace/node-profile.mjs'], {'screenshot_output': self.workspace / 'target.png'}),
             (['node', '/workspace/node-profile.mjs'], {'regression_source': b'console.log(1)'}),
             (['node', '/workspace/node-profile.mjs'], {'profile_output': self.workspace / 'target.json'}),
+            (['node', '/workspace/node-profile.mjs', 'heap-allocations'], {}),
         ):
             with self.subTest(command=command, changed=changed):
                 options = {'workspace_read_only': True, 'source_root': '/app',

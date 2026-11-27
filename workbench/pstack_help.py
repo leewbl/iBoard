@@ -380,7 +380,12 @@ SCENARIOS = {
     'capture-cpu': Scenario(
         'Capture CPU evidence from a live workload', 'skills/poteto-mode/playbooks/runtime-forensics.md',
         'skills/runtime-forensics/SKILL.md', 'runtime_forensics cpu', 'An offline Node profile and findings tied to Git source',
-        'For memory retention use the documented heap mode.'),
+        'Use a local image with the complete tracked source.'),
+    'capture-heap-allocations': Scenario(
+        'Follow retained Node objects to their recorded allocation stacks',
+        'skills/poteto-mode/playbooks/runtime-forensics.md', 'skills/runtime-forensics/SKILL.md',
+        'runtime_forensics heap --track-allocations', 'A heap snapshot and a strong root path linked to an allocation stack',
+        'Select the object class and interpret recorded source lines as function locations.'),
     'capture-browser-trace': Scenario(
         'Capture and analyze a live Chromium trace in offline Docker',
         'skills/poteto-mode/playbooks/runtime-forensics.md', 'skills/runtime-forensics/SKILL.md',

@@ -16,7 +16,7 @@ import time
 from urllib.parse import unquote, urlsplit
 
 from runner.sandbox import SandboxError, run_sandbox
-from workbench import cli, workflow
+from workbench import cli, heap_allocations, workflow
 
 
 SKILL = Path(__file__).resolve().parents[1] / 'skills' / 'runtime-forensics'
@@ -82,7 +82,7 @@ def summarize_cpu(profile, source_lines):
                            for (path, line, symbol), value in own.most_common(15) if total and value]}
 
 
-def summarize_heap(profile, class_name):
+def summarize_heap(profile, class_name, *, allocations=None):
     """Describe shallow object size and an actual strong-reference path from a GC root."""
     snapshot, nodes, edges, strings = (profile[key] for key in ('snapshot', 'nodes', 'edges', 'strings'))
     meta = snapshot['meta']
@@ -119,6 +119,8 @@ def summarize_heap(profile, class_name):
               'top_objects': [{'class': label[:240], 'count': counts[label], 'shallow_bytes': value}
                               for label, value in sizes.most_common(15)]}
     if class_name is None:
+        if allocations is not None:
+            result['allocation'] = heap_allocations.summarize(profile, allocations, None, None)
         return result
 
     parent = array('i', [-1]) * count
@@ -157,6 +159,14 @@ def summarize_heap(profile, class_name):
     result['selected_class'] = {'name': class_name, 'count': len(candidates), 'shallow_bytes': sizes[class_name],
                                 'strong_root_path': list(reversed(chain)) if 0 < depth <= 80 else None,
                                 'strong_root_path_length': depth or None}
+    if allocations is not None:
+        evidence = heap_allocations.summarize(profile, allocations, class_name, found)
+        result['allocation'] = evidence
+        evidence_status = 'allocation symbols not captured'
+        if evidence['traced_objects']:
+            evidence_status = ('allocation source frames recorded' if evidence['verified_source_objects']
+                               else 'allocation stacks recorded; source mapping unavailable')
+        result['selected_class']['allocation_source'] = evidence_status
     return result
 
 
@@ -169,7 +179,9 @@ def _trial(repo, revision, image, options, out):
         raise ForensicsError('source verification used the profile time budget')
     filename, limit = FILES[options['kind']]
     artifact = out / filename
-    command = ['node', '/workspace/node-profile.mjs', options['kind'], options['entry'],
+    track = options.get('track_allocations', False)
+    kind = 'heap-allocations' if track else options['kind']
+    command = ['node', '/workspace/node-profile.mjs', kind, options['entry'],
                options['loader'] or '', str(options['window_ms']), *options['args']]
     with TemporaryDirectory(prefix='iboard-node-profile-') as scratch:
         for helper in ('node-profile.mjs', 'capture-node.cjs'):
@@ -191,6 +203,8 @@ def _trial(repo, revision, image, options, out):
     receipt = json.loads(report['stdout'])
     if receipt.get('kind') != 'iboard-node-profile' or receipt.get('profile') != options['kind']:
         raise ForensicsError('profile receipt does not match the request')
+    if receipt.get('allocation_tracking', False) is not track:
+        raise ForensicsError('allocation tracking receipt does not match the request')
     target, capture = receipt['target'], receipt['capture']
     code, signal = target.get('code'), target.get('signal')
     if ((code is None and (not isinstance(signal, str) or not re.fullmatch(r'SIG[A-Z0-9]+', signal)))
@@ -210,8 +224,19 @@ def _trial(repo, revision, image, options, out):
                 lines[path] = len(blob.splitlines())
         return lines[path]
 
-    reduced = (summarize_cpu(profile, source_lines) if options['kind'] == 'cpu'
-               else summarize_heap(profile, options['class_name']))
+    def allocation_location(url, line):
+        path = _app_path('file://' + url if url.startswith('/app/') else url)
+        if path and line <= source_lines(path):
+            return path, 'verified-git-source'
+        return url, 'reported-location-unverified'
+
+    if options['kind'] == 'cpu':
+        reduced = summarize_cpu(profile, source_lines)
+    else:
+        graph = heap_allocations.parse(profile, allocation_location) if track else None
+        if track and graph is None:
+            raise ForensicsError('tracked heap snapshot has no V8 allocation trace')
+        reduced = summarize_heap(profile, options['class_name'], allocations=graph)
     return {'commit': revision, 'image': pinned, 'artifact': str(artifact), 'sha256': digest,
             'report': str(out / 'sandbox.json'), 'target': target, 'capture': capture,
             'finding': reduced}
@@ -232,6 +257,7 @@ def main(argv=None):
     parser.add_argument('--memory-mb', type=int, default=2048)
     parser.add_argument('--window-ms', type=int, default=0)
     parser.add_argument('--class-name')
+    parser.add_argument('--track-allocations', action='store_true', help='Record V8 allocation stacks with the heap snapshot')
     parser.add_argument('--out', type=Path, required=True)
     options = vars(parser.parse_args(argv))
     try:
@@ -249,6 +275,8 @@ def main(argv=None):
         if len(options['args']) > 32 or any('\0' in arg or len(arg.encode()) > 2048 for arg in options['args']):
             raise ForensicsError('Node entry arguments exceed their size or count limits')
         name = options['class_name']
+        if options['track_allocations'] and kind != 'heap':
+            raise ForensicsError('only heap snapshots support allocation tracking')
         if name is not None and (kind != 'heap' or not name or len(name) > 160 or not name.isprintable()):
             raise ForensicsError('a class name selects an object class in a heap snapshot')
         revisions = []
@@ -264,6 +292,8 @@ def main(argv=None):
         result = {'schema': 1, 'profile': kind, 'entry': entry, 'loader': loader, 'args': options['args'],
                   'window_ms': options['window_ms'], 'memory_mb': options['memory_mb'],
                   'started_at': datetime.now(timezone.utc).isoformat(), 'trials': {}}
+        if options['track_allocations']:
+            result['track_allocations'] = True
         for role, revision, image in revisions:
             result['trials'][role] = _trial(repo, revision, image, options, out / role)
             cli.write(out / 'result.json', result)
