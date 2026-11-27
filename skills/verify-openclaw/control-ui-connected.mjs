@@ -185,7 +185,7 @@ async function openSessions() {
   const page = await context.newPage();
   page.setDefaultTimeout(30_000);
   const writes = [];
-  let sessionProof;
+  let sessionProof, listAdmissionTimeout;
   page.on('websocket', socket => {
     const pending = new Map();
     let handshake;
@@ -218,6 +218,11 @@ async function openSessions() {
         request.deleted = frame.payload?.deleted === true;
         request.responseKey = frame.payload?.key;
       }
+      if (handshake && request?.method === 'sessions.list' && frame.ok === false &&
+          frame.error?.code === 'UNAVAILABLE' &&
+          frame.error.message?.includes('The server could not start the request within 30 seconds.')) {
+        listAdmissionTimeout = socket;
+      }
       if (!request || frame.ok !== true) return;
       if (request.method === 'connect' && frame.payload?.type === 'hello-ok') {
         const identity = { protocol: frame.payload.protocol, role: frame.payload.auth?.role,
@@ -235,10 +240,21 @@ async function openSessions() {
   assert.equal(servedCommit, expectedCommit, 'Served UI bundle does not identify the verified commit');
   await page.getByLabel('Gateway secret', { exact: true }).fill(token);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  const proof = await observe(() => sessionProof && !sessionProof.socket.isClosed() && sessionProof,
-    'The connected browser did not receive the Gateway session list', 60_000);
+  const activeProof = () => sessionProof && !sessionProof.socket.isClosed() && sessionProof;
+  const missingList = 'The connected browser did not receive the Gateway session list';
+  const listResponseTimeout = 110_000;
+  await observe(() => activeProof() || (listAdmissionTimeout && !listAdmissionTimeout.isClosed()),
+    missingList, listResponseTimeout);
+  if (!activeProof()) {
+    // Retry only the observed read admission timeout, before any scenario action.
+    const refresh = page.getByRole('button', { name: 'Refresh', exact: true })
+      .and(page.locator('.sessions-toolbar__refresh'));
+    await refresh.click({ timeout: 65_000 });
+    process.stderr.write('Retried the Sessions list after a Gateway admission timeout\n');
+  }
+  const proof = await observe(activeProof, missingList, listResponseTimeout);
   assert.ok(Number.isInteger(proof.handshake.protocol) && proof.handshake.protocol > 0);
-  await page.locator('openclaw-sessions-page .sessions-table').waitFor({ state: 'visible' });
+  await page.locator('openclaw-sessions-page .sessions-table').waitFor({ state: 'visible', timeout: 65_000 });
   const assertConnectedPage = () => {
     const url = new URL(page.url());
     assert.equal(url.origin, origin);
