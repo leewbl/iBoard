@@ -26,10 +26,26 @@ Choose observable product behavior that could fail at a boundary of the design. 
 }
 ```
 
-Use this configuration as the `interrogate` object in a [Feature comparison](../feature-handoff/SKILL.md), or run the check independently. Store the evidence outside the target checkout. Supply the exact baseline, candidate and request file. The pinned candidate runs every probe twice in disconnected Docker, each run from a separate clean worktree. The two reviewing providers examine the actual observations and source. The record includes mismatches that repeated, runs that lacked conclusive evidence, both reviews and cleanup results. This adapter uses preapproved probes. Discovery and execution of newly authored probes is a separate capability.
+Use this configuration as the `interrogate` object in a [Feature comparison](../feature-handoff/SKILL.md), or run the check independently. Store the evidence outside the target checkout. Supply the exact baseline, candidate and request file. The pinned candidate runs every probe twice in disconnected Docker, each run from a separate clean worktree. The reviewers examine the actual observations and source. The record retains repeated mismatches, inconclusive runs and cleanup evidence.
+
+To use the same [role profile](../setup-pstack/SKILL.md) as the main task, replace `review_model` with `"model_profile":{"path":"/path/to/profile.json","sha256":"APPROVED_DIGEST"}`. Configure two to five `interrogate-reviewers` with both GLM and OpenAI represented. Each seat records its approved model and CLI effort. Profiled runs confirm distinct container IDs and the original output hashes. They count a finding only when the two runs show the same mismatch.
 
 ```sh
 python3 -m workbench.interrogate --repo "$TARGET_REPO" --baseline "$BASELINE" \
   --candidate "$CANDIDATE" --issue-file "$REQUEST" --config "$PROBE_CONFIG" \
   --out "$CHALLENGE_EVIDENCE"
 ```
+
+## Discover functional checks for a diff
+
+Create a catalog using the same profiled configuration with `"schema":1`. Include vetted, tracked probes for ordinary behaviors such as defaults, repeated operations, compatibility and boundary inputs. Reviewers receive the selected diff and the catalog case names and behavior descriptions. Each proposal must select an existing case and cite a changed line by ID. The coordinator preserves every required probe and combines the reviewers' selections in catalog order.
+
+```sh
+python3 -m workbench.interrogate_discovery propose --repo "$TARGET_REPO" --baseline "$BASELINE" \
+  --candidate "$CANDIDATE" --issue-file "$REQUEST" --catalog "$CATALOG" \
+  --file path/to/changed-source --required stable-case --out "$DISCOVERY"
+python3 -m workbench.interrogate_discovery execute --plan "$DISCOVERY/plan.json" \
+  --sha256 "$APPROVED_PLAN_SHA" --out "$CHALLENGE_EVIDENCE"
+```
+
+Review the selected cases before approving execution. The plan binds the exact request, diff, tracked probe bytes, model profile and proposal receipts. It runs only approved catalog commands. It retains empty or invalid proposals without treating them as verified coverage. Findings come from the repeated runtime observations and remain separate from what reviewers nominated. Workspace-only drafts can be reviewed once captured in an exact candidate commit.

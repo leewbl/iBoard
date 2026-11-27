@@ -11,7 +11,7 @@ import time
 
 from model import codex_review, glm_review
 from runner.sandbox import SandboxError, run_sandbox
-from workbench import arena, autopilot, cli, prototype, workflow
+from workbench import arena, autopilot, cli, model_profiles, prototype, swarm_investigate, workflow
 
 
 PSTACK_SOURCE = 'skills/interrogate/SKILL.md'
@@ -38,10 +38,11 @@ def _config_digest(config):
     return _hash(json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
 
 
-def settings(config):
-    required = {'image', 'probes', 'review_model'}
-    optional = {'source_mode', 'seconds', 'memory_mb'}
-    if not isinstance(config, dict) or required - config.keys() or config.keys() - required - optional:
+def settings(config, *, directory='.'):
+    required = {'image', 'probes'}
+    optional = {'source_mode', 'seconds', 'memory_mb', 'model_profile', 'review_model'}
+    if (not isinstance(config, dict) or required - config.keys() or config.keys() - required - optional
+            or ('review_model' in config) == ('model_profile' in config)):
         raise InterrogateError('Interrogate configuration has missing or unknown fields')
     spec = {'source_mode': 'workspace', 'seconds': 300, 'memory_mb': 768, **config}
     arena._limit(spec['seconds'], 1, 3600, 'Interrogate seconds')
@@ -50,7 +51,10 @@ def settings(config):
         raise InterrogateError('Interrogate source mode must be workspace or image')
     if not isinstance(spec['image'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/@-]*', spec['image']):
         raise InterrogateError('Interrogate requires a local image reference')
-    if not isinstance(spec['review_model'], str) or not re.fullmatch(r'gpt-[a-z0-9][a-z0-9.-]{0,64}', spec['review_model']):
+    if 'model_profile' in spec:
+        spec['model_profile'] = model_profiles.binding(spec['model_profile'], directory)
+        _routes(spec)
+    elif not isinstance(spec['review_model'], str) or not re.fullmatch(r'gpt-[a-z0-9][a-z0-9.-]{0,64}', spec['review_model']):
         raise InterrogateError('Interrogate requires an explicit OpenAI review model')
     probes = spec['probes']
     if not isinstance(probes, list) or not 1 <= len(probes) <= 6:
@@ -123,7 +127,7 @@ def _image_source(config):
     return '/app' if config['source_mode'] == 'image' else '/workspace'
 
 
-def _outcome(raw, probe, config, image, workspace):
+def _outcome(raw, probe, config, image, workspace, seen=None):
     stdout = raw.get('stdout')
     if (raw.get('workspace') != str(workspace) or raw.get('image') != image
             or raw.get('command') != probe['command'] or raw.get('source_root') != _image_source(config)
@@ -133,6 +137,19 @@ def _outcome(raw, probe, config, image, workspace):
             or raw.get('stdout_truncated') is not False or raw.get('stderr_truncated') is not False
             or not isinstance(stdout, str) or type(raw.get('exit_code')) is not int):
         return 'inconclusive'
+    if seen is not None:
+        value = raw.get('create_stdout')
+        container = value.strip() if isinstance(value, str) else ''
+        if (not re.fullmatch(r'[0-9a-f]{64}', container) or container in seen
+                or raw.get('create_stdout_truncated') is True
+                or any(not isinstance(raw.get(stream), str) or raw.get(stream + '_sha256') != _hash(raw[stream])
+                       for stream in ('stdout', 'stderr'))):
+            return 'inconclusive'
+        seen.add(container)
+        if workflow.docker_oom(raw) or (raw['exit_code'] != 0 and raw.get('runtime_diagnostics', {}).get('state') != {
+                'status': 'exited', 'exit_code': raw['exit_code'], 'oom_killed': False}):
+            return 'inconclusive'
+        return 'matched' if raw['exit_code'] == probe['exit_code'] and probe['marker'] in stdout.splitlines() else 'mismatch'
     passed = raw['exit_code'] == probe['exit_code'] and probe['marker'] in stdout
     return 'matched' if passed else 'mismatch'
 
@@ -197,6 +214,71 @@ def _glm_json(raw):
     return answer
 
 
+def _routes(config):
+    profile = config['model_profile']['profile']
+    seats = profile['routes']['interrogate-reviewers']
+    if not 2 <= len(seats) <= 5 or len({item['provider'] for item in seats}) < 2:
+        raise InterrogateError('Interrogate needs two to five confirmed review seats across both providers')
+    return {f'reviewer-{index}': model_profiles.invocation(route) for index, route in enumerate(seats, 1)}
+
+
+def run_profile_panel(config, prompt, remaining, invoke):
+    routes = _routes(config)
+    bound = config['model_profile']['sha256']
+    calls = swarm_investigate.Calls(invoke, remaining())
+
+    def review(role, route):
+        row = {'schema': cli.SCHEMA, 'role': role, 'route': route, 'profile_sha256': bound,
+               'prompt_sha256': _hash(prompt), 'attempts': []}
+        for brief in (prompt, GLM_CORRECTION + prompt):
+            try:
+                reply = calls.call(route, brief)
+            except swarm_investigate.ProviderUnavailable as error:
+                row['error'] = str(error)
+                break
+            raw = reply['answer']
+            row['attempts'].append({'prompt_sha256': _hash(brief), 'answer': raw,
+                                    'requested_effort': reply['requested_effort'],
+                                    'observed_model': reply['observed_model']})
+            try:
+                _profile_object(raw)
+            except (ValueError, arena.ArenaError):
+                continue
+            break
+        return row
+
+    with ThreadPoolExecutor(max_workers=min(4, len(routes))) as pool:
+        futures = {role: pool.submit(review, role, route) for role, route in routes.items()}
+        return {role: future.result() for role, future in futures.items()}
+
+
+def _profile_object(raw):
+    return raw if isinstance(raw, dict) else _glm_json(raw)
+
+
+def profile_answer(record, config, role, prompt):
+    route = _routes(config)[role]
+    attempts = record.get('attempts')
+    if (record.get('error') or record.get('schema') != cli.SCHEMA or record.get('role') != role
+            or record.get('route') != route or record.get('profile_sha256') != config['model_profile']['sha256']
+            or record.get('prompt_sha256') != _hash(prompt)
+            or not isinstance(attempts, list) or not 1 <= len(attempts) <= 2):
+        raise InterrogateError(f'{role} did not complete its approved model review')
+    for index, row in enumerate(attempts):
+        expected = _hash(GLM_CORRECTION + prompt if index else prompt)
+        if (row['prompt_sha256'] != expected or row['requested_effort'] != route['effort']
+                or not swarm_investigate._matches_engine(route, row['observed_model'])):
+            raise InterrogateError('review invocation differs from its approved model or prompt')
+    if len(attempts) == 2:
+        try:
+            _profile_object(attempts[0]['answer'])
+        except (ValueError, arena.ArenaError):
+            pass
+        else:
+            raise InterrogateError('reviewer retried a valid model response')
+    return _profile_object(attempts[-1]['answer'])
+
+
 def _glm_attempts(review, prompt, remaining):
     attempts = []
     for detail in (prompt, GLM_CORRECTION + prompt):
@@ -231,11 +313,30 @@ def _glm_answer(record, prompt):
     return _glm_json(attempts[-1]['answer'])
 
 
-def _excerpt(raw, outcome, marker):
+def _legacy_reviews(root, report, config, prompt, remaining, glm, openai):
+    with ThreadPoolExecutor(max_workers=len(REVIEWERS)) as pool:
+        futures = {'glm': pool.submit(_glm_attempts, glm, prompt, remaining),
+                   'openai': pool.submit(openai, prompt, config['review_model'], min(180, remaining()))}
+        for role, future in futures.items():
+            try:
+                raw = future.result()
+                detail = raw if role == 'glm' else {'answer': raw}
+            except ERRORS as error:
+                detail = {'error': str(error)[:300] or type(error).__name__}
+            path = root / f'review-{role}.json'
+            cli.write(path, {'schema': cli.SCHEMA, 'role': role, 'prompt_sha256': _hash(prompt), **detail,
+                             'model': config['review_model'] if role == 'openai' else None})
+            report['reviews'][role] = _ref(path)
+
+
+def _excerpt(raw, outcome, marker, *, strict=False):
     stdout = raw.get('stdout', '')
     marker_context = next((line[:350] for line in stdout.splitlines() if marker in line), '')
-    return {'outcome': outcome, 'exit_code': raw.get('exit_code'), 'stdout_tail': stdout[-1300:],
-            'marker_line': marker_context, 'stderr_tail': raw.get('stderr', '')[-500:]}
+    summary = {'outcome': outcome, 'exit_code': raw.get('exit_code'), 'stdout_tail': stdout[-1300:],
+               'marker_line': marker_context, 'stderr_tail': raw.get('stderr', '')[-500:]}
+    if strict:
+        summary.update(stdout_sha256=raw.get('stdout_sha256'), stderr_sha256=raw.get('stderr_sha256'))
+    return summary
 
 
 def _expect_intent(intent, request_sha256):
@@ -249,9 +350,21 @@ def _clean(workspace, candidate, remaining):
             and not _git(workspace, 'status', '--porcelain', '--untracked-files=all', timeout=min(remaining(), 15)))
 
 
+def _verify_discovery(reference, repo, baseline, candidate, request_sha256, config):
+    from workbench import interrogate_discovery
+
+    if set(reference) != {'path', 'sha256'}:
+        raise InterrogateError('invalid Interrogate discovery reference')
+    plan, selected = interrogate_discovery.load(reference['path'], reference['sha256'])
+    if (plan['repo'], plan['baseline'], plan['candidate'], plan['request_sha256'], selected) != (
+            str(Path(repo).resolve()), baseline, candidate, request_sha256, config):
+        raise InterrogateError('discovery evidence belongs to a different intent or configuration')
+
+
 def run(*, repo, baseline, candidate, request_sha256, intent, config, out, seconds_limit=None,
         sandbox=run_sandbox, glm=glm_review.review, openai=codex_review.review,
-        resolve_image=prototype._image_id, build_image=workflow.build_source_image):
+        resolve_image=prototype._image_id, build_image=workflow.build_source_image,
+        profile_invoke=model_profiles.read_only, discovery=None):
     repo = Path(repo).expanduser().resolve(strict=True)
     config = settings(config)
     if seconds_limit is not None and (type(seconds_limit) is not int or seconds_limit < 1):
@@ -266,6 +379,8 @@ def run(*, repo, baseline, candidate, request_sha256, intent, config, out, secon
         return left
 
     _expect_intent(intent, request_sha256)
+    if discovery is not None:
+        _verify_discovery(discovery, repo, baseline, candidate, request_sha256, config)
     _commit_pair(repo, baseline, candidate)
     sources = _sources(repo, baseline, candidate, config)
     root = Path(out).expanduser().resolve()
@@ -277,7 +392,10 @@ def run(*, repo, baseline, candidate, request_sha256, intent, config, out, secon
               'config_sha256': _config_digest(config), 'seconds_used_limit': seconds,
               'source': PSTACK_SOURCE, 'probes': {}, 'reviews': {}, 'worktree_cleanup': {}}
     observations = {probe['id']: {} for probe in config['probes']}
+    containers = set() if 'model_profile' in config else None
     worktrees = {}
+    if discovery is not None:
+        report['discovery'] = discovery
     try:
         image = resolve_image(config['image'], remaining)
         for side in SIDES:
@@ -301,40 +419,41 @@ def run(*, repo, baseline, candidate, request_sha256, intent, config, out, secon
                     raw = {'error': str(error)[:600]}
                 if not _clean(workspace, candidate, remaining):
                     raise InterrogateError('Interrogate probe changed the pinned worktree')
-                outcome = _outcome(raw, probe, config, image, workspace)
+                outcome = _outcome(raw, probe, config, image, workspace, containers)
                 path = root / f'{ident}-{side}.json'
                 cli.write(path, {'schema': cli.SCHEMA, 'candidate': candidate, 'baseline': baseline,
                                  'request_sha256': request_sha256, 'probe': ident, 'side': side,
                                  'source_sha256': sources[ident]['sha256'], 'execution': raw})
                 report['probes'].setdefault(ident, {})[side] = {'outcome': outcome, 'evidence': _ref(path)}
-                observations[ident][side] = _excerpt(raw, outcome, probe['marker'])
+                observations[ident][side] = _excerpt(raw, outcome, probe['marker'], strict=containers is not None)
         report['findings'] = [ident for ident, runs in observations.items()
-                              if all(run['outcome'] == 'mismatch' for run in runs.values())]
+                              if all(run['outcome'] == 'mismatch' for run in runs.values())
+                              and (containers is None or runs['a'] == runs['b'])]
 
         prompt = _review_prompt(intent, sources, config, observations)
         arena._bounded(prompt, 85000, 'Interrogate review evidence')
-        with ThreadPoolExecutor(max_workers=len(REVIEWERS)) as pool:
-            futures = {'glm': pool.submit(_glm_attempts, glm, prompt, remaining),
-                       'openai': pool.submit(openai, prompt, config['review_model'], min(180, remaining()))}
-            verdicts = []
-            for role, future in futures.items():
-                try:
-                    raw = future.result()
-                    detail = raw if role == 'glm' else {'answer': raw}
-                except ERRORS as error:
-                    detail = {'error': str(error)[:300] or type(error).__name__}
+        profiled = 'model_profile' in config
+        roles = _routes(config) if profiled else REVIEWERS
+        if profiled:
+            replies = run_profile_panel(config, prompt, remaining, profile_invoke)
+            for role, reply in replies.items():
                 path = root / f'review-{role}.json'
-                cli.write(path, {'schema': cli.SCHEMA, 'role': role, 'prompt_sha256': _hash(prompt), **detail,
-                                 'model': config['review_model'] if role == 'openai' else None})
+                cli.write(path, reply)
                 report['reviews'][role] = _ref(path)
+        else:
+            _legacy_reviews(root, report, config, prompt, remaining, glm, openai)
         remaining()
         if any(run['outcome'] != 'matched' for runs in observations.values() for run in runs.values()):
             raise InterrogateError('functional probe failed or did not yield conclusive evidence')
-        for role in REVIEWERS:
+        verdicts = []
+        for role in roles:
             review = _load(root, report['reviews'][role], f'review-{role}.json', 500000)
             if review.get('error'):
                 raise InterrogateError(f'{role} could not finish the Interrogate review: {review["error"]}')
-            answer = _glm_answer(review, prompt) if role == 'glm' else review['answer']
+            if profiled:
+                answer = profile_answer(review, config, role, prompt)
+            else:
+                answer = _glm_answer(review, prompt) if role == 'glm' else review['answer']
             verdicts.append(_review_verdict(answer, set(observations)))
         if any(verdict != 'clear' for verdict in verdicts):
             raise InterrogateError('independent Interrogate reviews withheld approval')
@@ -376,9 +495,15 @@ def _validate_receipt(path, receipt, repo, baseline, candidate, request_sha256, 
         raise InterrogateError('Interrogate did not finish cleanly')
     _expect_intent(receipt['intent'], request_sha256)
     config = settings(receipt['config'])
+    profiled = 'model_profile' in config
+    if (profiled and expected_config is not None and 'model_profile' in expected_config
+            and expected_config['model_profile']['sha256'] == config['model_profile']['sha256']):
+        expected_config = {**expected_config, 'model_profile': config['model_profile']}
     if (_config_digest(config) != receipt['config_sha256']
             or (expected_config is not None and settings(expected_config) != config)):
         raise InterrogateError('Interrogate review configuration changed')
+    if 'discovery' in receipt:
+        _verify_discovery(receipt['discovery'], repo, baseline, candidate, request_sha256, config)
     if not IMAGE.fullmatch(receipt['image']):
         raise InterrogateError('Interrogate image identity changed')
     _commit_pair(repo, baseline, candidate)
@@ -386,6 +511,7 @@ def _validate_receipt(path, receipt, repo, baseline, candidate, request_sha256, 
     if set(receipt['probes']) != set(sources):
         raise InterrogateError('Interrogate probe set changed')
     observations = {}
+    containers = set() if profiled else None
     root = path.resolve().parent
     for probe in config['probes']:
         ident = probe['id']
@@ -400,20 +526,24 @@ def _validate_receipt(path, receipt, repo, baseline, candidate, request_sha256, 
                                               sources[ident]['sha256']):
                 raise InterrogateError('Interrogate execution identity changed')
             execution = raw['execution']
-            outcome = _outcome(execution, probe, config, receipt['image'], root / f'probe-{side}')
+            outcome = _outcome(execution, probe, config, receipt['image'], root / f'probe-{side}', containers)
             if outcome != 'matched' or rows[side]['outcome'] != outcome:
                 raise InterrogateError('Interrogate independent observation does not clear the probe')
-            observations[ident][side] = _excerpt(execution, outcome, probe['marker'])
-    if set(receipt['reviews']) != set(REVIEWERS):
+            observations[ident][side] = _excerpt(execution, outcome, probe['marker'], strict=profiled)
+    roles = _routes(config) if profiled else REVIEWERS
+    if set(receipt['reviews']) != set(roles):
         raise InterrogateError('Interrogate is missing an independent reviewer')
     prompt = _review_prompt(receipt['intent'], sources, config, observations)
-    for role in REVIEWERS:
+    for role in roles:
         review = _load(root, receipt['reviews'][role], f'review-{role}.json', 500000)
-        model = config['review_model'] if role == 'openai' else None
-        if review.get('error') or (review.get('schema'), review.get('role'), review.get('model'),
-                                  review.get('prompt_sha256')) != (cli.SCHEMA, role, model, _hash(prompt)):
-            raise InterrogateError('Interrogate reviewer did not assess the retained observations')
-        answer = _glm_answer(review, prompt) if role == 'glm' else review['answer']
+        if profiled:
+            answer = profile_answer(review, config, role, prompt)
+        else:
+            model = config['review_model'] if role == 'openai' else None
+            if review.get('error') or (review.get('schema'), review.get('role'), review.get('model'),
+                                      review.get('prompt_sha256')) != (cli.SCHEMA, role, model, _hash(prompt)):
+                raise InterrogateError('Interrogate reviewer did not assess the retained observations')
+            answer = _glm_answer(review, prompt) if role == 'glm' else review['answer']
         if _review_verdict(answer, set(sources)) != 'clear':
             raise InterrogateError('Interrogate reviewer did not clear the observations')
     return receipt
@@ -426,7 +556,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         intent = Path(args.issue_file).read_bytes().decode('utf-8')
-        config = json.loads(Path(args.config).read_text(encoding='utf-8'))
+        config = settings(json.loads(Path(args.config).read_text(encoding='utf-8')),
+                          directory=Path(args.config).expanduser().parent)
         receipt = run(repo=args.repo, baseline=args.baseline, candidate=args.candidate,
                       request_sha256=_hash(intent), intent=intent, config=config, out=args.out)
     except ERRORS as error:

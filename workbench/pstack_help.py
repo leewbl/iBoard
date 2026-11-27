@@ -78,6 +78,11 @@ SCENARIOS = {
         'skills/correct/SKILL.md', 'correct freeze',
         'Distinct historical misses, repaired controls, and the same guard passing on current code',
         'Supply exact bad/fix commits and a reviewed probe. The harness replays the selected source in offline Docker.'),
+    'discover-functional-checks': Scenario(
+        'Select existing product checks for an exact code change', 'skills/interrogate/SKILL.md',
+        'skills/interrogate/SKILL.md', 'interrogate_discovery propose',
+        'Diff-linked catalog selections and a plan for two independent offline runs',
+        'The review panel selects approved tracked checks. Execution requires the exact selection digest.'),
     'figure-it-out': Scenario(
         'Design and execute a custom playbook when no narrower workflow fits', 'skills/figure-it-out/SKILL.md',
         'skills/figure-it-out/SKILL.md', 'figure_it_out freeze',

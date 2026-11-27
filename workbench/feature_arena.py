@@ -107,7 +107,11 @@ def _approval(path, sha256, repo, baseline, *, profile_snapshot=None):
         settings = {**settings, 'model_profile': model_profiles.binding(ref, path.parent)}
     challenge = approval.get('interrogate')
     if 'interrogate' in approval:
-        interrogate.settings(challenge)
+        approved_profile = settings.get('model_profile')
+        if ('model_profile' in challenge and approved_profile is not None
+                and challenge['model_profile']['sha256'] == approved_profile['sha256']):
+            challenge = {**challenge, 'model_profile': approved_profile}
+        challenge = interrogate.settings(challenge, directory=path.parent)
     references = approval.get('prototypes', [])
     _require(isinstance(references, list) and len(references) <= 6,
              'Feature Arena accepts at most six native prototypes')

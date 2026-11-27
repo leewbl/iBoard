@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from workbench import cli, interrogate
+from workbench import cli, interrogate, interrogate_discovery, model_profiles
 
 
 class InterrogateTests(unittest.TestCase):
@@ -43,10 +43,13 @@ class InterrogateTests(unittest.TestCase):
         self.assertFalse(cli.git(workspace, 'status', '--porcelain'))
         stdout = self.matchers[len(self.calls)]
         self.calls.append(workspace)
+        identity = hashlib.sha256(f'{len(self.calls)}'.encode()).hexdigest()
         return {'image': image, 'command': command, 'workspace': str(workspace), 'exit_code': 0,
                 'container_created': True, 'create_exit_code': 0, 'cleanup_confirmed': True,
                 'timed_out': False, 'stdout_truncated': False, 'stderr_truncated': False,
-                'stdout': stdout, 'stderr': '', **settings}
+                'stdout': stdout, 'stderr': '', 'create_stdout': identity,
+                'stdout_sha256': hashlib.sha256(stdout.encode()).hexdigest(),
+                'stderr_sha256': hashlib.sha256(b'').hexdigest(), **settings}
 
     def _answer(self, prompt, verdict):
         self.assertIn('ACTIVE_MARKER', prompt)
@@ -70,6 +73,29 @@ class InterrogateTests(unittest.TestCase):
                   'request_sha256': self.digest, 'config': self.config}
         receipt = json.loads(path.read_text(encoding='utf-8')) if report is None else report
         return interrogate.validate_receipt(path, receipt, **{**fields, **overrides})
+
+    def _profile(self):
+        provider = {'provider': 'glm', 'model': 'glm-interrogate'}
+        external = {'provider': 'openai', 'model': 'gpt-fixture'}
+        path = self.directory / 'probe.json'
+        cli.write(path, {'schema': 1, 'seconds': 30, 'engines': [{**provider, 'efforts': ['low']},
+                                                               {**external, 'efforts': ['low']}]})
+        inventory = model_profiles.probe(path, self.directory/'inventory.json',
+            editor=lambda work, prompt, seconds, **kwargs: {
+                'exit_code': 0, 'trace_completed': True, 'model': provider['model'],
+                'requested_effort': kwargs['requested_effort'], 'stdout': '{"available":true}'},
+            reviewer=lambda *args, **kwargs: {'available': True})
+        path = self.directory / 'choices.json'
+        cli.write(path, {'schema': 1, 'budget': 'small', 'parent': provider,
+                        'roles': {'interrogate-reviewers': ['inherit-parent', external]}})
+        installed = model_profiles.draft(inventory['path'], inventory['sha256'], path, self.directory/'profile.json')
+        self.config.pop('review_model')
+        self.config['model_profile'] = {'path': installed['path'], 'sha256': installed['sha256']}
+
+    @staticmethod
+    def _profile_reply(route, answer):
+        return {'answer': answer, 'requested_effort': route['effort'],
+                'observed_model': route['model'] if route['provider'] == 'glm' else None}
 
     def test_checks_candidate_in_two_detached_worktrees_and_replays_receipt(self):
         root_ref = cli.git(self.repo, 'symbolic-ref', 'HEAD')
@@ -152,6 +178,81 @@ class InterrogateTests(unittest.TestCase):
         with self.assertRaisesRegex(interrogate.InterrogateError, 'entrypoint is missing or changed'):
             self._run(candidate=cli.sha(self.repo, 'HEAD'))
         self.assertFalse(self.calls)
+
+    def test_profiled_panel_observations_and_receipts_are_independent(self):
+        self._profile()
+        result = self._run(profile_invoke=lambda route, prompt, _: self._profile_reply(
+            route, self._answer(prompt, 'clear')))
+        self.assertEqual(result['status'], 'clear', result.get('reason'))
+        self.assertEqual(set(result['reviews']), {'reviewer-1', 'reviewer-2'})
+        Path(self.config['model_profile']['path']).unlink()
+        self.assertEqual(self._validate()['status'], 'clear')
+        path = self.out/'review-reviewer-1.json'
+        proof = cli.read(path)
+        proof['attempts'][0]['requested_effort'] = 'xhigh'
+        cli.write(path, proof)
+        result['reviews']['reviewer-1']['sha256'] = cli.digest(path)
+        with self.assertRaisesRegex(interrogate.InterrogateError, 'approved model or prompt'):
+            self._validate(result)
+
+    def test_profile_rejects_reused_docker_container_and_unstable_mismatches(self):
+        self._profile()
+        def invoke(route, prompt, seconds):
+            return self._profile_reply(route, self._answer(prompt, 'clear'))
+
+        def reused(*args, **kwargs):
+            return {**self._sandbox(*args, **kwargs), 'create_stdout': 'a' * 64}
+
+        result = self._run(profile_invoke=invoke, sandbox=reused)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['probes']['init']['b']['outcome'], 'inconclusive')
+        self.matchers = ['First mismatch.', 'Different mismatch.']
+        self.calls.clear()
+        result = self._run(profile_invoke=invoke, out=self.directory/'unstable')
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['findings'], [])
+
+    def test_discovery_keeps_required_probes_and_freezes_the_selected_catalog(self):
+        self._profile()
+        extra = {**self.config['probes'][0], 'id': 'compatibility'}
+        self.config['probes'].append(extra)
+        path = self.directory/'catalog.json'
+        cli.write(path, {'schema': 1, **self.config})
+
+        def invoke(route, prompt, seconds):
+            self.assertNotIn('/workspace/check.mjs', prompt)
+            answer={'cases': [{'id': 'compatibility', 'line': 'L2',
+                               'reason': 'Initialization should be observable by existing callers.'}]}
+            return self._profile_reply(route, answer)
+
+        result = interrogate_discovery.propose(repo=self.repo, baseline=self.baseline, candidate=self.candidate,
+            intent=self.intent, catalog=path, scope=['state.mjs'], out=self.directory/'discover',
+            required=['init'], invoke=invoke)
+        self.assertEqual(result['status'], 'ready', result.get('reason'))
+        self.assertEqual(result['selected'], ['init', 'compatibility'])
+        self.assertEqual(self.calls, [])
+        Path(self.config['model_profile']['path']).unlink()
+        pinned, selected = interrogate_discovery.load(result['plan'], result['sha256'])
+        self.assertEqual([item['id'] for item in selected['probes']], ['init', 'compatibility'])
+        self.assertEqual(pinned['drivers'].keys(), {'init', 'compatibility'})
+        file = self.directory/'discover/proposal-reviewer-1.json'
+        file.write_bytes(file.read_bytes()+b' ')
+        with self.assertRaisesRegex(ValueError, 'evidence digest'):
+            interrogate_discovery.load(result['plan'], result['sha256'])
+
+    def test_discovery_does_not_accept_model_authored_commands(self):
+        self._profile()
+        catalog = self.directory/'catalog.json'
+        cli.write(catalog, {'schema': 1, **self.config})
+        result = interrogate_discovery.propose(repo=self.repo, baseline=self.baseline, candidate=self.candidate,
+            intent=self.intent, catalog=catalog, scope=['state.mjs'], out=self.directory/'discover',
+            invoke=lambda route, prompt, seconds: self._profile_reply(route,
+                {'cases': [{'id': 'init', 'line': 'L2', 'reason': 'Existing behavior.',
+                            'command': ['node', 'unapproved.js']}]}))
+        self.assertEqual(result['status'], 'inconclusive')
+        with self.assertRaisesRegex(ValueError, 'completed functional discovery'):
+            interrogate_discovery.execute(result['plan'], result['sha256'], self.out)
+        self.assertFalse(self.out.exists())
 
 
 if __name__ == '__main__':
