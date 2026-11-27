@@ -158,6 +158,11 @@ SCENARIOS = {
         'Inspect a previously started iBoard task', 'skills/poteto-mode/playbooks/session-pickup.md',
         'skills/pickup/SKILL.md', 'pickup', 'Saved task boundaries, evidence and the next safe step',
         'Pass an iBoard task record. This entry only reads saved task state.'),
+    'pickup-history': Scenario(
+        'Recover the continuation point from an earlier chat, pushed branch, or PR',
+        'skills/poteto-mode/playbooks/session-pickup.md', 'skills/pickup/SKILL.md', 'pickup_history',
+        'Current branch and PR facts, inherited evidence, exact checkpoint and next playbook',
+        'Optionally supply a digest-bound recall report and matching task record. The observation never executes the next step.'),
     'resume-task': Scenario(
         'Resume a paused iBoard task at its saved checkpoint', 'skills/poteto-mode/playbooks/session-pickup.md',
         'README.md#工作台插件原型', 'resume', 'A restorable task with matching inputs and a valid budget',

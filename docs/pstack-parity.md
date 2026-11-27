@@ -97,3 +97,5 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 [`workbench.reflect`](../skills/reflect/SKILL.md) 把指定的一次会话复盘转成技能修订及待办。正文修订绑定会话中使用的技能，漏触发场景调整描述。应用前核对批准的行、原技能和现有副本，再在 Claude 项目或用户技能目录写入。
 
 [`workbench.recall`](../skills/recall/SKILL.md) 从指定的 Claude Code 会话、共享记录和匹配主题的 Git 提交恢复项目上下文。简报引用原始会话行号，重新向 GitHub 查询 PR 和 issue 状态，最后给出一个行动。Cursor 对话和其他服务需要先导出或提供资料。
+
+[`workbench.pickup_history`](../skills/pickup/SKILL.md) 接收选定的本地分支、GitHub 远端分支或 PR，可附前一轮 `recall` 简报和当前 iBoard 任务回执。它保留旧会话的决策，重新核对实际提交、工作树和 PR 状态，按原目标给出接续检查点。接续盘点本身只读，不重新执行已留存的测试。
