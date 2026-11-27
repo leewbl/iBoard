@@ -8,7 +8,7 @@
 
 | 原则（源目录名省略 `principle-`） | 何时使用 | 操作结果或验收条件 | iBoard 接入 |
 | --- | --- | --- | --- |
-| [`attack-the-premise`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-attack-the-premise/SKILL.md) | 同一前提支撑的两个方案都在同一门禁失败。 | 写出共同前提，设计可证伪的运行观察，解释证据如何改变下一轮。 | [修复诊断](../../workbench/repair_premise.py) 绑定同一沙箱检查的两个失败提交和原始报告。在断网只读容器运行已跟踪脚本或作为独立输入的 Node 探针，再将观测与报告摘要交给修复阶段。没有明确结论时暂停。独立评审和 GitHub CI 的失败尚未接入。 |
+| [`attack-the-premise`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-attack-the-premise/SKILL.md) | 同一前提支撑的两个方案都在同一门禁失败。 | 写出共同前提，设计可证伪的运行观察，解释证据如何改变下一轮。 | [修复诊断](../../workbench/repair_premise.py) 绑定同一门禁的两个失败提交和原始报告，覆盖沙箱检查、必需的 GitHub CI job 及有验收条件和证据引用的终审拒绝。探针使用当前候选的断网只读容器，没有明确结论时暂停。新提交继续走原门禁。 |
 | [`boundary-discipline`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-boundary-discipline/SKILL.md) | CLI、配置或外部 API 接入与错误处理。 | 入口解析外部输入成明确类型，把业务判断和传输细节分开。 | `start.py` 校验输入，`verify_openclaw.py` 核对报告；新增适配器先定义输入和结果契约。 |
 | [`build-the-lever`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-build-the-lever/SKILL.md) | 需要执行或证明非平凡工作。 | 先手工证明一个样本，再留一条可重复运行的小脚本或技能，并用同一样本验证。 | 已有 Gateway 及技能 CLI 的可重跑脚本；后续将人工复现、性能采样和批量检查固化为最小脚本。 |
 | [`encode-lessons-in-structure`](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/principle-encode-lessons-in-structure/SKILL.md) | 同一条纠正或指令反复出现。 | 优先落成类型、Lint、元数据校验或脚本。需要判断时保留简短说明和失败示例。 | 已有报告归属检查及本地门禁；需把重复失败归类，给新增约束保存旧版本或反例的拒绝证据。 |

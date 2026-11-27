@@ -103,7 +103,7 @@ SCENARIOS = {
         'Test a common assumption before another repair',
         'skills/principle-attack-the-premise/SKILL.md', 'docs/pstack-parity.md', 'autopilot',
         'Two versioned failed checks, the diagnostic plan and its isolated observations',
-        'Activates during task execution when two different candidates fail the same supported sandbox check.'),
+        'Activates on the same sandbox check, required CI job, or cited review criterion on two different candidates.'),
     'swarm': Scenario(
         'Verify required paths or compare candidates in parallel', 'skills/swarm/SKILL.md',
         'skills/swarm/SKILL.md', 'swarm freeze',

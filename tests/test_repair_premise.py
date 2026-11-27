@@ -1,13 +1,14 @@
 import hashlib
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import autopilot, cli, repair_premise, workflow
+from workbench import autopilot, cli, delivery, repair_premise, workflow
 
 
 class RepairPremiseTests(unittest.TestCase):
@@ -21,13 +22,19 @@ class RepairPremiseTests(unittest.TestCase):
         cli.git(repo, 'config', 'user.name', 'Test')
         cli.git(repo, 'config', 'user.email', 'test@example.invalid')
         (repo / 'settings.json').write_text('{"legacyMode":"broken","route":"broken"}')
-        (repo / 'app.js').write_text('exports.resolve = (settings) => settings.route;\n')
+        (repo / 'app.js').write_text("exports.resolve = (settings) => settings.route ?? settings.fallbackRoute ?? 'unresolved';\n")
         (repo / 'repro.js').write_text(
             "console.log(require('./app').resolve(require('./settings.json')).toUpperCase());\n")
         (repo / 'probe.js').write_text(
             "const resolve = require('./app').resolve;\n"
             "const result = resolve({legacyMode: 'fixed', route: 'broken'});\n"
             "console.log(result === 'fixed' ? 'USES_LEGACY_MODE' : 'IGNORES_LEGACY_MODE');\n")
+        (repo / 'fallback.js').write_text(
+            "const { route, ...fallback } = require('./settings.json');\n"
+            "console.log('FALLBACK ' + require('./app').resolve(fallback).toUpperCase());\n")
+        (repo / 'test-report.js').write_text(
+            "console.log('PRIMARY ' + require('./app').resolve(require('./settings.json')).toUpperCase());\n"
+            "require('./fallback');\n")
         cli.git(repo, 'add', '.')
         cli.git(repo, 'commit', '-qm', 'baseline')
         info = workflow.prepare(task_id='premise', repo=repo, tasks_root=root / 'tasks',
@@ -79,7 +86,14 @@ class RepairPremiseTests(unittest.TestCase):
             stdout = 'IGNORES_LEGACY_MODE\n'
         else:
             settings = json.loads((Path(workspace) / 'settings.json').read_text())
-            stdout = settings['route'].upper() + '\n'
+            fallback = 'FALLBACK ' + settings.get('fallbackRoute', 'unresolved').upper() + '\n'
+            primary = settings['route'].upper() + '\n'
+            if command[-1].endswith('/test-report.js'):
+                stdout = 'PRIMARY ' + primary + fallback
+            elif command[-1].endswith('/fallback.js'):
+                stdout = fallback
+            else:
+                stdout = primary
         return {'command': command, 'workspace': str(workspace), 'image': 'sha256:' + 'a' * 64,
                 'source_root': kwargs.get('source_root', '/workspace'),
                 'workspace_read_only': kwargs.get('workspace_read_only', False),
@@ -128,6 +142,34 @@ class RepairPremiseTests(unittest.TestCase):
         self.assertEqual(cli.read(self.task)['status'], 'paused')
         self.assertEqual(cli.read(self.task)['iterations'], 2)
 
+    def test_invalid_sandbox_path_gets_one_plan_correction_before_any_execution(self):
+        model = self.model
+        corrections = []
+        commands = []
+
+        def diagnose(workspace, prompt, timeout, *, read_only):
+            result = model(workspace, prompt, timeout, read_only=read_only)
+            if 'Diagnose the shared premise' in prompt:
+                corrections.append('rejected the probe before execution' in prompt)
+                self.assertIn('sandbox root for this task is /workspace', prompt)
+                if len(corrections) == 1:
+                    proposal = json.loads(result['stdout'])
+                    proposal['probe'] = {**self.probe, 'command': ['node', '/app/probe.js']}
+                    result['stdout'] = json.dumps(proposal)
+            return result
+
+        def sandbox(workspace, image, command, timeout, **kwargs):
+            commands.append(command)
+            return self.sandbox_fixture(workspace, image, command, timeout, **kwargs)
+
+        with patch.object(self, 'model', diagnose), patch.object(repair_premise, 'run_sandbox', sandbox):
+            state = self.run_case(self.check_fixture)
+        self.assertEqual(corrections, [False, True])
+        self.assertEqual(commands, [self.probe['command']])
+        self.assertEqual(state['phase'], 'delivery')
+        self.assertEqual(cli.read(self.task)['iterations'], 3)
+        self.assertEqual(len(list(self.task.parent.glob('premise-2-model-previous-*.json'))), 1)
+
     def test_same_head_or_another_gate_does_not_count_as_two_fixes(self):
         state = {}
         gate = {'kind': 'resolution', 'command': self.probe['command']}
@@ -162,6 +204,141 @@ class RepairPremiseTests(unittest.TestCase):
         self.assertFalse(repair_premise._observed(report))
         report['runtime_diagnostics']['state'] = {'status': 'exited', 'exit_code': 1}
         self.assertTrue(repair_premise._observed(report))
+
+    def external_model(self, workspace, prompt, timeout, *, read_only):
+        settings = workspace / 'settings.json'
+        if 'Implement this explicitly' in prompt:
+            self.events.append('first-attempt')
+            settings.write_text('{"legacyMode":"fixed","route":"fixed"}')
+        elif 'Repair the ' in prompt and not read_only:
+            value = json.loads(settings.read_text())
+            if '"outcome": "refuted"' in prompt:
+                self.events.append('grounded-repair')
+                value['fallbackRoute'] = 'fixed'
+            else:
+                self.events.append('first-repair')
+                value['legacyMode'] = 'FIXED'
+            settings.write_text(json.dumps(value))
+        else:
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+        return {'exit_code': 0, 'timed_out': False, 'stdout': '', 'stderr': ''}
+
+    def external_runtime(self):
+        if os.environ.get('WORKBENCH_DOCKER_TEST') == '1':
+            return workflow.run_check, nullcontext()
+        return self.check_fixture, patch.object(repair_premise, 'run_sandbox', self.sandbox_fixture)
+
+    def archive_external(self, label, proof, **extra):
+        output = os.environ.get('WORKBENCH_PREMISE_EVIDENCE')
+        if output:
+            path = Path(output) / label
+            cli.write(path / 'diagnosis.json', proof)
+            cli.write(path / 'observations.json', extra)
+            for index, failure in enumerate(proof['failures'], 1):
+                source = Path(failure['path'])
+                shutil.copyfile(source, path / f'failure-{index}.json')
+                evidence = cli.read(source)
+                shutil.copyfile(evidence['runtime']['path'], path / f'local-runtime-{index}.json')
+
+    def test_required_ci_recurrence_matches_same_job_and_waits_for_new_head(self):
+        check, runner = self.external_runtime()
+        heads, updates, merges, ci_checks = [], [], [], []
+
+        class GitHub:
+            def __init__(self, run, jobs):
+                self.run, self.jobs = run, jobs
+
+            def _call(self, method, path):
+                if '/jobs?' in path:
+                    return {'total_count': len(self.jobs), 'jobs': [
+                        {'id': self.run * 10 + index, 'status': 'completed', 'conclusion': 'failure', 'name': job}
+                        for index, job in enumerate(self.jobs)]}
+                return [{'path': 'settings.json', 'annotation_level': 'failure',
+                         'message': 'Fallback route still unresolved'}]
+
+        def wait(task, repo, number, head):
+            heads.append(head)
+            result = repair_premise.run_sandbox(
+                self.workspace, 'node:24-slim', ['node', '/workspace/fallback.js'], 15,
+                workspace_read_only=True, memory_mb=128, pin_image=True)
+            self.assertTrue(result['cleanup_confirmed'])
+            self.assertEqual(result['exit_code'], 0)
+            ci_checks.append([head, result['stdout'].strip()])
+            if len(heads) > 2:
+                self.assertIn('grounded-repair', self.events)
+                self.assertEqual(updates[-1]['head'], head)
+                self.assertEqual(result['stdout'].strip(), 'FALLBACK FIXED')
+                return
+            self.assertEqual(result['stdout'].strip(), 'FALLBACK UNRESOLVED')
+            run = 10 + len(heads)
+            github = GitHub(run, ['regression', 'docs' if len(heads) == 1 else 'types'])
+            details = {'id': run, 'run_attempt': 1, 'status': 'completed', 'workflow_id': 45,
+                       'conclusion': 'failure', 'head_sha': head}
+            raise autopilot.CIFailure(autopilot._ci_failure_evidence(github, repo, 'Verify', run, details, head))
+
+        def republish(task, repo, number, previous):
+            self.assertEqual(previous, heads[-1])
+            updates.append({'repo': repo, 'pr': number, 'previous': previous, 'head': cli.sha(self.workspace, 'HEAD')})
+            return updates[-1]
+
+        def merge(task, repo, number):
+            merges.append(cli.sha(self.workspace, 'HEAD'))
+            return {'merged': True}
+
+        simulate_ci = patch.object(autopilot, '_wait_for_ci', side_effect=wait)
+        simulate_update = patch.object(autopilot.publish, 'republish', side_effect=republish)
+        with runner, simulate_ci, simulate_update, patch.object(delivery, 'guarded_merge', merge):
+            state = autopilot.run(self.task, self.issue, 'node:24-slim', model=self.external_model, check=check,
+                                  memory_mb=128, pr_repo='user/fork', pr_number=7, merge=merge)
+        self.assertEqual(self.events, ['first-attempt', 'first-repair', 'diagnose', 'grounded-repair'])
+        self.assertEqual(len(set(heads)), 3)
+        self.assertEqual(merges, [heads[-1]])
+        self.assertEqual(state['phase'], 'complete')
+        proof = self.proof()
+        self.assertEqual(proof['outcome'], 'refuted')
+        self.assertEqual([row['gate']['job'] for row in proof['failures']], ['regression', 'regression'])
+        self.archive_external('ci-recurrence', proof, ci_heads=heads, ci_checks=ci_checks,
+                              pr_updates=updates, merged_heads=merges)
+
+    def test_independent_review_repeats_the_same_structured_criterion(self):
+        check, runner = self.external_runtime()
+        verdicts = []
+
+        def model(workspace, prompt, timeout, *, read_only):
+            if 'Independently inspect the candidate' in prompt:
+                head = cli.sha(workspace, 'HEAD')
+                current = cli.read(self.task)
+                report = next(item for item in reversed(current['evidence'])
+                              if item['kind'] == 'test-result' and item['actor'] == 'independent-verifier'
+                              and item['commit'] == head)
+                output = cli.read(report['path'])['stdout']
+                if 'FALLBACK FIXED' not in output:
+                    self.assertIn('FALLBACK UNRESOLVED', output)
+                    verdicts.append([head, 'blocked'])
+                    rejection = {'status': 'blocked', 'reason': 'The fallback route remains unresolved.',
+                                 'blocked_criteria': [{'id': 'route', 'class': 'behavior',
+                                                       'reason': 'The report shows FALLBACK UNRESOLVED.',
+                                                       'evidence': ['R5']}]}
+                    return {'exit_code': 0, 'timed_out': False, 'stdout': json.dumps(rejection), 'stderr': ''}
+                verdicts.append([head, 'pass'])
+            reply = self.external_model(workspace, prompt, timeout, read_only=read_only)
+            if 'Return only JSON:' in prompt:
+                plan = json.loads(reply['stdout'])
+                plan['criteria'][0]['text'] = 'Both the primary and fallback routes resolve to fixed.'
+                plan['tests'] = {'command': ['node', '/workspace/test-report.js'], 'marker': 'PRIMARY FIXED', 'exit_code': 0}
+                reply['stdout'] = json.dumps(plan)
+            return reply
+
+        with runner:
+            state = autopilot.run(self.task, self.issue, 'node:24-slim', model=model, check=check,
+                                  memory_mb=128, local_handoff=True)
+        self.assert_result(state)
+        self.assertEqual([value for _, value in verdicts], ['blocked', 'blocked', 'pass'])
+        proof = self.proof()
+        self.assertEqual([row['head'] for row in proof['failures']], [head for head, _ in verdicts[:2]])
+        self.assertEqual(proof['failures'][0]['gate']['kind'], 'independent-review')
+        self.assertEqual(proof['failures'][0]['gate']['criterion'], 'route')
+        self.archive_external('review-recurrence', proof, review_verdicts=verdicts)
 
     @unittest.skipUnless(os.environ.get('WORKBENCH_DOCKER_TEST') == '1', 'requires local Docker and node:24-slim')
     def test_two_failed_repairs_are_diagnosed_in_real_docker(self):
