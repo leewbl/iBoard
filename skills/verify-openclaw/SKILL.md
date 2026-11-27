@@ -35,6 +35,8 @@ python3 -m workbench.verify_openclaw control-ui-connected \
 
 Use the compiled image ID recorded by the [offline Control UI build](../../examples/openclaw-control-ui-parity/README.md). The bundle must identify the same commit as the target checkout. Give each execution new JSON and PNG paths. The report binds the image, commit, helper and screenshot, and stores the selected outcomes without retaining tokens or WebSocket frame bodies. The core feature-map audit uses the CLI and Gateway journeys.
 
+On cold startup, the browser allows up to 65 seconds for each sign-in control within the journey timeout. It then requires the authenticated Gateway response before checking page behavior.
+
 ### Session rename
 
 Run `control-ui-session-rename` with the same arguments to check a write. The Gateway client seeds one disposable session, then Chromium uses the Sessions row menu to cancel a rename and save a second edit. Cancel must send no mutation. Save must send one accepted `sessions.patch` with the expected session ID. The helper closes Chromium, stops the first Gateway gracefully, confirms its port closed, then starts a new Gateway with the same disposable state. A fresh Chromium process authenticates and reads the updated label for the same session ID from `sessions.list` before capturing the page. The report records both Gateway PIDs and the first exit. Allow up to 480 seconds for each execution, within the task's remaining budget.

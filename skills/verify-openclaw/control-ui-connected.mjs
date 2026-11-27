@@ -409,9 +409,11 @@ async function openSessions() {
   const servedCommit = await page.evaluate(() => globalThis.OPENCLAW_CONTROL_UI_BUILD_INFO?.commit);
   assert.equal(servedCommit, expectedCommit, 'Served UI bundle does not identify the verified commit');
   await recorder?.checkpoint();
-  await page.getByLabel('Gateway secret', { exact: true }).fill(token);
+  // Cold Gateway startup can temporarily leave the UI in a pending connection state.
+  const loginTimeout = 65_000;
+  await page.getByLabel('Gateway secret', { exact: true }).fill(token, { timeout: loginTimeout });
   await recorder?.checkpoint();
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await page.getByRole('button', { name: 'Connect', exact: true }).click({ timeout: loginTimeout });
   const activeProof = () => {
     if (filterWireError) throw filterWireError;
     return sessionProof && !sessionProof.socket.isClosed() && sessionProof;
