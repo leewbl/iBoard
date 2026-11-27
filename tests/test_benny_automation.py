@@ -158,6 +158,37 @@ class BennyAutomationTests(unittest.TestCase):
         self.assertEqual(self.source.fixture.sent[0]['thread_ts'], ROOT)
         self.assertTrue(self.source.fixture.sent[0]['text'].endswith('[benny:other]'))
 
+    def test_interruption_after_native_handoff_recovers_without_posting_again(self):
+        self.source.reply.update(category='unclear', question='Which item was renamed?')
+        self.source.fixture.reply_behavior = 'accepted'
+        self.opts['triage']['apply_verdict'] = True
+        cli.write(self.policy, self.opts)
+        event = 'Ev987RECOVERY'
+        self.receive(self.payload(event, self.source.fixture.root))
+        writer = self.source.fixture.writer
+        triage = benny_triage.triage
+        apply = benny_automation.benny_handoff.apply
+
+        def active(**kwargs):
+            return triage(**kwargs, tracker=self.source.tracker, model=self.source.model)
+
+        def interrupt(**kwargs):
+            self.assertEqual(apply(**kwargs)['status'], 'confirmed')
+            raise InterruptedError('stopped after native confirmation')
+
+        with patch.object(benny_triage, 'triage', side_effect=active) as model_stage:
+            with patch.object(benny_automation.benny_handoff, 'apply', side_effect=interrupt) as first:
+                with self.assertRaisesRegex(InterruptedError, 'after native confirmation'):
+                    self.work(event, writer=writer)
+            with patch.object(benny_automation.benny_handoff, 'apply', wraps=apply) as resumed:
+                result = self.work(event, writer=writer)
+            self.assertEqual(self.work(event, writer=writer), result)
+            model_stage.assert_called_once()
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertEqual(first.call_args.kwargs['sha256'], resumed.call_args.kwargs['sha256'])
+        self.assertLessEqual(resumed.call_args.kwargs['seconds'], first.call_args.kwargs['seconds'])
+        self.assertEqual(len(self.source.fixture.sent), 1)
+
     def test_claim_wait_reuses_original_reproduction_before_draft(self):
         marker = reply(1, '[benny:bug]', user=TRIAGE)
         self.source.fixture.pages[0].append(marker)

@@ -19,6 +19,7 @@ from workbench.task_lock import TaskBusy, task_lock
 TRIAGE_OPTIONS = {'selections', 'terms', 'routing_map', 'seconds', 'model_name', 'read_attachments', 'inspect_media'}
 REPRO_OPTIONS = {'image', 'manifest', 'helpers', 'journey', 'oracle', 'oracle_marker', 'oracle_failure_marker', 'memory_mb'}
 VISUAL_OPTIONS = {'baseline_visible', 'candidate_visible'}
+HANDOFF_SECONDS = 90
 ERRORS = (*project_verify.ERRORS, autopilot.AutopilotError, delivery.DeliveryError, publish.PublishError, start.StartError)
 
 
@@ -152,20 +153,31 @@ def _route(event, rules, slack, directory):
                         out=directory)
 
 
-def _triage(route, opts, *, project, rules, slack, writer, out):
+def _apply_handoff(checkpoint, *, slack, writer):
+    remaining = int(checkpoint['handoff_deadline'] - time.time())
+    if remaining < 10:
+        raise ValueError('Benny handoff time limit reached; inspect the original journal')
+    plan = checkpoint['handoff']
+    applied = benny_handoff.apply(plan=plan['plan'], sha256=plan['sha256'], slack=slack, writer=writer,
+                                  seconds=min(remaining, HANDOFF_SECONDS))
+    return {'status': applied['status'], 'triage': checkpoint['triage'], 'handoff': plan}
+
+
+def _triage(route, opts, *, project, rules, slack, writer, out, checkpoint):
     result = benny_triage.triage(slack=slack, receipt=route['receipt'], sha256=route['sha256'],
                                 repo=project['repo'], revision=project['revision'], tracker_repo=rules['repository'],
                                 search_source=True, out=out/'triage',
                                 **{key: opts[key] for key in TRIAGE_OPTIONS if key in opts})
     receipt = out/'triage/result.json'
-    response = {'status': result['status'], 'triage': _ref(receipt)}
+    reference = _ref(receipt)
     if result['status'] == 'ready' and opts.get('apply_verdict'):
         labels = opts.get('labels', ()) if result['recommendation']['action'] == 'draft-new-issue' else ()
         plan = benny_handoff.prepare(triage=receipt, sha256=cli.digest(receipt), state_dir=out/'handoff',
                                     labels=labels, followup_seconds=opts.get('followup_seconds', 0))
-        applied = benny_handoff.apply(plan=plan['plan'], sha256=plan['sha256'], slack=slack, writer=writer)
-        response.update(status=applied['status'], handoff=plan)
-    return response
+        saved = checkpoint(phase='handoff', triage=reference, handoff=plan,
+                           handoff_deadline=time.time() + HANDOFF_SECONDS)
+        return _apply_handoff(saved, slack=slack, writer=writer)
+    return {'status': result['status'], 'triage': reference}
 
 
 def _reproduce(route, opts, *, project, rules, slack, out, prior=None):
@@ -234,8 +246,11 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None):
             if any(prior.get(name) != value for name, value in expected.items()):
                 raise ValueError('Benny scope or worker policy changed after work started')
             if prior['status'] == 'running':
-                raise ValueError('an interrupted Benny dispatch requires inspection of its preserved files')
-            if prior['status'] == 'waiting-claim':
+                if role != 'triage' or prior.get('phase') != 'handoff' or not opts.get('apply_verdict'):
+                    raise ValueError('an interrupted Benny dispatch requires inspection of its preserved files')
+                if prior['event'] != event_id:
+                    return prior
+            elif prior['status'] == 'waiting-claim':
                 if prior['event'] != event_id or time.time() < datetime.fromisoformat(prior['ready_at']).timestamp():
                     return prior
             elif prior['status'] != 'awaiting-verdict' or prior['event'] == event_id:
@@ -249,11 +264,21 @@ def work(*, repo, rules, state, policy, event_id, slack, writer=None):
         else:
             route = _route(event, rules, slack, directory/'source')
         record = {**expected, 'event': event_id, 'source': {'path': route['receipt'], 'sha256': route['sha256']}}
-        cli.write(record_path, {**record, 'status': 'running'})
-        if role == 'triage':
-            result = _triage(route, opts, project=project, rules=rules, slack=slack, writer=writer, out=directory)
+
+        def checkpoint(**fields):
+            saved = {**record, 'status': 'running', **fields}
+            cli.write(record_path, saved)
+            return saved
+
+        if prior and prior['status'] == 'running':
+            result = _apply_handoff(prior, slack=slack, writer=writer)
         else:
-            result = _reproduce(route, opts, project=project, rules=rules, slack=slack, out=directory, prior=prior)
+            checkpoint()
+            if role == 'triage':
+                result = _triage(route, opts, project=project, rules=rules, slack=slack, writer=writer, out=directory,
+                                 checkpoint=checkpoint)
+            else:
+                result = _reproduce(route, opts, project=project, rules=rules, slack=slack, out=directory, prior=prior)
         cli.write(record_path, {**record, **result})
         return {**record, **result}
 
