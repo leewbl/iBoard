@@ -118,6 +118,7 @@ def _checked_runs(directory, report, contract, revision, bundle):
 
 
 def check(*, repo, base, candidate, skill, image, out, timeout=600, memory_mb=3328,
+          source_review=None, source_review_sha256=None,
           sandbox=run_sandbox, attester=workflow._verified_image):
     repo = Path(repo).expanduser().resolve(strict=True)
     base, head = (cli.sha(repo, ref, timeout=20) for ref in (base, candidate))
@@ -129,7 +130,8 @@ def check(*, repo, base, candidate, skill, image, out, timeout=600, memory_mb=33
         directory = output / "maintenance"
         report = project_verify.run("maintain", repo=repo, revision=base, image=image, out=directory,
                                     timeout=timeout, memory_mb=memory_mb, manifest=new / "contract.json",
-                                    helpers=new / "helpers", skill=old, sandbox=sandbox, attester=attester)
+                                    helpers=new / "helpers", skill=old, source_review=source_review,
+                                    source_review_sha256=source_review_sha256, sandbox=sandbox, attester=attester)
         reason = None
         if report["outcome"] == "changed":
             try:
@@ -175,6 +177,17 @@ def require(data, head):
                      and report["source"] == source and report["source_drift"] == drift
                      and report.get("entrypoints") == (inventory if inventory["scope_count"] else None),
                      "maintenance source or entrypoint coverage differs")
+            if "source_review" in report:
+                from workbench import project_source_review
+
+                source_review = report["source_review"]
+                try:
+                    source_result = project_source_review.audit(
+                        repo, base, candidate, source_review["path"], source_review["sha256"])
+                    _require(source_result["status"] == source_review["status"] == "reviewed",
+                             "source review did not clear the committed maintenance candidate")
+                except project_source_review.ERRORS as error:
+                    raise ValueError(f"source review evidence: {error}") from error
             runs = _checked_runs(report_path.parent, report, contract, base, candidate)
         return {"sha256": ref["sha256"], "skill": root, "runs": runs}
     except ERRORS as error:
@@ -212,6 +225,8 @@ def main(argv=None):
         verify.add_argument("--" + key, required=True)
     verify.add_argument("--timeout", type=int, default=600)
     verify.add_argument("--memory-mb", type=int, default=3328)
+    verify.add_argument("--source-review")
+    verify.add_argument("--source-review-sha256")
     for name in ("attach", "publish"):
         action = commands.add_parser(name)
         action.add_argument("--task", required=True, dest="task_path")

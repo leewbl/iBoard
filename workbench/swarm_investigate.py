@@ -221,7 +221,7 @@ def _invoke(engine, prompt, seconds):
     if engine['provider'] == 'glm':
         with TemporaryDirectory(prefix='iboard-swarm-model-') as directory:
             result = claude_glm.execute(Path(directory), prompt, seconds, read_only=True, file_tools_only=True,
-                                       capture_trace=True, requested_model=engine['model'])
+                                       capture_trace=True, private_workspace=True, requested_model=engine['model'])
         if result.get('timed_out') or result.get('exit_code') != 0:
             raise ProviderUnavailable('Claude Code and GLM request failed or timed out')
         observed = result.get('model')

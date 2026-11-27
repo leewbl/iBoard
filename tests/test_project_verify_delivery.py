@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from test_publish import FakeGitHub
-from workbench import cli, project_verify, project_verify_delivery, publish
+from workbench import cli, project_source_review, project_verify, project_verify_delivery, publish
 
 
 IMAGE = 'sha256:' + 'a' * 64
@@ -229,6 +229,33 @@ class ProjectVerificationDeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(publish.PublishError, 'verification maintenance evidence'):
             publish.publish(task_path, 'owner/fork', github=github)
         self.assertEqual(github.mock_calls, [])
+
+    def test_source_review_is_rechecked_during_delivery(self):
+        def invoke(engine, prompt, seconds):
+            evidence = json.loads(prompt.splitlines()[-1])['evidence']['S1']
+            _, _, quote = evidence['text'].splitlines()[0].partition(': ')
+            answer = {
+                'status': 'aligned', 'summary': 'The feature registration is present.', 'note': None,
+                'citations': [{'id': 'S1', 'line': evidence['start'], 'quote': quote}],
+                'recipe': {'entry': 'CLI', 'action': 'Open the feature.', 'expect': 'The command is registered.'},
+            }
+            return {'observed_model': engine['model'], 'answer': '```json\n' + json.dumps(answer) + '\n```'}
+
+        source_proof = project_source_review.review(
+            repo=self.repo, revision=self.base, skill=self.repo / SKILL, provider='glm', model='glm-fixture',
+            out=self.root / 'source-review', invoke=invoke,
+        )
+        receipt = project_verify_delivery.check(
+            repo=self.repo, base=self.base, candidate=self.head, skill=SKILL, image=IMAGE,
+            out=self.root / 'verified-with-source', memory_mb=512, sandbox=self.sandbox, attester=self.attest,
+            source_review=source_proof['path'], source_review_sha256=source_proof['sha256'],
+        )
+        self.assertEqual(receipt['status'], 'passed')
+        data = self.proof_data(receipt)
+        project_verify_delivery.require(data, self.head)
+        Path(source_proof['path']).write_text('{}')
+        with self.assertRaisesRegex(cli.WorkbenchError, 'source review evidence'):
+            project_verify_delivery.require(data, self.head)
 
     def test_mapped_browser_requires_original_screenshot(self):
         receipt = self.verify()

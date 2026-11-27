@@ -381,13 +381,17 @@ def discover(*, repo, revision, out, manifest, since=None):
 
 
 def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manifest=None, helpers=None,
-        skill=None, journey=None, sandbox=run_sandbox, attester=workflow._verified_image):
+        skill=None, journey=None, source_review=None, source_review_sha256=None,
+        sandbox=run_sandbox, attester=workflow._verified_image):
     repo = Path(repo).expanduser().resolve(strict=True)
     revision = cli.sha(repo, revision, timeout=10)
     if not 1 <= timeout <= 3600 or not 128 <= memory_mb <= 8192:
         raise ValueError("time and memory bounds are 1–3600 s and 128–8192 MiB")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]*", image):
         raise ValueError("use a valid local image reference")
+    if (bool(source_review) != bool(source_review_sha256) or
+            (source_review is not None and mode != "maintain")):
+        raise ValueError("maintenance source review requires both a report path and its digest")
     output = Path(out).expanduser().resolve()
     installed = Path(skill).expanduser().resolve(strict=True) if skill else None
     if output.is_relative_to(repo) or installed and output.is_relative_to(installed):
@@ -421,6 +425,17 @@ def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manife
                 report["replaces_unsafe_entries"] = unsafe
         else:
             contract, bundle = original, installed
+        reviewed = True
+        if source_review:
+            from workbench import project_source_review
+
+            try:
+                proof = project_source_review.audit(repo, revision, bundle, source_review, source_review_sha256)
+            except project_source_review.ERRORS as error:
+                raise ValueError(f"source review evidence: {error}") from error
+            report["source_review"] = {"path": str(Path(source_review).expanduser().resolve(strict=True)),
+                                       "sha256": source_review_sha256, "status": proof["status"]}
+            reviewed = proof["status"] == "reviewed"
         features = contract["features"]
         if mode in ("create", "drive"):
             selected = [entry for entry in features if entry["id"] == journey] if journey else features[:1]
@@ -429,7 +444,7 @@ def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manife
         else:
             selected = features
         proved = runner.verify(bundle, contract, selected)
-        if proved and (manifest or not report.get("map_drift")):
+        if proved and reviewed and (manifest or not report.get("map_drift")):
             if manifest:
                 release = output / f"verify-{contract['project']}"
                 bundle.rename(release)
@@ -451,6 +466,8 @@ def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manife
             report["reason"] = "source anchors moved or disappeared"
         elif _entrypoint_gaps(report.get("entrypoints", {})):
             report["reason"] = "the source entrypoint inventory needs map corrections"
+        elif not reviewed:
+            report["reason"] = "source review flagged drift, uncertainty, or incomplete coverage"
         else:
             report["reason"] = "one or more journeys lack passing execution or cleanup evidence"
     except ERRORS as error:
@@ -484,6 +501,9 @@ def main(argv=None):
             action.add_argument("--helpers", required=mode == "create")
         if mode != "maintain":
             action.add_argument("--journey")
+        else:
+            action.add_argument("--source-review")
+            action.add_argument("--source-review-sha256")
     args = vars(parser.parse_args(argv))
     if args["mode"] == "maintain" and bool(args["manifest"]) != bool(args["helpers"]):
         parser.error("maintain replacements require both --manifest and --helpers")

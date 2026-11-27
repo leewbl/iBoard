@@ -15,6 +15,18 @@ python3 -m workbench.project_verify discover --repo "$TARGET_REPO" --revision "$
 
 `discover` reads Commander registrations on declared receivers and inline option values in declared JSX controls. It resolves quoted command names and direct registrations inside fixed arrays of names, such as OpenClaw's Workshop archive and restore loop. Registrations that use an unresolved name or `addCommand`, and JSX controls with ambiguous options, require review. The report keeps the Git blob and line for each known entrypoint and each unresolved registration. Use `--since "$PREVIOUS_REVISION"` to compare named entrypoints across commits. Inspect receiver aliases, indirect registration helpers, other controls, and routes outside the declared scopes separately. Require a source location and a user entry point before proposing a missing feature.
 
+## Review the feature source
+
+Choose the exact generated skill bundle to review. Each read-only worker receives one feature document, its verification helper or excerpts, and bounded excerpts around its committed source anchors. The worker explains the user path, quotes supporting lines, explains any observed drift or uncertainty, and proposes one live check. The report groups identical recipes and keeps every individual feature result. Workers never launch the application. Review any cited drift before changing the map or its driver.
+
+```sh
+python3 -m workbench.project_source_review --repo "$TARGET_REPO" --revision "$REVISION" \
+  --skill "$SKILL_DIR" --provider glm --model "$APPROVED_MODEL" \
+  --parallelism 2 --out "$SOURCE_EVIDENCE"
+```
+
+The coordinator runs the declared offline journeys and uses the source evidence to decide whether the map can be called clean. Pass `--source-review "$SOURCE_EVIDENCE/source-review.json" --source-review-sha256 "$SOURCE_SHA256"` to `maintain`. Keep the original report available. The runner rechecks the exact document bytes, source quotes and feature coverage. Drift, uncertainty, or an incomplete source wave withholds a clean result even when the runtime checks pass. The plain invocation below runs the mechanical source and runtime checks without model calls.
+
 ```sh
 python3 -m workbench.project_verify maintain --repo "$TARGET_REPO" --revision "$REVISION" \
   --skill "$SKILL_DIR" --image "$LOCAL_IMAGE" --out "$EVIDENCE_DIR"
@@ -50,6 +62,8 @@ python3 -m workbench.project_verify_delivery check --repo "$WORKTREE" \
 ```
 
 The command reads both bundles from Git, checks the scope of every new commit, and reruns doctor and every feature in the corrected contract. The baseline image runs the product code because the product tree is identical in the candidate. The receipt binds the candidate's exact bundle, the map and source checks, each run, and any screenshots or recordings.
+
+To include the source wave in delivery, review the committed correction bundle against the same baseline and provide the same two source-review options to `project_verify_delivery check`. Publication and merge recheck those source findings with the offline receipts.
 
 ```sh
 python3 -m workbench.project_verify_delivery publish --task "$TASK_RECORD" \

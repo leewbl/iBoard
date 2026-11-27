@@ -340,6 +340,11 @@ SCENARIOS = {
         'Check project verification against a new revision', 'skills/maintain-verification-skill/SKILL.md',
         'skills/maintain-verification-skill/SKILL.md', 'project_verify maintain',
         'Source-drift findings, rerun receipts and skipped or blocked journeys'),
+    'review-verify-source': Scenario(
+        'Have a read-only worker review each feature map against its committed source', 'skills/maintain-verification-skill/SKILL.md',
+        'skills/maintain-verification-skill/SKILL.md#review-the-feature-source', 'project_source_review',
+        'Cited per-feature findings, uncertainty, and a concise live verification recipe',
+        'Choose an exact model. Only the selected map and bounded excerpts are sent to the workers.'),
     'ship-maintained-verify': Scenario(
         'Publish a verified correction limited to a project verification skill', 'skills/maintain-verification-skill/SKILL.md',
         'skills/maintain-verification-skill/SKILL.md#ship-a-verified-correction', 'project_verify_delivery check',
