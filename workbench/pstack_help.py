@@ -58,6 +58,11 @@ SCENARIOS = {
         'skills/swarm/SKILL.md', 'swarm freeze',
         'One receipt per lane, a combined verdict and the frozen race rule when selected',
         'The native runner uses committed commands in offline Docker. Required coverage can gate task delivery.'),
+    'swarm-investigate': Scenario(
+        'Investigate selected source ranges with parallel model workers', 'skills/swarm/SKILL.md',
+        'skills/swarm/SKILL.md', 'swarm_investigate freeze',
+        'Citation-validated findings per selected scope and a frozen comparison rule when requested',
+        'Explicit GLM or OpenAI models receive selected source excerpts in restricted read-only sessions.'),
     'test-first': Scenario(
         'Use the same regression test before and after a fix', 'skills/tdd/SKILL.md',
         'skills/tdd/SKILL.md', 'start --kind bug', 'Two baseline failures at the expected assertion and two isolated candidate passes',

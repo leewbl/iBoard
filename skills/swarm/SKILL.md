@@ -25,4 +25,21 @@ The coordinator gives every worker a detached worktree and a read-only workspace
 
 To require coverage in a normal iBoard task, create a coverage-only manifest using `candidate` or `baseline` in each lane's `revision` and include at least one candidate lane. Pass `--swarm-manifest "$MANIFEST" --swarm-sha256 "$MANIFEST_DIGEST"` with the usual `workbench.start` arguments. The task resolves the roles to its actual revisions before the independent review. The delivery gates audit every required lane again before writing.
 
-Report the overall verdict, lane outcomes, any race rule and selection, and links to exact evidence. This entry runs committed commands. Delegated model investigations, hosted workers and model races remain separate from this local verifier.
+Report the overall verdict, lane outcomes, any race rule and selection, and links to exact evidence. This entry runs committed commands. Hosted workers and model investigations use different execution paths from this local verifier.
+
+## Model investigations
+
+Use `workbench.swarm_investigate` to answer read-only questions about a fixed commit. A coverage run can give each lane a different question and source range. A model race gives every arm the same ordered source ranges and question. The manifest names the exact provider and model for each lane. Each answer must quote a committed source line, distinguish observations from inferences, and keep unresolved points visible.
+
+The model manifest uses `schema`, `revision`, `predicate`, `parallelism`, `seconds`, `shape`, `race_rule`, `lanes`, `judge`, and `rubric`. Each lane has an `id`, a `question`, a `files` array of committed paths or `path:start-end` ranges, and an `engine` with `provider` (`glm` or `openai`) and `model`. Workers receive only the approved source excerpts in their prompt. GLM runs through the restricted Claude Code adapter, and OpenAI uses the existing restricted Codex adapter.
+
+Use `coverage` with a null rule or `race` with `first-pass`, `rank-all`, or `best-of`. For the ranked rules, name a judge model outside the race and freeze each rubric item as an `id` and `text`. The judge receives neutral labels and the original source. A tied score leaves the winner unresolved. For coverage and first-pass, use a null judge and an empty rubric. An invalid citation can be retried once. A provider failure stops new calls to that provider for the run.
+
+```sh
+python3 -m workbench.swarm_investigate freeze --manifest "$MANIFEST" --repo "$REPO" --out "$PLAN"
+python3 -m workbench.swarm_investigate run --plan "$PLAN/plan.json" --sha256 "$PLAN_DIGEST" --out "$EVIDENCE"
+python3 -m workbench.swarm_investigate audit --plan "$PLAN/plan.json" --sha256 "$PLAN_DIGEST" \
+  --report "$EVIDENCE/result.json" --report-sha256 "$RESULT_DIGEST"
+```
+
+The audit checks source quotes and verdicts against Git again without calling a model. A passing investigation establishes that valid source references were supplied. Runtime behavior still requires the offline execution workflow.

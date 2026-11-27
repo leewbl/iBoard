@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -56,10 +57,13 @@ def _trace(stdout):
 
 
 def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(),
-            file_tools_only=False, capture_trace=False):
+            file_tools_only=False, capture_trace=False, requested_model=None):
     workspace = workspace.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not prompt.strip() or not 1 <= timeout <= 86400:
         raise ValueError("a workspace, nonempty prompt and valid timeout are required")
+    if requested_model is not None and (not isinstance(requested_model, str)
+                                        or not re.fullmatch(r'glm-[a-z0-9][a-z0-9.-]{0,64}', requested_model)):
+        raise ValueError('invalid explicit GLM model')
     if not isinstance(evidence_paths, (list, tuple)) or len(evidence_paths) > 4:
         raise ValueError("bounded explicit evidence directories are required")
     if evidence_paths and not read_only:
@@ -124,6 +128,8 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
             cmd.extend(["--effort", "low"])
         if capture_trace:
             cmd.extend(["--output-format", "stream-json", "--verbose"])
+        if requested_model is not None:
+            cmd.extend(['--model', requested_model])
         if evidence_dirs:
             cmd.extend(["--add-dir", *evidence_dirs])
         process = subprocess.Popen(cmd, cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
