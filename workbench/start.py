@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from workbench import autopilot, cli, feature_context, run_control, workflow
+from workbench import autopilot, cli, feature_context, model_profiles, run_control, workflow
 from workbench.task_lock import task_lock, TaskBusy
 from model import glm_vision
 
@@ -110,6 +110,7 @@ def _resume_locked(task_path, *, run, vision):
         if cli.enforce_budget(data):
             raise StartError('task budget exceeded; an explicitly authorized increase is required')
         stage = _read_input_stage(task)
+        model_profiles.intake(task, data, stage)
         feature_context.read(data)
         data['status'] = 'running'
         data['events'].append({'at': cli.now(), 'type': 'resume', 'reason': 'resume retained task'})
@@ -173,6 +174,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           feature_arena_out=None, visual_baseline=None, visual_baseline_sha256=None,
           refactor_contract=None, refactor_contract_sha256=None,
           prepare_only=False, require_root_cause=False, swarm_manifest=None, swarm_sha256=None,
+          model_profile=None, model_profile_sha256=None,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
@@ -183,6 +185,12 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('task kind, surface and positive limits are required')
     if require_root_cause and (kind != 'bug' or verification_target is not None):
         raise StartError('causal verification requires a new bug task')
+    selected_profile = None
+    if model_profile is not None or model_profile_sha256 is not None:
+        try:
+            selected_profile = model_profiles.load(model_profile, model_profile_sha256)
+        except model_profiles.ERRORS as error:
+            raise StartError(f'invalid approved model profile: {error}') from error
     coverage = None
     if swarm_manifest is not None or swarm_sha256 is not None:
         from workbench import swarm
@@ -362,6 +370,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
             try:
                 data = cli.read(task)
                 data['impact_review'] = 'runtime-v1'
+                model_reference = model_profiles.snapshot(task, data, selected_profile) if selected_profile else None
                 if require_root_cause:
                     from workbench import bug_cause
                     data['root_cause'] = bug_cause.MODE
@@ -429,6 +438,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                     stage['root_cause'] = bug_cause.MODE
                 if coverage is not None:
                     stage['coverage_swarm'] = cli.read(task)['coverage_swarm']
+                if model_reference is not None:
+                    stage['model_profile'] = model_reference
                 if refactor_input:
                     stage['refactor_contract'] = refactor_input
                 if verification_target is not None:
@@ -485,6 +496,8 @@ def main(argv=None):
     parser.add_argument('--require-root-cause', action='store_true', help='require paired causal controls for a new bug')
     parser.add_argument('--swarm-manifest', help='required coverage manifest with baseline and candidate lanes')
     parser.add_argument('--swarm-sha256', help='approved SHA-256 of the coverage manifest')
+    parser.add_argument('--model-profile', help='explicitly approved local role model profile')
+    parser.add_argument('--model-profile-sha256', help='SHA-256 of the approved model profile')
     parser.add_argument('--criterion', action='append', default=[], metavar='ID=TEXT',
                         help='freeze an acceptance criterion at intake; may be repeated')
     parser.add_argument('--required-ci-workflow', action='append', dest='required_ci_workflows',
@@ -525,7 +538,8 @@ def main(argv=None):
                    visual_baseline_sha256=args.visual_baseline_sha256, refactor_contract=args.refactor_contract,
                    refactor_contract_sha256=args.refactor_contract_sha256, prepare_only=args.prepare_only,
                    criteria=criteria, require_root_cause=args.require_root_cause,
-                   swarm_manifest=args.swarm_manifest, swarm_sha256=args.swarm_sha256)
+                   swarm_manifest=args.swarm_manifest, swarm_sha256=args.swarm_sha256,
+                   model_profile=args.model_profile, model_profile_sha256=args.model_profile_sha256)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

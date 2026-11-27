@@ -64,13 +64,16 @@ def _trace(stdout, workspace=None):
 
 
 def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(),
-            file_tools_only=False, capture_trace=False, requested_model=None, private_workspace=False):
+            file_tools_only=False, capture_trace=False, requested_model=None, requested_effort=None,
+            private_workspace=False):
     workspace = workspace.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not prompt.strip() or not 1 <= timeout <= 86400:
         raise ValueError("a workspace, nonempty prompt and valid timeout are required")
     if requested_model is not None and (not isinstance(requested_model, str)
                                         or not re.fullmatch(r'glm-[a-z0-9][a-z0-9.-]{0,64}', requested_model)):
         raise ValueError('invalid explicit GLM model')
+    if requested_effort is not None and requested_effort not in ('low', 'medium', 'high', 'xhigh'):
+        raise ValueError('invalid explicit reasoning effort')
     if not isinstance(evidence_paths, (list, tuple)) or len(evidence_paths) > 4:
         raise ValueError("bounded explicit evidence directories are required")
     if evidence_paths and not read_only:
@@ -136,8 +139,8 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
         cmd = ["claude", "--bare", "--restricted", "--tools", tools, "--allowedTools", tools,
                "--permission-mode", "acceptEdits", "--settings", str(path), "--strict-mcp-config",
                "--no-session-persistence", "--print"]
-        if file_tools_only:
-            cmd.extend(["--effort", "low"])
+        if requested_effort is not None or file_tools_only:
+            cmd.extend(["--effort", requested_effort or "low"])
         if capture_trace:
             cmd.extend(["--output-format", "stream-json", "--verbose"])
         if requested_model is not None:
@@ -149,6 +152,8 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
         def result(exit_code, timed_out, stdout, stderr):
             stdout, stderr = stdout.replace(key, "[REDACTED]"), stderr.replace(key, "[REDACTED]")
             values = _trace(stdout, workspace if private_workspace else None) if capture_trace else {'stdout':stdout}
+            if requested_effort is not None:
+                values['requested_effort'] = requested_effort
             if capture_trace and exit_code == 0 and not values['trace_completed']:
                 exit_code = 1
             return {'exit_code':exit_code, 'timed_out':timed_out, 'stderr':stderr, **values}

@@ -26,7 +26,12 @@ SCENARIOS = {
     'setup': Scenario(
         'Load the iBoard plugin', 'docs/guide/01-setup.md', 'README.md#工作台插件原型',
         'claude --plugin-dir /path/to/iboard', 'Claude Code exposes /agent-workbench:poteto-help',
-        'The plugin is loaded locally. pstack’s per-role model and reasoning-budget setup is not implemented.'),
+        'The plugin is loaded locally. Use setup-models to configure task model roles and the reasoning budget.'),
+    'setup-models': Scenario(
+        'Probe available models and approve per-role model settings', 'skills/setup-pstack/SKILL.md',
+        'skills/setup-pstack/SKILL.md', 'model_profiles probe',
+        'Confirmed model options, a budget-derived role table, and the exact task snapshot',
+        'The main iBoard task stages use the profile. Arena, Swarm and other workflows retain separate runner contracts.'),
     'help': Scenario(
         'Find a workflow for a task', HELP_SOURCE, 'skills/poteto-help/SKILL.md',
         'pstack_help', 'The pinned source, local guide, available entry point and its evidence requirements'),

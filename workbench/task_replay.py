@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sys
 
-from workbench import (autonomous_run, autopilot, autopilot_full, cli, delivery, local_gate,
+from workbench import (autonomous_run, autopilot, autopilot_full, cli, delivery, local_gate, model_profiles,
                        phase_replay, run_control, stack_rebase, start, workflow)
 from workbench.task_lock import task_lock
 
@@ -18,7 +18,8 @@ class ReplayError(ValueError):
 ERRORS = (*autonomous_run.ERRORS, local_gate.LocalGateError, stack_rebase.RebaseError)
 CONTRACT_FIELDS = ('id', 'kind', 'surface', 'source', 'original_source', 'implementer', 'started_at',
                    'limits', 'iterations', 'criteria', 'criterion_changes', 'impact_review',
-                   'required_ci_workflows', 'regression_test', 'publish_only', 'root_cause', 'coverage_swarm')
+                   'required_ci_workflows', 'regression_test', 'publish_only', 'root_cause', 'coverage_swarm',
+                   'model_profile')
 
 
 def _regular(path):
@@ -57,6 +58,7 @@ def _snapshot(task, data, stage, state, member):
             or state.get('input_digest') != stage['input_digest'] or not isinstance(state.get('plan'), dict)):
         raise ReplayError('replay requires a paused and previously verified delivery candidate')
     settings = stage['run_settings']
+    model_profiles.intake(task, data, stage)
     if (data['kind'] not in ('bug', 'feature') or any(data.get(key) for key in (
             'verification_target', 'adoption', 'phase_binding', 'feature_context', 'refactor_contract',
             'visual_baseline', 'ci_skip_policy', 'baseline_replay', 'local_gate_reverify'))
@@ -81,7 +83,10 @@ def _snapshot(task, data, stage, state, member):
 
 
 def _copy_inputs(original, child):
-    for name in ('issue.txt', 'input-base.txt', 'input-stage.json'):
+    names = ('issue.txt', 'input-base.txt', 'input-stage.json')
+    if cli.read(original).get('model_profile') is not None:
+        names += (model_profiles.FILE,)
+    for name in names:
         (child.parent / name).write_bytes(_regular(original.parent / name).read_bytes())
         (child.parent / name).chmod(0o600)
     inputs = original.parent / 'inputs'
@@ -147,6 +152,9 @@ def _prepare(root, original, old, old_state, stage, binding):
     state = {'schema': cli.SCHEMA, 'phase': 'reproduce' if data['kind'] == 'bug' else 'implement',
              'issue_digest': stage['request_digest'], 'input_digest': stage['input_digest'],
              'plan': old_state['plan'], 'baseline_replay': binding}
+    if data.get('model_profile') is not None:
+        model_profiles.intake(child, data, stage)
+        state['model_profile'] = data['model_profile']
     cli.write(child.with_name('autopilot.json'), state)
     cli.write(child, data)
     return child

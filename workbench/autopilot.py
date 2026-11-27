@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from model.claude_glm import execute as execute_model
 from model.glm_review import review as direct_review
 from model.glm_vision import describe as describe_screenshot
-from workbench import (bug_cause, cli, decisions, delivery, feature_context, prompt_profiles, publish,
+from workbench import (bug_cause, cli, decisions, delivery, feature_context, model_profiles, prompt_profiles, publish,
                        run_control, tdd, verify_openclaw, workflow)
 from workbench.task_lock import task_lock
 
@@ -523,6 +523,14 @@ def _model(task, phase, prompt, *, read_only, model, journal=None):
     if read_only:
         run_control.admit(task, AutopilotError)
     data = cli.read(task)
+    intake_path = task.with_name('input-stage.json')
+    intake = cli.read(intake_path) if intake_path.exists() else {}
+    profile = model_profiles.intake(task, data, intake)
+    route = model_profiles.for_stage(profile, phase, data['kind']) if profile is not None else None
+    if route is not None and model is not execute_model:
+        raise AutopilotError('the approved model profile requires the traced Claude Code adapter')
+    routed = {'requested_model': route['model'], 'requested_effort': route['effort'],
+              'capture_trace': True} if route is not None else {}
     guidance, provenance = prompt_profiles.guidance(phase, data.get('kind', '*'))
     if guidance:
         prompt = ('IBOARD WORKFLOW GUIDANCE\n' + guidance +
@@ -537,7 +545,7 @@ def _model(task, phase, prompt, *, read_only, model, journal=None):
         head = cli.sha(repo, 'HEAD')
         changed = subprocess.run(['git', '-C', str(repo), 'diff', '--name-only', '-z', base, head],
                                  capture_output=True, check=True).stdout.split(b'\0')
-        requires_source_inspection = ('impact_review' in data or
+        requires_source_inspection = (route is not None or 'impact_review' in data or
                                       'entrypoint is not a tracked workspace script;' in prompt)
         context = []
         if not requires_source_inspection:
@@ -583,7 +591,8 @@ def _model(task, phase, prompt, *, read_only, model, journal=None):
                 'CHANGED PATHS (untrusted JSON): ' + json.dumps(
                     [raw.decode('utf-8') for raw in changed if raw], ensure_ascii=False))
             result = model(repo, _bounded_review_prompt(inspection), timeout, read_only=True, file_tools_only=True,
-                           evidence_paths=[Path(task).parent], **({'capture_trace':True} if journal else {}))
+                           evidence_paths=[Path(task).parent],
+                           **({'capture_trace': True} if journal else {}) | routed)
             result = {**result, 'review_scope': 'read-only workspace inspection and supplied evidence'}
     else:
         options = {'read_only': read_only}
@@ -601,8 +610,17 @@ def _model(task, phase, prompt, *, read_only, model, journal=None):
                 options['capture_trace'] = True
             prompt = ('Use direct file tools only. Do not install dependencies, run tests or invoke a shell; '
                       'the coordinator runs checks inside Docker. Inspect only relevant files and return promptly.\n' + prompt)
+        options.update(routed)
         result = model(Path(data['repo']), prompt, timeout, **options)
     result = {**result, 'elapsed_seconds': round(time.monotonic() - started, 3), 'timeout_seconds': timeout}
+    if route is not None:
+        confirmed = (result.get('provider') == 'zhipu' and result.get('trace_completed') is True
+                     and str(result.get('model')).removesuffix('[1M]') == route['model']
+                     and result.get('requested_effort') == route['effort'])
+        result['model_route'] = {**route, 'profile_sha256': data['model_profile']['sha256'],
+                                 'cli_model_confirmed': confirmed}
+        if not confirmed and result.get('exit_code') == 0:
+            result.update(exit_code=1, profile_error='adapter did not confirm the approved role invocation')
     if provenance:
         result['workflow_guidance'] = provenance
     # The adapter redacts the key; do not persist environment variables.
@@ -822,6 +840,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         intake = cli.read(intake_path) if intake_path.exists() else {}
         cause_mode = bug_cause.require_intake(data, intake)
         coverage_swarm = swarm.intake(data, intake)
+        model_profiles.intake(task, data, intake)
         if cause_mode and intake.get('run_settings', {}).get('source_mode') != source_mode:
             raise AutopilotError('causal task source mode differs from its frozen intake')
         _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
@@ -837,6 +856,11 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     refactor_plan = None
     refactor_binding = data.get('refactor_contract')
     try:
+        model_reference = data.get('model_profile')
+        if state_exists and state.get('model_profile') != model_reference:
+            raise AutopilotError('model profile changed after workflow start')
+        if model_reference is not None:
+            state['model_profile'] = model_reference
         phase = phase_contract.read(data)
         if state_exists and state.get('refactor_contract') != refactor_binding:
             raise AutopilotError('refactoring contract changed after workflow start')

@@ -17,6 +17,7 @@ class PstackHelpTests(unittest.TestCase):
 
     def test_named_scenarios_point_to_distinct_verification_lanes(self):
         expected = {
+            'setup-models': 'model_profiles probe',
             'pr-status': 'pr_watch --mode check',
             'verify-pr': 'verify_pr',
             'review-pr': 'interrogate',
@@ -54,7 +55,7 @@ class PstackHelpTests(unittest.TestCase):
 
     def test_catalog_only_and_prompt_guidance_have_no_runnable_route(self):
         for name, expected_status in (
-            ('setup-pstack', 'catalog-only'),
+            ('bro', 'catalog-only'),
             ('principle-prove-it-works', 'guidance-only'),
         ):
             with self.subTest(name=name):

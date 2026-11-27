@@ -116,7 +116,8 @@ def retain_stage(task, run, phase, started_at, response):
     path.parent.mkdir(mode=0o700, exist_ok=True)
     path.mkdir(mode=0o700, exist_ok=True)
     receipt = {key:response[key] for key in ('provider', 'model', 'elapsed_seconds', 'exit_code',
-               'timed_out', 'trace', 'trace_completed', 'trace_truncated', 'review_scope') if key in response}
+               'timed_out', 'trace', 'trace_completed', 'trace_truncated', 'review_scope', 'model_route')
+               if key in response}
     stdout = response.get('stdout', '')
     cli.write(path / f'{uuid.uuid4().hex}.json', {
         'schema':cli.SCHEMA, 'run':run, 'phase':phase, 'started_at':started_at, 'finished_at':cli.now(),

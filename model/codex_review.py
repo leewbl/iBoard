@@ -44,15 +44,15 @@ def _result(stdout, status):
     return json.loads(answer)
 
 
-def review(prompt, model, timeout, *, images=()):
+def review(prompt, model, timeout, *, images=(), effort='low'):
     if (not re.fullmatch(r'gpt-[a-z0-9][a-z0-9.-]{0,64}', model) or not 1 <= timeout <= 300
-            or not prompt or len(prompt.encode('utf-8')) > 90_000):
+            or not prompt or len(prompt.encode('utf-8')) > 90_000 or effort not in ('low', 'medium', 'high', 'xhigh')):
         raise ReviewError('invalid OpenAI model, prompt size, or review timeout')
     with tempfile.TemporaryDirectory(prefix='iboard-decision-review-') as workspace:
         cmd = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral', '--skip-git-repo-check',
                '--sandbox', 'read-only', '-C', workspace, '-c', 'model_provider="openai"',
                '-c', 'approval_policy="never"', '-c', 'web_search="disabled"', '-c', 'project_doc_max_bytes=0',
-               '-c', 'model_reasoning_effort="low"', '-c', 'mcp_servers={}', '--model', model]
+               '-c', 'model_reasoning_effort=' + json.dumps(effort), '-c', 'mcp_servers={}', '--model', model]
         for flag in FEATURES:
             cmd.extend(('--disable', flag))
         if not isinstance(images, (tuple, list)) or len(images) > 4:
