@@ -47,6 +47,7 @@ const state = join(root, 'state');
 const config = join(state, 'openclaw.json');
 const log = join(root, 'gateway.log');
 let browser, child, closed, exit, launchError, passed = false;
+const deleteTrace = deleting ? { step: 'start-gateway' } : null;
 
 const emit = (phase, fields) => console.log(JSON.stringify({ phase, ...fields }));
 const refused = error => error.cause?.code === 'ECONNREFUSED';
@@ -161,6 +162,7 @@ async function prepareFixture() {
   await writeFile(config, JSON.stringify({
     plugins: { enabled: false },
     cron: { enabled: false },
+    ...(deleting ? { update: { checkOnStart: false } } : {}),
     gateway: {
       mode: 'local',
       auth: { mode: 'token', token },
@@ -234,7 +236,7 @@ async function prepareSessions(fixtures = [], archiveKey = null) {
   const program = `
     import { GatewayClient } from '/app/src/gateway/client.ts';
     const [url, input] = process.argv.slice(1);
-    const { seeds, query, archiveKey } = JSON.parse(input);
+    const { seeds, query, archiveKey, warmUpdateStatus } = JSON.parse(input);
     let connect, fail;
     const connected = new Promise((resolve, reject) => { connect = resolve; fail = reject; });
     const client = new GatewayClient({ url, token: process.env.OPENCLAW_GATEWAY_TOKEN,
@@ -258,6 +260,11 @@ async function prepareSessions(fixtures = [], archiveKey = null) {
         }, { timeoutMs: 45_000 });
       }
       await client.request('sessions.list', query, { timeoutMs: 75_000 });
+      if (warmUpdateStatus) {
+        // Admin Control UI connections also request update.status. Load its
+        // reconciliation dependencies before introducing the browser process.
+        await client.request('update.status', {}, { timeoutMs: 75_000 });
+      }
       console.log(JSON.stringify(fixtures));
     } finally {
       clearTimeout(timer);
@@ -268,7 +275,7 @@ async function prepareSessions(fixtures = [], archiveKey = null) {
     ...(deleting ? { archived: 'all' } : {}) };
   const proc = await promisify(execFile)(process.execPath, [
     '--max-old-space-size=256', ...nodeSource, '--input-type=module', '-e', program,
-    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey }),
+    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, warmUpdateStatus: deleting }),
   ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 140_000 });
   const seeded = JSON.parse(proc.stdout.trim().split('\n').at(-1));
   assert.deepEqual(seeded.map(({ key, label }) => [key, label]), fixtures);
@@ -365,7 +372,8 @@ async function openSessions() {
         (rename && frame.method === 'sessions.patch' && frame.params?.key === fixtureKey)
         || (deleting && ['sessions.delete', 'sessions.deleteMany'].includes(frame.method))
       )) {
-        const write = { method: frame.method, params: frame.params, socket, accepted: false };
+        const write = { method: frame.method, params: frame.params, socket, accepted: false,
+          requestId: frame.id, startedAt: performance.now() };
         pending.set(frame.id, write);
         writes.push(write);
       }
@@ -376,9 +384,13 @@ async function openSessions() {
       const request = pending.get(frame.id);
       pending.delete(frame.id);
       if (request && 'accepted' in request) {
+        request.received = true;
         request.accepted = frame.ok === true;
         request.deleted = frame.payload?.deleted === true;
         request.responseKey = frame.payload?.key;
+        if (typeof frame.error?.code === 'string' && /^[A-Z_]{1,64}$/u.test(frame.error.code)) {
+          request.errorCode = frame.error.code;
+        }
       }
       if (handshake && request?.method === 'sessions.list' && frame.ok === false &&
           frame.error?.code === 'UNAVAILABLE' &&
@@ -533,6 +545,7 @@ async function verifyRename(fixture, view) {
 }
 
 async function verifyDelete(target, survivor, canceledView) {
+  Object.assign(deleteTrace, { step: 'cancel-confirmation', view: canceledView });
   async function confirmation(view) {
     await rowFor(view, target.key).getByRole('checkbox').check();
     await view.page.locator('.data-table-bulk-bar').getByRole('button', { name: 'Delete', exact: true }).click();
@@ -560,9 +573,11 @@ async function verifyDelete(target, survivor, canceledView) {
   assert.equal(cancelBrowser.isConnected(), false, 'The cancellation browser still holds a connection');
   assert.equal(canceledView.writes.length, 0, 'Cancel sent a session deletion');
 
+  deleteTrace.step = 'read-after-cancel';
   await launchBrowser();
   assert.notEqual(browser, cancelBrowser);
   const view = await openSessions();
+  deleteTrace.view = view;
   assert.equal(child.pid, cancelGatewayPid);
   assert.notEqual(view.proof.socket, canceledView.proof.socket);
   const afterCancelCount = view.proof.sessions.length;
@@ -571,9 +586,11 @@ async function verifyDelete(target, survivor, canceledView) {
   await assertSession(view, survivor);
   view.assertConnectedPage();
 
+  deleteTrace.step = 'confirm-deletion';
   const dialog = await confirmation(view);
   await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+  deleteTrace.step = 'await-delete-response';
   const write = await observe(() => view.writes.find(entry => entry.accepted && entry.deleted),
     'Gateway did not accept the selected session deletion', 90_000);
   assert.equal(view.writes.length, 1, 'Deleting one selection issued more than one request');
@@ -582,11 +599,13 @@ async function verifyDelete(target, survivor, canceledView) {
   assert.equal(write.responseKey, target.key);
   assert.equal(write.params.expectedSessionId, target.sessionId);
   assert.equal(write.socket, view.proof.socket);
+  deleteTrace.step = 'read-after-deletion';
   await dialog.waitFor({ state: 'hidden' });
   await rowFor(view, target.key).waitFor({ state: 'hidden' });
   await rowFor(view, survivor.key).getByText(survivor.label, { exact: true }).waitFor({ state: 'visible' });
   view.assertConnectedPage();
 
+  deleteTrace.step = 'restart-readback';
   const fresh = await restartSessions();
   assert.notEqual(fresh.proof.socket, write.socket);
   assert.equal(fresh.proof.sessions.length, 1, 'Deletion did not persist for exactly one session');
@@ -598,6 +617,20 @@ async function verifyDelete(target, survivor, canceledView) {
     expectedSessionId: write.params.expectedSessionId, responseKey: write.responseKey, requestCount: view.writes.length,
     canceledWithoutWrite: true, afterCancelCount, cancelBrowserReplaced: true, cancelGatewayPid, deleted: write.deleted,
     freshContextReadback: true, targetAbsent: true, survivor: { key: survivor.key, sessionId: survivor.sessionId } } });
+}
+
+function logDeleteFailure(trace) {
+  const writes = (trace.view?.writes ?? []).map(write => ({
+    method: write.method,
+    id: typeof write.requestId === 'string' && /^[\w:-]{1,120}$/u.test(write.requestId) ? write.requestId : undefined,
+    state: !write.received ? 'no-response' : !write.accepted ? 'rejected' : write.deleted ? 'deleted' : 'not-deleted',
+    errorCode: write.errorCode, socketClosed: write.socket.isClosed(),
+    elapsedMs: Math.round(performance.now() - write.startedAt),
+  }));
+  process.stderr.write(JSON.stringify({
+    phase: 'delete-diagnostic', step: trace.step, gatewayExited: Boolean(exit),
+    authenticatedSocketClosed: trace.view?.proof.socket.isClosed(), writes,
+  }) + '\n');
 }
 
 async function verifySessionStatusFilter(active, archived, view) {
@@ -673,10 +706,12 @@ async function launchBrowser() {
 }
 
 async function drive() {
+  if (deleteTrace) deleteTrace.step = 'prepare-fixtures';
   const seeds = deleting ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
     : filtering ? [[fixtureKey, originalLabel], [archivedKey, archivedLabel]]
       : rename ? [[fixtureKey, originalLabel]] : [];
   const fixtures = seeds.length ? await prepareSessions(seeds, filtering ? archivedKey : null) : [];
+  if (deleteTrace) deleteTrace.step = 'authenticate-browser';
   await launchBrowser();
   const view = await openSessions();
   if (rename) {
@@ -697,6 +732,9 @@ try {
   emit('doctor', await launchGateway());
   await drive();
   passed = true;
+} catch (error) {
+  if (deleteTrace) logDeleteFailure(deleteTrace);
+  throw error;
 } finally {
   try {
     try { await recorder?.stop(); } finally { await browser?.close(); }
