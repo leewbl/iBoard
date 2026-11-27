@@ -444,6 +444,9 @@ def _pr_body(data, head):
         body += ('\n## Verification skill maintenance\n\n'
                  f'`{proof["skill"]}` passed {proof["runs"]} isolated checks, including doctor. '
                  f'Evidence SHA-256 `{proof["sha256"]}`.\n')
+        if 'source_review_sha256' in proof:
+            body += (f'Read-only source review completed for {proof["source_reviewed_features"]} features. '
+                     f'Source review SHA-256 `{proof["source_review_sha256"]}`.\n')
     if 'performance_contract' in data:
         from workbench import perf_issue
         measurement = perf_issue.require(data, head)

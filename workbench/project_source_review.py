@@ -88,7 +88,8 @@ def _text(value, limit):
 
 
 def _citations(values, evidence):
-    _require(isinstance(values, list) and 1 <= len(values) <= 6, "source review requires citations")
+    _require(isinstance(values, list) and 1 <= len(values) <= 16,
+             "source review requires between one and sixteen citations")
     labels = set()
     for cite in values:
         _require(isinstance(cite, dict) and set(cite) == {"id", "line", "quote"}, "invalid source review citation")
@@ -172,7 +173,8 @@ def _outcome(rows):
     return "reviewed" if statuses == {"aligned"} else "review-required"
 
 
-def review(*, repo, revision, skill, provider, model, out, parallelism=2, timeout=240, invoke=workers._invoke):
+def review(*, repo, revision, skill, provider, model, out, parallelism=2, timeout=240,
+           retry_report=None, retry_sha256=None, invoke=workers._invoke):
     repo = Path(repo).expanduser().resolve(strict=True)
     repo = Path(cli.git(repo, "rev-parse", "--show-toplevel", timeout=20)).resolve(strict=True)
     revision = cli.sha(repo, revision, timeout=20)
@@ -185,15 +187,28 @@ def review(*, repo, revision, skill, provider, model, out, parallelism=2, timeou
     workers._provider(engine)
     digest, lanes = _input(repo, revision, bundle)
     prompts = {name: _prompt(lane) for name, lane in lanes.items()}
+    _require(bool(retry_report) == bool(retry_sha256), "retry requires a source review report and its digest")
+    reused = {}
+    previous = None
+    if retry_report:
+        path = _file(retry_report)
+        original = audit(repo, revision, bundle, path, retry_sha256)
+        _require(original["engine"] == engine, "source review retry must use the same model")
+        reused = {name: row for name, row in original["rows"].items() if row["status"] != "blocked"}
+        _require(len(reused) < len(lanes), "source review has no blocked workers to retry")
+        previous = {"path": str(path), "sha256": retry_sha256, "reused": list(reused)}
     output.mkdir(mode=0o700, parents=True)
     calls = workers.Calls(invoke, timeout)
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
-        work = {name: pool.submit(_row, lane, prompts[name], engine, calls) for name, lane in lanes.items()}
-        rows = {name: future.result() for name, future in work.items()}
+        work = {name: pool.submit(_row, lane, prompts[name], engine, calls)
+                for name, lane in lanes.items() if name not in reused}
+        rows = {name: reused[name] if name in reused else work[name].result() for name in lanes}
     status = _outcome(rows)
     record = {"schema": cli.SCHEMA, "source": SOURCE, "pstack_commit": PSTACK_COMMIT, "revision": revision,
               "contract_sha256": digest, "engine": engine, "rows": rows, "recipe_groups": _reconcile(rows),
               "status": status, "inputs": lanes}
+    if previous:
+        record["retry_of"] = previous
     return {**_keep(output / "source-review.json", record), "status": status}
 
 
@@ -225,6 +240,16 @@ def audit(repo, revision, skill, path, sha256):
             _require(_validate(row["answer"], lane)["status"] == row["status"] and
                      workers._matches_engine(engine, row["observed_model"]), "source review answer changed")
     rows = record["rows"]
+    if "retry_of" in record:
+        previous = record["retry_of"]
+        _require(set(previous) == {"path", "sha256", "reused"} and previous["sha256"] != sha256,
+                 "invalid source review retry reference")
+        original = json.loads(_read(previous["path"], 2_800_000, previous["sha256"]))
+        reused = [name for name in lanes if original["rows"][name]["status"] != "blocked"]
+        _require(original["engine"] == engine and original["revision"] == revision and original["inputs"] == lanes
+                 and original["contract_sha256"] == digest and previous["reused"] == reused
+                 and len(reused) < len(lanes) and all(rows[name] == original["rows"][name] for name in reused),
+                 "source review retry did not retain the exact completed worker results")
     _require(_outcome(rows) == record["status"] and _reconcile(rows) == record["recipe_groups"],
              "source review reconciliation changed")
     return record
@@ -236,6 +261,8 @@ def main(argv=None):
         parser.add_argument("--" + key, required=True)
     parser.add_argument("--parallelism", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=240)
+    parser.add_argument("--retry-report")
+    parser.add_argument("--retry-sha256")
     try:
         result = review(**vars(parser.parse_args(argv)))
     except ERRORS as error:

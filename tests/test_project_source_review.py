@@ -47,10 +47,10 @@ class ProjectSourceReviewTests(unittest.TestCase):
         project_verify._write_bundle(self.skill, project_verify._artifacts(contract, helpers))
         self.drives = []
 
-    def review(self, invoke, name='review', parallelism=2):
+    def review(self, invoke, name='review', parallelism=2, **kwargs):
         return project_source_review.review(
             repo=self.repo, revision=self.revision, skill=self.skill, provider='glm', model='glm-fixture',
-            out=self.root / name, parallelism=parallelism, timeout=30, invoke=invoke,
+            out=self.root / name, parallelism=parallelism, timeout=30, invoke=invoke, **kwargs,
         )
 
     def audit(self, receipt):
@@ -123,7 +123,12 @@ class ProjectSourceReviewTests(unittest.TestCase):
             finished.append(name)
             if name == 'second':
                 second_finished.set()
-            return self.reply(context)
+            reply = self.reply(context)
+            if name == 'first':
+                citation = reply['answer']['citations'][0]
+                quote = citation['quote'].strip()
+                reply['answer']['citations'] = [{**citation, 'quote': quote[:length]} for length in range(5, 13)]
+            return reply
 
         receipt = self.review(invoke)
         self.assertEqual(finished, ['second', 'first'])
@@ -131,6 +136,7 @@ class ProjectSourceReviewTests(unittest.TestCase):
         reviewed = self.audit(receipt)
         self.assertEqual(reviewed['status'], 'reviewed')
         self.assertEqual(list(reviewed['rows']), ['first', 'second'])
+        self.assertEqual(len(reviewed['rows']['first']['answer']['citations']), 8)
         self.assertEqual(cli.digest(receipt['path']), receipt['sha256'])
         maintained = self.maintain(receipt)
         self.assertEqual(maintained['outcome'], 'clean')
@@ -181,6 +187,35 @@ class ProjectSourceReviewTests(unittest.TestCase):
         self.assertEqual(list(reviewed['rows']), ['first', 'second'])
         self.assertEqual(len(reviewed['recipe_groups']), 1)
         self.assertEqual(reviewed['recipe_groups'][0]['features'], ['first', 'second'])
+
+    def test_retry_only_dispatches_blocked_workers_and_binds_original_report(self):
+        def incomplete(engine, prompt, seconds):
+            context = self.context(prompt)
+            value = self.reply(context)
+            if context['feature'] == 'second':
+                value['answer']['citations'][0]['quote'] = 'wrong quote'
+            return value
+
+        original = self.review(incomplete)
+        old = self.audit(original)
+        self.assertEqual(old['rows']['second']['status'], 'blocked')
+        dispatched = []
+
+        def complete(engine, prompt, seconds):
+            context = self.context(prompt)
+            dispatched.append(context['feature'])
+            return self.reply(context)
+
+        receipt = self.review(complete, 'retry', retry_report=original['path'], retry_sha256=original['sha256'])
+        retried = self.audit(receipt)
+        self.assertEqual(dispatched, ['second'])
+        self.assertEqual(retried['status'], 'reviewed')
+        self.assertEqual(retried['retry_of']['reused'], ['first'])
+        self.assertEqual(retried['rows']['first'], old['rows']['first'])
+        original_path = Path(original['path'])
+        original_path.write_bytes(original_path.read_bytes() + b'\n')
+        with self.assertRaisesRegex(ValueError, 'evidence digest changed'):
+            self.audit(receipt)
 
     def test_refuses_symlinked_feature_documents_before_sending_source(self):
         features = self.skill / 'features'

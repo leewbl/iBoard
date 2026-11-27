@@ -27,6 +27,8 @@ python3 -m workbench.project_source_review --repo "$TARGET_REPO" --revision "$RE
 
 The coordinator runs the declared offline journeys and uses the source evidence to decide whether the map can be called clean. Pass `--source-review "$SOURCE_EVIDENCE/source-review.json" --source-review-sha256 "$SOURCE_SHA256"` to `maintain`. Keep the original report available. The runner rechecks the exact document bytes, source quotes and feature coverage. Drift, uncertainty, or an incomplete source wave withholds a clean result even when the runtime checks pass. The plain invocation below runs the mechanical source and runtime checks without model calls.
 
+To retry workers whose replies were blocked, pass the earlier report and digest with `--retry-report` and `--retry-sha256`, and choose a new output directory. The retry pins the same source, map and model, retains all completed findings, and calls the model only for blocked workers. Keep both receipts for audit.
+
 ```sh
 python3 -m workbench.project_verify maintain --repo "$TARGET_REPO" --revision "$REVISION" \
   --skill "$SKILL_DIR" --image "$LOCAL_IMAGE" --out "$EVIDENCE_DIR"

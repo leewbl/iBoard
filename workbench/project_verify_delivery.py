@@ -168,6 +168,7 @@ def require(data, head):
         _require((report["schema"], report["mode"], report["outcome"], report["commit"])
                  == (cli.SCHEMA, "maintain", "changed", base), "only a proven maintenance correction can ship")
         repo = Path(data["repo"]).resolve(strict=True)
+        source_proof = {}
         with TemporaryDirectory(prefix="iboard-verify-proof-") as scratch:
             _, candidate, contract, changes, repaired_modes = _snapshots(repo, base, head, root, Path(scratch))
             _require(report["changes"] == changes and report["replaces_unsafe_entries"] == repaired_modes,
@@ -186,10 +187,12 @@ def require(data, head):
                         repo, base, candidate, source_review["path"], source_review["sha256"])
                     _require(source_result["status"] == source_review["status"] == "reviewed",
                              "source review did not clear the committed maintenance candidate")
+                    source_proof = {"source_review_sha256": source_review["sha256"],
+                                    "source_reviewed_features": len(source_result["rows"])}
                 except project_source_review.ERRORS as error:
                     raise ValueError(f"source review evidence: {error}") from error
             runs = _checked_runs(report_path.parent, report, contract, base, candidate)
-        return {"sha256": ref["sha256"], "skill": root, "runs": runs}
+        return {"sha256": ref["sha256"], "skill": root, "runs": runs, **source_proof}
     except ERRORS as error:
         raise cli.WorkbenchError(f"verification maintenance evidence: {error}") from error
 

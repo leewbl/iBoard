@@ -252,7 +252,9 @@ class ProjectVerificationDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(receipt['status'], 'passed')
         data = self.proof_data(receipt)
-        project_verify_delivery.require(data, self.head)
+        checked = project_verify_delivery.require(data, self.head)
+        self.assertEqual(checked['source_review_sha256'], source_proof['sha256'])
+        self.assertEqual(checked['source_reviewed_features'], 2)
         Path(source_proof['path']).write_text('{}')
         with self.assertRaisesRegex(cli.WorkbenchError, 'source review evidence'):
             project_verify_delivery.require(data, self.head)
