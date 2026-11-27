@@ -39,7 +39,7 @@ On cold startup, the browser allows up to 65 seconds for each sign-in control wi
 
 ### Session rename
 
-Run `control-ui-session-rename` with the same arguments to check a write. The Gateway client seeds one disposable session, then Chromium uses the Sessions row menu to cancel a rename and save a second edit. Cancel must send no mutation. Save must send one accepted `sessions.patch` with the expected session ID. The helper closes Chromium, stops the first Gateway gracefully, confirms its port closed, then starts a new Gateway with the same disposable state. A fresh Chromium process authenticates and reads the updated label for the same session ID from `sessions.list` before capturing the page. The report records both Gateway PIDs and the first exit. Allow up to 480 seconds for each execution, within the task's remaining budget.
+Run `control-ui-session-rename` with the same arguments to check a write. The Gateway client seeds one disposable session. Chromium right-clicks the row to cancel a rename, then uses the row's Open session menu button to save a second edit. Each menu action has a 65-second bound within the journey deadline. Cancel must send no mutation. Save must send one accepted `sessions.patch` with the expected session ID. The helper closes Chromium, stops the first Gateway gracefully, confirms its port closed, then starts a new Gateway with the same disposable state. A fresh Chromium process authenticates and reads the updated label for the same session ID from `sessions.list` before capturing the page. The report records both menu entries, both Gateway PIDs and the first exit. Allow up to 480 seconds for each execution, within the task's remaining budget.
 
 ### Selected session deletion
 

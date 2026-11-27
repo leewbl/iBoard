@@ -488,16 +488,20 @@ async function restartSessions() {
 }
 
 async function verifyRename(fixture, view) {
-  async function renameDialog(current, row) {
-    await row.click({ button: 'right' });
-    await current.page.getByRole('menuitem', { name: 'Rename…', exact: true }).click();
-    const dialog = current.page.getByRole('dialog', { name: 'Rename session', exact: true });
+  const row = rowFor(view, fixture.key);
+  // Cold startup can stall Chromium while it scrolls a settled row into view.
+  const menuTimeout = 65_000;
+  const menuEntries = [];
+  async function renameDialog(entry, openMenu) {
+    await openMenu();
+    await view.page.getByRole('menuitem', { name: 'Rename…', exact: true }).click({ timeout: menuTimeout });
+    const dialog = view.page.getByRole('dialog', { name: 'Rename session', exact: true });
     assert.equal(await dialog.getByRole('textbox').inputValue(), originalLabel);
+    menuEntries.push(entry);
     return dialog;
   }
-  const row = rowFor(view, fixture.key);
   await assertSession(view, fixture);
-  let dialog = await renameDialog(view, row);
+  let dialog = await renameDialog('context-menu', () => row.click({ button: 'right', timeout: menuTimeout }));
   await dialog.getByRole('textbox').fill('iBoard canceled fixture edit');
   await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -506,7 +510,8 @@ async function verifyRename(fixture, view) {
   assert.equal(view.writes.length, 0, 'Cancel sent a session mutation');
   await recorder?.checkpoint();
 
-  dialog = await renameDialog(view, row);
+  const menuButton = row.getByRole('button', { name: `Open session menu: ${fixture.key}`, exact: true });
+  dialog = await renameDialog('row-button', () => menuButton.click({ timeout: menuTimeout }));
   await dialog.getByRole('textbox').fill(finalLabel);
   await recorder?.checkpoint();
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
@@ -523,7 +528,8 @@ async function verifyRename(fixture, view) {
   assert.notEqual(fresh.proof.socket, write.socket);
   await assertSession(fresh, fixture, finalLabel);
   await capture(fresh, { mutation: { method: 'sessions.patch', key: fixture.key, sessionId: fixture.sessionId,
-    originalLabel, finalLabel, canceledWithoutWrite: true, accepted: true, freshContextReadback: true } });
+    expectedSessionId: write.params.expectedSessionId, requestCount: view.writes.length,
+    originalLabel, finalLabel, menuEntries, canceledWithoutWrite: true, accepted: true, freshContextReadback: true } });
 }
 
 async function verifyDelete(target, survivor, canceledView) {

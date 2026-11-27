@@ -131,7 +131,7 @@
         "session-rename"
       ],
       "reach": "Open the Sessions row menu and choose Rename.",
-      "drive": "Cancel one edit, save a second edit, and restart the Gateway with the same temporary state.",
+      "drive": "Right-click the fixture row and cancel one edit. Open the same menu from the row button, save a second edit, and restart the Gateway with the same temporary state.",
       "observe": "Cancel sends no mutation. The one accepted rename matches the original session ID. A fresh authenticated browser sees the updated label after restart.",
       "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. Only disposable Gateway state and test credentials are used.",
       "source": [
@@ -146,6 +146,14 @@
         {
           "path": "ui/src/lib/session-rename.ts",
           "contains": "function resolveSessionRenamePatch"
+        },
+        {
+          "path": "ui/src/pages/sessions/session-row.tsx",
+          "contains": "onContextMenu={openMenuFromEvent}"
+        },
+        {
+          "path": "ui/src/pages/sessions/session-row.tsx",
+          "contains": "chat.sidebar.openSessionMenu"
         }
       ]
     },

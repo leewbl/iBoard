@@ -26,7 +26,7 @@ class GatewayGateTests(unittest.TestCase):
     def reports(self, *, same_workspace=False, fail=False, report_head=None, skills_image=None,
                 skills_inspect_image=None, config_image=None, rename=False, delete=False, status_filter=False,
                 browser_receipt=True, same_container=False, restart=None, deletion=None, list_scope='all',
-                filter_fault=None):
+                filter_fault=None, rename_fields=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -56,7 +56,7 @@ class GatewayGateTests(unittest.TestCase):
                     rename_evidence = journey == verify_openclaw.SESSION_RENAME
                     stdout = self.browser_stdout(journey, fresh=browser_receipt if rename_evidence else True,
                                                  restart=restart if rename_evidence else None, deletion=deletion,
-                                                 list_scope=list_scope, filter_fault=filter_fault)
+                                                 list_scope=list_scope, filter_fault=filter_fault, rename_fields=rename_fields)
                     extra.update(stdout=stdout, screenshot_path=str(png.resolve()), screenshot_sha256=cli.digest(png))
                 cli.write(path, {
                     'journey': journey, 'actor': actor, 'commit': report_head or self.head,
@@ -78,7 +78,8 @@ class GatewayGateTests(unittest.TestCase):
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
         })
 
-    def browser_stdout(self, journey, *, fresh=True, restart=None, deletion=None, list_scope='all', filter_fault=None):
+    def browser_stdout(self, journey, *, fresh=True, restart=None, deletion=None, list_scope='all', filter_fault=None,
+                       rename_fields=None):
         writing = journey in verify_openclaw.SESSION_WRITES
         healthy = {'ready': True, 'live': True, 'origin': 'http://127.0.0.1:18789'}
         clean_exit = {'code': 0, 'signal': None}
@@ -94,7 +95,10 @@ class GatewayGateTests(unittest.TestCase):
             events[1]['mutation'] = {'method': 'sessions.patch', 'key': 'agent:main:iboard-browser-verification',
                                      'sessionId': 'fixture-session-id', 'originalLabel': 'iBoard verification fixture',
                                      'finalLabel': 'iBoard verification persisted', 'canceledWithoutWrite': True,
-                                     'accepted': True, 'freshContextReadback': fresh}
+                                     'accepted': True, 'freshContextReadback': fresh,
+                                     'menuEntries': ['context-menu', 'row-button'],
+                                     'expectedSessionId': 'fixture-session-id', 'requestCount': 1,
+                                     **(rename_fields or {})}
         if journey == verify_openclaw.SESSION_DELETE:
             events[1]['readback']['archived'] = list_scope
             events[1]['mutation'] = {
@@ -234,6 +238,9 @@ class GatewayGateTests(unittest.TestCase):
                 {'restart': False}, {'restart': {'portClosed': False}},
                 {'restart': {'gatewayPid': 19}}, {'restart': {'gatewayPid': 73}},
                 {'restart': {'previousExit': {'code': None, 'signal': 'SIGKILL'}}},
+                {'rename_fields': {'menuEntries': ['context-menu', 'context-menu']}},
+                {'rename_fields': {'menuEntries': None}}, {'rename_fields': {'requestCount': 2}},
+                {'rename_fields': {'requestCount': True}}, {'rename_fields': {'expectedSessionId': 'different-session'}},
             )
         ))
         for options in cases:

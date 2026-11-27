@@ -144,6 +144,9 @@ def _browser_evidence(report, screenshot):
         return (readback['count'] > 0 and mutation.get('method') == 'sessions.patch'
                 and mutation.get('originalLabel') == 'iBoard verification fixture'
                 and mutation.get('finalLabel') == 'iBoard verification persisted'
+                and mutation.get('menuEntries') == ['context-menu', 'row-button']
+                and mutation.get('expectedSessionId') == mutation['sessionId']
+                and type(mutation.get('requestCount')) is int and mutation['requestCount'] == 1
                 and all(mutation.get(key) is True for key in ('canceledWithoutWrite', 'accepted', 'freshContextReadback')))
     except (OSError, KeyError, ValueError, TypeError, AttributeError, cli.WorkbenchError):
         return False
