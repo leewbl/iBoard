@@ -73,6 +73,11 @@ SCENARIOS = {
         'skills/correct/SKILL.md', 'correct freeze',
         'Distinct historical misses, repaired controls, and the same guard passing on current code',
         'Supply exact bad/fix commits and a reviewed probe. The harness replays the selected source in offline Docker.'),
+    'figure-it-out': Scenario(
+        'Design and execute a custom playbook when no narrower workflow fits', 'skills/figure-it-out/SKILL.md',
+        'skills/figure-it-out/SKILL.md', 'figure_it_out freeze',
+        'A frozen product predicate, per-hypothesis outcomes, independent reviews and a final verified patch chain',
+        'The custom runner sequences the approved units and exports local evidence for the normal delivery gates.'),
     'test-first': Scenario(
         'Use the same regression test before and after a fix', 'skills/tdd/SKILL.md',
         'skills/tdd/SKILL.md', 'start --kind bug', 'Two baseline failures at the expected assertion and two isolated candidate passes',
