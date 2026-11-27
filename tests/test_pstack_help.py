@@ -31,6 +31,8 @@ class PstackHelpTests(unittest.TestCase):
             'pr-status': 'pr_watch --mode check',
             'verify-pr': 'verify_pr',
             'verify-existing-fix': 'verify_existing_fix',
+            'setup-benny': 'benny freeze',
+            'benny-reproduce': 'benny verify',
             'review-pr': 'interrogate',
             'ship-stack': 'stack_ship plan',
             'inspect-task': 'pickup',

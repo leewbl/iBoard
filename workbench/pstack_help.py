@@ -203,6 +203,17 @@ SCENARIOS = {
         'skills/reproduce-and-fix-issues/SKILL.md', 'verify_existing_fix',
         'Paired user-path evidence, two independent observations per side, and a GitHub artifact recheck',
         'This route reads the selected artifact and runs offline. It does not edit or publish a PR.'),
+    'setup-benny': Scenario(
+        'Check a configured workspace and read an authorized source report',
+        'automations/benny/skills/setup-benny/SKILL.md', 'skills/setup-benny/SKILL.md', 'benny freeze',
+        'A source receipt with its root permalink and validated workspace and verdict',
+        'Uses a private operator-supplied Slack credential. Live subscriptions and tracker actions are separate.'),
+    'benny-reproduce': Scenario(
+        'Recheck the Slack report and verify the existing fix',
+        'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',
+        'skills/reproduce-and-fix-issues/SKILL.md', 'benny verify',
+        'A source-bound route and independently repeated before/after runtime evidence',
+        'Existing fixes are read-only. New edits and publication are not dispatched here.'),
     'open-verified-pr': Scenario(
         'Open an independently verified task as a ready GitHub PR',
         'skills/poteto-mode/playbooks/opening-a-pr.md', 'skills/opening-a-pr/SKILL.md', 'pr_brief prepare',
