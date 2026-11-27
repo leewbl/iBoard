@@ -468,6 +468,8 @@ def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manife
             report["reason"] = "the source entrypoint inventory needs map corrections"
         elif not reviewed:
             report["reason"] = "source review flagged drift, uncertainty, or incomplete coverage"
+            if not proved:
+                report["reason"] += ". One or more journeys lack passing execution or cleanup evidence."
         else:
             report["reason"] = "one or more journeys lack passing execution or cleanup evidence"
     except ERRORS as error:

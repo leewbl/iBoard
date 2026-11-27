@@ -82,7 +82,7 @@ class ProjectSourceReviewTests(unittest.TestCase):
                                                     'expect': f'Expect {name} ready.'}},
                 'observed_model': 'glm-fixture'}
 
-    def maintain(self, receipt, name='maintenance'):
+    def maintain(self, receipt, name='maintenance', failed=None):
         def attest(repo, image, timeout, *, commit):
             self.assertEqual((repo, image, commit), (self.repo, 'local-image', self.revision))
             return IMAGE
@@ -91,7 +91,8 @@ class ProjectSourceReviewTests(unittest.TestCase):
             check = Path(command[-1]).stem
             self.drives.append(check)
             return {'image': image, 'command': command, 'workspace_read_only': True, 'container_created': True,
-                    'cleanup_confirmed': True, 'exit_code': 0, 'stdout': f'JOURNEY_{check.upper()}_PASS\n'}
+                    'cleanup_confirmed': True, 'exit_code': int(check == failed),
+                    'stdout': f'JOURNEY_{check.upper()}_PASS\n'}
 
         return project_verify.run(
             'maintain', repo=self.repo, revision=self.revision, image='local-image', skill=self.skill,
@@ -175,6 +176,16 @@ class ProjectSourceReviewTests(unittest.TestCase):
                 self.assertEqual(receipt['status'], 'blocked')
                 report = self.audit(receipt)
                 self.assertEqual([row['status'] for row in report['rows'].values()], ['blocked', 'blocked'])
+
+    def test_reports_source_and_runtime_failures_together(self):
+        def invoke(engine, prompt, seconds):
+            return self.reply(self.context(prompt), status='uncertain')
+
+        report = self.maintain(self.review(invoke), failed='second')
+        self.assertEqual(report['outcome'], 'blocked')
+        self.assertEqual(report['features']['second'], 'behavior-unverified')
+        self.assertIn('source review flagged', report['reason'])
+        self.assertIn('lack passing execution', report['reason'])
 
     def test_reconciles_duplicate_recipes_without_dropping_feature_reviews(self):
         def invoke(engine, prompt, seconds):
