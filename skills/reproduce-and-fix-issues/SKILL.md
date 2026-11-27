@@ -48,4 +48,4 @@ A result is `confirmed` only when both probes see the fault twice on the baselin
 
 The output contains the frozen report and helper digests, raw baseline and candidate receipts, cleanup status, optional PNGs, and the final artifact recheck. Keep private evidence outside the target checkout. See the [OpenClaw CLI example](examples/openclaw-202294/README.md).
 
-Benny records attachment IDs but does not download media. Ambiguous ownership outside the supported phrases needs separate review. Automatic classification, source-thread replies, recordings and handoff of a new fix to the delivery gate remain separate work.
+The source receipt includes the thread attachment IDs. [Triage](../triage-issue-reports/SKILL.md#attachments) can collect and inspect those files. Ambiguous ownership outside the supported phrases needs separate review. Source-thread replies, recordings of the verification run and handoff of a new fix to the delivery gate remain separate work.

@@ -38,10 +38,16 @@ class Fixture:
         self.pages = [[self.root]]
         self.rate_limit = False
         self.repeat_cursor = False
+        self.files = {}
         token_file = root / 'fixture-key'
         token_file.write_text(TOKEN)
         token_file.chmod(0o600)
         self.token_file = token_file
+
+    def attach(self, file_id, data, media, **fields):
+        item = {'id': file_id, 'mode': 'hosted', 'is_external': False, 'size': len(data), 'mimetype': media,
+                'url_private_download': f'https://files.slack.com/files-pri/{WORKSPACE}-{file_id}/download/evidence', **fields}
+        self.files[file_id] = (item, data)
 
     def __enter__(self):
         fixture = self
@@ -58,8 +64,28 @@ class Fixture:
                 if self.headers.get('Authorization') != 'Bearer ' + TOKEN:
                     self.send_error(401)
                     return
+                if url.path.startswith(f'/files-pri/{WORKSPACE}-') and self.command == 'GET':
+                    file_id = url.path.split('/')[2].removeprefix(WORKSPACE + '-')
+                    if file_id not in fixture.files:
+                        self.send_error(404)
+                        return
+                    item, content = fixture.files[file_id]
+                    if item.get('redirect'):
+                        self.send_response(302)
+                        self.send_header('Location', item['redirect'])
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header('Content-Type', item['mimetype'])
+                    self.send_header('Content-Length', str(len(content)))
+                    self.end_headers()
+                    self.wfile.write(content)
+                    return
                 if endpoint == 'auth.test' and self.command == 'POST':
                     result = {'team_id': fixture.team}
+                elif endpoint == 'files.info' and self.command == 'GET':
+                    item = fixture.files.get(query.get('file'))
+                    result = {'file': item[0]} if item else {'ok': False, 'error': 'file_not_found'}
                 elif endpoint == 'chat.getPermalink' and self.command == 'GET':
                     if query != {'conversation': CHANNEL, 'message_ts': ROOT}:
                         self.send_error(400)
@@ -95,7 +121,7 @@ class Fixture:
         self.worker.start()
 
         def connect(host, *, timeout):
-            assert host == 'slack.com'
+            assert host in ('slack.com', 'files.slack.com')
             return HTTPConnection('127.0.0.1', self.server.server_address[1], timeout=timeout)
 
         self.slack = Slack(self.token_file, connection=connect)

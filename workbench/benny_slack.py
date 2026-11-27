@@ -7,12 +7,13 @@ from pathlib import Path
 import re
 import stat
 import time
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import unquote, urlencode, urlsplit
 
 
 CHANNEL = re.compile(r'[CGD][A-Z0-9]{1,31}')
 TEAM = re.compile(r'T[A-Z0-9]{1,31}')
 USER = re.compile(r'[UW][A-Z0-9]{1,31}')
+FILE = re.compile(r'F[A-Z0-9]{1,31}')
 STAMP = re.compile(r'[1-9][0-9]{0,12}\.[0-9]{6}')
 TOKEN = re.compile(r'xox[abp]-[A-Za-z0-9-]{8,300}')
 MAX_PAGE = 2_000_000
@@ -42,23 +43,19 @@ def _token(path):
 
 
 class Slack:
-    METHODS = {'auth.test': 'POST', 'conversations.replies': 'GET', 'chat.getPermalink': 'GET'}
+    METHODS = {'auth.test': 'POST', 'conversations.replies': 'GET', 'chat.getPermalink': 'GET', 'files.info': 'GET'}
 
     def __init__(self, token_file, *, connection=http.client.HTTPSConnection):
         self.token = _token(token_file)
         self.connection = connection
 
-    def call(self, endpoint, deadline, **query):
-        method = self.METHODS.get(endpoint)
-        if not method:
-            raise SlackError('unrecognized Slack read method')
+    def _request(self, host, method, path, deadline, limit, endpoint):
         left = deadline - time.monotonic()
         if left <= 0:
             raise SlackError('Benny report read exceeded its deadline')
-        client = self.connection('slack.com', timeout=min(left, 12))
-        suffix = '?' + urlencode(query) if query else ''
+        client = self.connection(host, timeout=min(left, 12))
         try:
-            client.request(method, '/api/' + endpoint + suffix, headers={'Authorization': 'Bearer ' + self.token})
+            client.request(method, path, headers={'Authorization': 'Bearer ' + self.token, 'Accept-Encoding': 'identity'})
             response = client.getresponse()
             if response.status == 429:
                 retry = response.getheader('Retry-After', '60')
@@ -66,13 +63,26 @@ class Slack:
                 raise RetryAfter(max(1, delay))
             if response.status != 200:
                 raise SlackError(f'Slack {endpoint} returned HTTP {response.status}')
-            raw = response.read(MAX_PAGE + 1)
+            advertised = response.getheader('Content-Length')
+            if advertised and (not re.fullmatch(r'[0-9]{1,10}', advertised) or int(advertised) > limit):
+                raise SlackError(f'Slack {endpoint} exceeded the byte limit')
+            raw = response.read(limit + 1)
+            if len(raw) > limit:
+                raise SlackError(f'Slack {endpoint} exceeded the byte limit')
+            return raw, response.getheader('Content-Type', '').split(';', 1)[0].strip().lower()
         except (OSError, http.client.HTTPException) as error:
             raise SlackError(f'Slack {endpoint} could not be read') from error
         finally:
             client.close()
+
+    def call(self, endpoint, deadline, **query):
+        method = self.METHODS.get(endpoint)
+        if not method:
+            raise SlackError('unrecognized Slack read method')
+        suffix = '?' + urlencode(query) if query else ''
+        raw, _ = self._request('slack.com', method, '/api/' + endpoint + suffix, deadline, MAX_PAGE, endpoint)
         try:
-            result = json.loads(raw) if len(raw) <= MAX_PAGE else None
+            result = json.loads(raw)
         except (UnicodeError, ValueError):
             result = None
         if not isinstance(result, dict) or result.get('ok') is not True:
@@ -80,6 +90,33 @@ class Slack:
             detail = code if isinstance(code, str) and re.fullmatch(r'[a-z_]{1,80}', code) else 'invalid_response'
             raise SlackError(f'Slack {endpoint} failed ({detail})')
         return result
+
+    def file_info(self, file_id, deadline):
+        if not isinstance(file_id, str) or not FILE.fullmatch(file_id):
+            raise SlackError('invalid Slack file identity')
+        item = self.call('files.info', deadline, file=file_id).get('file')
+        if (not isinstance(item, dict) or item.get('id') != file_id or item.get('mode') != 'hosted'
+                or item.get('is_external') is not False or not isinstance(item.get('mimetype'), str)
+                or type(item.get('size')) is not int or item['size'] < 1):
+            raise SlackError('Slack did not confirm a hosted attachment with the requested identity')
+        return item
+
+    def download(self, item, team, deadline, limit):
+        link = item.get('url_private_download') or item.get('url_private')
+        url = urlsplit(link) if isinstance(link, str) else None
+        prefix = f'/files-pri/{team}-{item["id"]}/'
+        if (url is None or url.scheme != 'https' or url.netloc != 'files.slack.com' or url.fragment
+                or not url.path.startswith(prefix) or not url.path.isascii() or not url.query.isascii()
+                or any(part in ('', '.', '..') for part in unquote(url.path[len(prefix):]).split('/'))):
+            raise SlackError('Slack attachment URL did not match the configured workspace and file')
+        size = item['size']
+        if not 1 <= size <= limit:
+            raise SlackError('Slack attachment exceeded the permitted byte limit')
+        path = url.path + ('?' + url.query if url.query else '')
+        data, media = self._request('files.slack.com', 'GET', path, deadline, size, 'attachment download')
+        if len(data) != size or media not in (item['mimetype'].lower(), 'application/octet-stream'):
+            raise SlackError('Slack attachment length or media type changed')
+        return data
 
     def check_team(self, team, deadline):
         info = self.call('auth.test', deadline)

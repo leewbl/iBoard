@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock
 
 from test_benny import CHANNEL, Fixture, LINK, ROOT, RULES, TRIAGE, reply
+from test_runner import tiny_png
 from workbench import benny, benny_triage, cli
 
 
@@ -160,3 +161,43 @@ class BennyTriageTests(unittest.TestCase):
         result = self.triage('provider-failure', model=provider)
         self.assertEqual(result['status'], 'blocked')
         provider.assert_called_once()
+
+    def test_retained_log_can_support_observed_behavior_but_picture_notes_stay_separate(self):
+        self.fixture.root['files'] = [{'id': 'F123LOG'}, {'id': 'F123PHOTO'}]
+        self.fixture.attach('F123LOG', (OBSERVED + '\n').encode(), 'text/plain')
+        self.fixture.attach('F123PHOTO', tiny_png(), 'image/png')
+        self.reply['facts']['observed'] = {'id': 'A1.1', 'quote': OBSERVED}
+        self.reply['media'] = [{'id': 'V2', 'quote': 'One red pixel is visible.'}]
+        result = self.triage('attachment', inspect_media=True, vision=lambda *_: 'One red pixel is visible.')
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual(result['recommendation']['action'], 'draft-new-issue')
+        packet = cli.read(self.root/'attachment/evidence.json')
+        self.assertEqual(packet['unread_media_count'], 0)
+        self.assertEqual(packet['evidence']['V2']['scope'], 'screenshot')
+        attached = result['recommendation']['attachment_refs'][1]
+        self.assertEqual(attached['path'], 'attachments/F123PHOTO.png')
+        self.assertEqual(attached['sha256'], cli.digest(self.root/'attachment'/attached['path']))
+        self.reply['facts']['observed'] = dict(self.reply['media'][0])
+        self.assertEqual(self.triage('invalid-media-fact', inspect_media=True,
+                                    vision=lambda *_: 'One red pixel is visible.')['status'], 'blocked')
+
+    def test_changed_attachment_invalidates_local_proposal(self):
+        self.fixture.root['files'] = [{'id': 'F123LOG'}]
+        self.fixture.attach('F123LOG', (OBSERVED + '\n').encode(), 'text/plain')
+
+        def model(*args, **kwargs):
+            (self.root/'tampered/attachments/F123LOG.txt').write_text('different evidence')
+            return self.model(*args, **kwargs)
+
+        result = self.triage('tampered', read_attachments=True, model=model)
+        self.assertEqual(result['status'], 'source-changed')
+        self.assertIsNone(result['proposal'])
+
+    def test_vision_provider_failure_keeps_evidence_without_calling_triage_model(self):
+        self.fixture.root['files'] = [{'id': 'F123PHOTO'}]
+        self.fixture.attach('F123PHOTO', tiny_png(), 'image/png')
+        result = self.triage('media-quota', inspect_media=True, vision=Mock(side_effect=RuntimeError('provider quota')))
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('media model failed', result['reason'])
+        self.assertTrue((self.root/'media-quota/attachments/F123PHOTO.png').is_file())
+        self.model.assert_not_called()

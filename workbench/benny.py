@@ -9,12 +9,11 @@ import time
 from urllib.parse import urlsplit
 
 from workbench import cli, delivery, pr_watch, project_verify, verify_existing_fix
-from workbench.benny_slack import CHANNEL, MAX_MESSAGES, STAMP, TEAM, USER, RetryAfter, Slack, SlackError
+from workbench.benny_slack import CHANNEL, FILE, MAX_MESSAGES, STAMP, TEAM, USER, RetryAfter, Slack, SlackError
 
 
 DEFAULT_MARKERS = {'bug': '[benny:bug]', 'performance': '[benny:performance]', 'other': '[benny:other]'}
 FIX_LINK = re.compile(r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:pull/[1-9][0-9]*|commit/[0-9a-f]{40})(?![A-Za-z0-9_/?#-])')
-FILE = re.compile(r'F[A-Z0-9]{1,31}')
 FIX_LABEL = re.compile(r"^(?:\[benny:fix\]|fix\s*:|(?:the |a )?fix (?:is here|is in|is at)|fixed (?:in|by)|修复(?:在|见|提交))", re.I)
 CLAIM = re.compile(
     r"^(?:\[benny:claim\]|i(?:['’]ll| will| am|['’]m) (?:fix|fixing|patch|patching|implement|implementing|take (?:this|the fix)|working on (?:this fix|the fix)|open (?:a|the) PR)\b"
