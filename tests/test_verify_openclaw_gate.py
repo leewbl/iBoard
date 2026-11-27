@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -42,13 +43,13 @@ class GatewayGateTests(unittest.TestCase):
             for actor in ('builder', 'independent-verifier'):
                 name = f'{journey}-{actor}'
                 path = self.root / f'{name}.json'
-                extra = {'stdout': marker + '\n'}
+                container = journey if same_container else name
+                extra = {'stdout': marker + '\n', 'create_stdout': hashlib.sha256(container.encode()).hexdigest()}
                 if journey == 'control-ui-session-rename':
                     png = path.with_suffix('.png')
                     png.write_bytes(name.encode())
-                    extra = {'stdout': self.browser_stdout(journey, fresh=browser_receipt, restart=restart),
-                             'screenshot_path': str(png.resolve()), 'screenshot_sha256': cli.digest(png),
-                             'create_stdout': ('a' if same_container or actor == 'builder' else 'b') * 64}
+                    extra.update(stdout=self.browser_stdout(journey, fresh=browser_receipt, restart=restart),
+                                 screenshot_path=str(png.resolve()), screenshot_sha256=cli.digest(png))
                 cli.write(path, {
                     'journey': journey, 'actor': actor, 'commit': report_head or self.head,
                     'image': image, 'verified_image_id': image,
@@ -93,7 +94,8 @@ class GatewayGateTests(unittest.TestCase):
 
     def test_publish_and_republish_block_before_any_github_call(self):
         github = Mock()
-        for kwargs in ({'fail': True}, {'same_workspace': True}, {'report_head': 'b' * 40}, None):
+        for kwargs in ({'fail': True}, {'same_workspace': True}, {'same_container': True},
+                       {'report_head': 'b' * 40}, None):
             if kwargs is None:
                 self.data['evidence'] = []
             else:

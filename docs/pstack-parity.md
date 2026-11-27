@@ -80,4 +80,6 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [`workbench.blind_eval`](../skills/blind-eval/SKILL.md) 给各方案同一个任务，在独立目录运行 Claude Code + GLM。评审通过匿名代码、成功的实际文件读取和断网 Docker 运行结果给分。两个独立 OpenAI 会话使用同一份评分标准。审计可离线重建评审输入并核对回执。此入口已支持固定文本源文件的对比，其他宿主轨迹和媒体产物待接入。
 
+[`workbench.correct`](../skills/correct/SKILL.md) 将重复错误对应到实际历史提交与所选防护层级。在断网 Docker 中，用同一探针核对每次错误、对应修复和当前实现。iBoard 的 OpenClaw 发布门禁现在为每条必测路径核对两个独立 Docker 容器；历史回放还检验了未登记回执和缺失 Gateway 重启两类防护。
+
 通过 `workbench.start` 新建的任务采用 `impact_review: runtime-v1`。独立复验者可以只读检查未修改的调用方，并在终审 JSON 的 `impact` 中记录入口、需要保持的行为、候选文件行号、观测结果和报告引用。发布门禁会拒绝只有代码差异、基线结果或实施者报告的影响证明。报告身份由程序核对，证据是否覆盖所述行为仍由独立复验者判断。既有任务沿用创建时的门禁和记录格式。

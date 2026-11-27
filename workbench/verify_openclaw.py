@@ -257,9 +257,11 @@ def require(data, head, destination, *, review_item=None):
                 if journey not in reports:
                     continue
                 _, marker, command = _journey(journey)
-                if journey in BROWSER_JOURNEYS and (
-                        not re.fullmatch(r'[0-9a-f]{64}', str(run.get('create_stdout', '')).strip())
-                        or not _browser_evidence(run, Path(entry['path']).with_suffix('.png'))):
+                container = run.get('create_stdout')
+                if (not isinstance(container, str) or run.get('create_stdout_truncated') is True
+                        or not re.fullmatch(r'[0-9a-f]{64}', container.strip())):
+                    continue
+                if journey in BROWSER_JOURNEYS and not _browser_evidence(run, Path(entry['path']).with_suffix('.png')):
                     continue
                 if (run.get('commit') == head
                         and run.get('helper_sha256') == helpers[journey] and run.get('passed') is True
@@ -276,7 +278,7 @@ def require(data, head, destination, *, review_item=None):
                 journey: {a['image']: (a, b) for a in runs for b in runs
                  if a.get('actor') == data['implementer'] and b.get('actor') == item['actor']
                  and a['image'] == b['image'] and a['workspace'] != b['workspace']
-                 and (journey not in BROWSER_JOURNEYS or a['create_stdout'].strip() != b['create_stdout'].strip())}
+                 and a['create_stdout'].strip() != b['create_stdout'].strip()}
                 for journey, runs in reports.items()
             }
             common = set.intersection(*(set(pairs) for pairs in pairs_by_image.values()))
