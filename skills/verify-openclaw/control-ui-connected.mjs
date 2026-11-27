@@ -445,7 +445,7 @@ async function openSessions() {
     if (filterWireError) throw filterWireError;
     return filterProofs.find(read => read.socket === proof.socket && read.sequence > sequence && read.archived === archived);
   };
-  return { context, page, proof, servedCommit, writes, assertConnectedPage, latestFilterSequence, filterProofAfter };
+  return { page, proof, servedCommit, writes, assertConnectedPage, latestFilterSequence, filterProofAfter };
 }
 
 async function capture(view, evidence = {}) {
@@ -551,10 +551,20 @@ async function verifyDelete(target, survivor, canceledView) {
   await canceled.waitFor({ state: 'hidden' });
   canceledView.assertConnectedPage();
   await recorder?.stop({ finalFrame: true });
-  await canceledView.context.close();
+  // Release Chromium's renderer and caches before opening the confirmation view.
+  // Keep the same Gateway so the cancel readback cannot rely on a restart.
+  const cancelBrowser = browser;
+  const cancelGatewayPid = child.pid;
+  await cancelBrowser.close();
+  browser = undefined;
+  assert.equal(cancelBrowser.isConnected(), false, 'The cancellation browser still holds a connection');
   assert.equal(canceledView.writes.length, 0, 'Cancel sent a session deletion');
 
+  await launchBrowser();
+  assert.notEqual(browser, cancelBrowser);
   const view = await openSessions();
+  assert.equal(child.pid, cancelGatewayPid);
+  assert.notEqual(view.proof.socket, canceledView.proof.socket);
   const afterCancelCount = view.proof.sessions.length;
   assert.equal(afterCancelCount, 2, 'Cancel changed the Gateway session list');
   await assertSession(view, target);
@@ -586,7 +596,7 @@ async function verifyDelete(target, survivor, canceledView) {
   await assertSession(fresh, survivor);
   await capture(fresh, { mutation: { method: write.method, key: target.key, sessionId: target.sessionId,
     expectedSessionId: write.params.expectedSessionId, responseKey: write.responseKey, requestCount: view.writes.length,
-    canceledWithoutWrite: true, afterCancelCount, deleted: write.deleted,
+    canceledWithoutWrite: true, afterCancelCount, cancelBrowserReplaced: true, cancelGatewayPid, deleted: write.deleted,
     freshContextReadback: true, targetAbsent: true, survivor: { key: survivor.key, sessionId: survivor.sessionId } } });
 }
 

@@ -136,6 +136,7 @@ def _browser_evidence(report, screenshot):
                     and (mutation.get('expectedSessionId'), mutation.get('requestCount'),
                          mutation.get('afterCancelCount')) == (mutation['sessionId'], 1, 2)
                     and type(mutation['requestCount']) is int and type(mutation['afterCancelCount']) is int
+                    and mutation.get('cancelBrowserReplaced') is True and mutation.get('cancelGatewayPid') == initial_pid
                     and all(mutation.get(key) is True for key in (
                         'canceledWithoutWrite', 'deleted', 'freshContextReadback', 'targetAbsent'))
                     and survivor.get('key') == 'agent:main:iboard-browser-survivor'

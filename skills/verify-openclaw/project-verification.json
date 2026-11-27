@@ -167,8 +167,8 @@
         "session-delete"
       ],
       "reach": "Select one row on the Sessions page and choose Delete.",
-      "drive": "Cancel one deletion, then confirm deletion of the selected row and restart the Gateway.",
-      "observe": "Cancel preserves both rows. One Gateway-accepted deletion removes only the selected session. After restart an authenticated all-status list contains the unselected session under its original ID.",
+      "drive": "Cancel one deletion, replace the browser while keeping the Gateway running, then confirm deletion of the selected row and restart the Gateway.",
+      "observe": "After browser replacement, the same Gateway lists both original rows. One Gateway-accepted deletion removes only the selected session. After restart an authenticated all-status list contains the unselected session under its original ID.",
       "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. Only disposable Gateway state and test credentials are used.",
       "source": [
         {

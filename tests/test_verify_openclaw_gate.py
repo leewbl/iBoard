@@ -106,6 +106,7 @@ class GatewayGateTests(unittest.TestCase):
                 'sessionId': 'fixture-session-id', 'expectedSessionId': 'fixture-session-id',
                 'responseKey': 'agent:main:iboard-browser-verification',
                 'requestCount': 1, 'afterCancelCount': 2, 'canceledWithoutWrite': True,
+                'cancelBrowserReplaced': True, 'cancelGatewayPid': 19,
                 'deleted': True, 'freshContextReadback': fresh, 'targetAbsent': True,
                 'survivor': {'key': 'agent:main:iboard-browser-survivor', 'sessionId': 'other-id'},
                 **(deletion or {}),
@@ -272,6 +273,7 @@ class GatewayGateTests(unittest.TestCase):
         self.assertTrue(verify_openclaw.needs_browser(self.data, self.head))
         mismatches = ({'deleted': False}, {'targetAbsent': False}, {'requestCount': 2},
                       {'canceledWithoutWrite': False}, {'afterCancelCount': 1},
+                      {'cancelBrowserReplaced': False}, {'cancelGatewayPid': 71},
                       {'expectedSessionId': 'wrong-id'}, {'responseKey': 'other-key'}, {'freshContextReadback': False},
                       {'survivor': {'key': 'agent:main:iboard-browser-survivor',
                                     'sessionId': 'fixture-session-id'}})
