@@ -70,7 +70,7 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [附件取证](../skills/triage-issue-reports/SKILL.md#attachments) 根据原线程中的文件 ID 读取私有 Slack 文件，记录原件哈希、文字引文和图片观察。MP4 取三个时间点的帧，单独记录观察及证据限制。已用本机 Slack 协议测试服务、真实 FFmpeg 和 GLM 视觉模型验证。抽样和未读取的附件仍算证据缺口，保存的附件或帧变更会阻止确认分诊建议。
 
-[`workbench.stack_ship`](../skills/shipping/SKILL.md) 把已验证的依赖路径和 PR 上限固定在交付计划中，在获授权的个人 fork 上从下往上执行。父 PR squash 后，`workbench.stack_rebase continue` 逐层重放原始补丁范围，沿用原请求、验收历史和本地门禁，用新基线和新候选重新取证。推送使用原 PR 的精确旧 head，远端确认后把新验收回执写入原计划的执行日志。支持 GitHub 自动改目标分支及推送回执丢失后的接续。本地三层样例使用裸 Git 仓库模拟 GitHub 写入，两层新基线的独立复验实际运行了 Claude Code、GLM 和断网 Docker。已更新的 PR 若再次遇到主分支前移，会停在该项等待重新验证。真实 GitHub 栈仍待验收。
+[`workbench.stack_ship`](../skills/shipping/SKILL.md) 把已验证的依赖路径和 PR 上限固定在交付计划中，在获授权的个人 fork 上从下往上执行。父 PR squash 或主分支再次前移时，`workbench.stack_rebase continue` 从原始补丁重放，沿用原请求、验收历史和本地门禁，对新基线和新候选重新取证。推送以最近一次确认的 PR head 为条件。执行日志保留历次独立复验和发布回执。外部修改 PR head 或改写主分支历史时停止写入。本地三层样例用裸 Git 模拟 GitHub 写入，验证了推送成功但回执丢失、主分支同时前移时的续跑，复验实际运行了 Claude Code、GLM 和断网 Docker。真实 GitHub 栈仍待验收。
 
 [`workbench.stack_autopilot`](../skills/autopilot-stack/SKILL.md) 从本地清单冻结一组已选 PR 的请求、验收条件、head 和 base。工作台按父子顺序独立复验，也能复用当前版本的已验收任务。交接前逐项核对当前 CI 或本地门禁，记录缺口。恢复时沿用冻结的输入和从首次启动起计算的总时限。此入口停在交接。
 
@@ -98,7 +98,7 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 | 影响范围、代码约束与持续纠错 | 新任务的独立复验记录受影响入口、需要保持的行为和候选源码位置，并引用独立沙箱报告。发布和合并再次核对位置、提交与报告哈希。 | 继续补跨模块的选测和回归设计。对重复错误新增能抓住旧错误的可执行约束，并把验证保留给后续任务。 |
 | 自主运行、暂停与恢复 | 有按任务预算、锁、恢复入口和修复循环。 | 在受控失败、工具超时及中断后安全恢复或明确阻断，回放不会重复写入远端，任务状态与产物一致。 |
 | 并行研究、方案比较和任务分派 | Arena 支持独立工作树并发生成代码候选、跨供应商评分、综合和复验。 | 扩到多类产物、一般任务分派和大范围方案比较，存在共享写入时可安全排序。 |
-| PR 创建、跟踪、合并和 PR 栈 | 已有单 PR 创建与个人 fork 合并门禁。本地测试覆盖三层 PR 栈在逐次 squash 后的重放、独立复验交接及继续合并。 | 在真实 GitHub 栈验证写入与检查流程，补齐已更新 PR 再次遇到主分支前移的恢复路径。 |
+| PR 创建、跟踪、合并和 PR 栈 | 已有单 PR 创建与个人 fork 合并门禁。本地测试覆盖三层 PR 栈在逐次 squash 后的重放，以及已更新的 PR 在主分支前移后再次复验和续跑。 | 在真实 GitHub 栈验证写入与检查流程。 |
 | 调研、复盘、交接和工作流生成 | 任务接续会核对实时状态。指定 Claude Code 会话可用于恢复上下文、复盘技能和生成个人模式草稿。 | 增加 Cursor 会话和外部服务的发现适配。按实际运行验证不同宿主的交接流程。 |
 | 宿主集成 | iBoard 提供 Claude Code 插件和 Python 入口。 | 对照 [pstack 的 Claude Code 适配说明](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/docs/harness/claude-code.md)，对依赖 Cursor Automations、云代理或 Bugbot 的能力提供独立实现，或者记录具体的外部依赖及真实运行证据。 |
 

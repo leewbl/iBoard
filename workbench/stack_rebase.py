@@ -82,11 +82,10 @@ def _next(frozen, journal):
                 raise RebaseError('shipping journal identifies a different landed head')
             landed.append(effective)
             continue
-        if not landed or step:
+        if not landed or (step and (step.get('phase'), step.get('head'), step.get('base'))
+                                  != ('retargeted', member['head'], member['base'])):
             raise RebaseError('restacking requires a confirmed parent and a child with no pending write')
-        if effective is not member:
-            raise RebaseError('the rebased child is already published; resume the same shipping plan')
-        return landed, member
+        return landed, member, effective
     raise RebaseError('the frozen shipping plan has already landed')
 
 
@@ -119,24 +118,44 @@ def _retained(repo, member):
     return task, data, stage, state, request
 
 
-def _old_tips(member, parent, trunk):
+def _old_tips(member, effective, parent, trunk):
+    if effective is not member:
+        return {(effective['head'], 'main', trunk)}
     return {(member['head'], 'main', trunk),
             (member['head'], member['base_branch'], member['base']),
             (member['head'], member['base_branch'], parent['head'])}
 
 
-def _observe(reader, repo, landed, member):
+def _main(reader, repo, landed):
     for parent in landed:
         pull = stack_ship._observe(reader, repo, parent)
         if not stack_ship._landed(pull):
             raise RebaseError('the previous verified PR is not confirmed landed into main')
-    trunk = stack_ship._confirmed_main(reader, repo, landed[-1])
-    pull = stack_ship._observe(reader, repo, member)
+    return stack_ship._confirmed_main(reader, repo, landed[-1])
+
+
+def _require_forward_main(reader, repo, old, current):
+    if old != current and not reader.contains(repo, old, current):
+        raise RebaseError('main no longer descends from the last verified base')
+
+
+def _observe(reader, repo, landed, member, effective):
+    trunk = _main(reader, repo, landed)
+    pull = stack_ship._observe(reader, repo, effective)
     tips = (pull['headRefOid'], pull['baseRefName'], pull['baseRefOid'])
-    if (pull['state'] != 'OPEN' or pull['isDraft'] or trunk == member['base']
-            or tips not in _old_tips(member, landed[-1], trunk)):
+    if (pull['state'] != 'OPEN' or pull['isDraft'] or trunk == effective['base']
+            or tips not in _old_tips(member, effective, landed[-1], trunk)):
         raise RebaseError('child PR or its parent changed since the frozen shipping run')
+    if effective is not member:
+        _require_forward_main(reader, repo, effective['base'], trunk)
     return trunk
+
+
+def _binding(receipt):
+    keys = ['shipping_plan_sha256', 'old_head', 'old_base', 'old_task']
+    if 'previous_receipt_sha256' in receipt:
+        keys.extend(('previous_receipt_sha256', 'lease_head'))
+    return {key:receipt[key] for key in keys}
 
 
 def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=None, reader=None,
@@ -161,12 +180,15 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
     with task_lock(plan_path, lock_name=f'.{plan_path.name}.shipping.lock'):
         frozen, _, journal = _load_plan(plan_path)
         repo, plan_sha = frozen['repo'], journal['plan_digest']
-        landed, member = _next(frozen, journal)
-        new_base = _observe(reader, repo, landed, member)
+        landed, member, effective = _next(frozen, journal)
+        new_base = _observe(reader, repo, landed, member, effective)
         if expected_base is not None and new_base != expected_base:
             raise RebaseError('main moved before restack preparation')
         old_task, original, stage, state, request = _retained(repo, member)
         run_control.admit(old_task, RebaseError)
+        previous = journal.get('restacked', {}).get(str(member['number']))
+        if previous:
+            run_control.admit(effective['task'], RebaseError)
     settings = stage['run_settings']
     source_mode = settings['source_mode']
     if source_mode == 'image' and not (image or seed_image):
@@ -175,6 +197,9 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
     checkout = Path(original['repo']).resolve(strict=True)
     if _commit(checkout, member['head'], remaining) != member['head']:
         raise RebaseError('original child commit is unavailable')
+    if _output(_git(checkout,'merge-base',member['base'],member['head'],
+                    seconds=remaining())).decode().strip() != member['base']:
+        raise RebaseError('the original child does not descend from its frozen parent')
     known_base = _git(checkout,'cat-file','-e',new_base + '^{commit}',seconds=remaining())
     if known_base.returncode:
         _output(_git(checkout,'fetch','--no-tags','--no-write-fetch-head',f'https://github.com/{repo}.git',
@@ -197,6 +222,8 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
               'base':new_base,'worktree':str(worktree),'shipping_plan':str(plan_path),
               'shipping_plan_sha256':plan_sha,'old_task':str(old_task),'old_review':member['proof'],
               'request_digest':state['issue_digest'],'criterion_digest':cli.criteria_digest(original)}
+    if previous:
+        report.update(previous_receipt_sha256=previous['receipt_sha256'], lease_head=effective['head'])
     receipt_path = records/'restack.json'
     replay = _git(worktree,'rebase','--no-autostash','--rebase-merges','--reapply-cherry-picks','--empty=stop',
                   '--onto',new_base,member['base'],seconds=remaining())
@@ -215,7 +242,7 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
     report.update(status='verifying',head=head,old_patch_id=before,new_patch_id=after,patch_id_matches=before==after,
                   task=str(Path(tasks_root).expanduser().resolve()/task_id/'task.json'))
     cli.write(receipt_path,report)
-    binding = {key:report[key] for key in ('shipping_plan_sha256','old_head','old_base','old_task')}
+    binding = _binding(report)
     local_policy = original.get('local_gate')
     profile = original.get('model_profile')
     try:
@@ -261,7 +288,8 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
             report.update(status='verification-blocked',reason='fresh independent verification is unavailable')
         else:
             try:
-                unchanged = _observe(reader,repo,landed,member) == new_base and cli.digest(plan_path) == plan_sha
+                unchanged = (_observe(reader, repo, landed, member, effective) == new_base
+                             and cli.digest(plan_path) == plan_sha)
             except (RebaseError, stack_ship.ShippingError, pr_watch.WatchError, delivery.DeliveryError, OSError):
                 unchanged = False
             report.update(status='verified' if unchanged else 'stale',verification=verified)
@@ -292,21 +320,22 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
     repo, plan_sha = frozen['repo'], shipping['plan_digest']
     base, head, branch, number = (receipt[k] for k in ('base','head','head_branch','pr'))
     updates = shipping.get('restacked', {})
-    if str(number) in updates:
-        update = updates[str(number)]
-        if (update['receipt'], update['receipt_sha256']) != (str(receipt_path), receipt_sha):
-            raise RebaseError('the shipping run has a different confirmed update for this PR')
+    previous = updates.get(str(number))
+    if previous and (previous['receipt'], previous['receipt_sha256']) == (str(receipt_path), receipt_sha):
         original = next(member for member in frozen['members'] if member['number'] == number)
         stack_ship._member(original, shipping, repo)
         return {'status':'updated','repo':repo,'pr':number,'head':head,'base':base,
                 'reason':None,'journal':str(receipt_path.with_suffix('.publish.json'))}
-    landed, child = _next(frozen, shipping)
+    landed, child, effective = _next(frozen, shipping)
     bound = {'repo':repo,'pr':child['number'],'old_head':child['head'],'old_base':child['base'],
              'shipping_plan_sha256':plan_sha,'head_branch':child['head_branch'],'parent_branch':child['base_branch'],
              'old_task':str(Path(child['task']).resolve(strict=True))}
+    lease_head = effective['head']
     if (any(receipt.get(key) != value for key,value in bound.items()) or branch == 'main'
+            or receipt.get('previous_receipt_sha256') != (previous['receipt_sha256'] if previous else None)
+            or receipt.get('lease_head', child['head']) != lease_head
             or any(not isinstance(value,str) or not pr_watch.SHA.fullmatch(value) for value in (base,head))
-            or base == child['base'] or head in (child['head'],base)):
+            or base in (child['base'], effective['base']) or head in (child['head'],lease_head,base)):
         raise RebaseError('rebased candidate no longer matches the frozen shipping plan')
     original_task, original, original_stage, original_state, _ = _retained(repo, child)
     stack_ship._scope(reader, repo)
@@ -320,20 +349,19 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
         raise RebaseError('publication receipt changed after a write was requested')
 
     def observed():
-        parent = landed[-1]
-        if (not stack_ship._landed(stack_ship._observe(reader,repo,parent))
-                or stack_ship._confirmed_main(reader,repo,parent) != base):
-            raise RebaseError('main moved after fresh verification')
+        trunk = _main(reader, repo, landed)
+        if effective is not child:
+            _require_forward_main(reader, repo, effective['base'], trunk)
         remote = pr_watch._facts(reader,repo,number)
         if (remote['state'] != 'OPEN' or remote['isDraft'] or remote['isCrossRepository']
                 or remote['headRefName'] != branch):
             raise RebaseError('the selected PR or head branch is no longer available')
-        return remote['headRefOid'], remote['baseRefName'], remote['baseRefOid']
+        return trunk, (remote['headRefOid'], remote['baseRefName'], remote['baseRefOid'])
 
     def evidence():
         data = cli.read(task)
         target = data.get('verification_target', {})
-        expected = {key:receipt[key] for key in ('shipping_plan_sha256','old_head','old_base','old_task')}
+        expected = _binding(receipt)
         settings = target.get('settings', {})
         retained_settings = original_stage['run_settings']
         if (target.get('restacked_from') != expected
@@ -384,6 +412,8 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
     def confirm(proof):
         if cli.digest(plan_path) != plan_sha or cli.digest(receipt_path) != receipt_sha:
             raise RebaseError('shipping plan or receipt changed before recording the confirmed update')
+        if previous:
+            shipping.setdefault('restack_history', {}).setdefault(str(number), []).append(previous)
         shipping.setdefault('restacked', {})[str(number)] = {
             'receipt':str(receipt_path), 'receipt_sha256':receipt_sha, 'proof':proof,
         }
@@ -393,42 +423,59 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
             mark('confirmed')
         return result('updated')
 
+    def admitted():
+        run_control.admit(original_task, RebaseError)
+        if effective is not child:
+            run_control.admit(effective['task'], RebaseError)
+        run_control.admit(task, RebaseError)
+
+    def uploaded(trunk, tips):
+        if tips != (head, 'main', trunk):
+            return False
+        _require_forward_main(reader, repo, base, trunk)
+        return True
+
     with task_lock(task):
         prior = [item['action'] for item in journal['events']]
-        current = observed()
-        if current == (head,'main',base) and 'push-intent' in prior:
-            _, proof = evidence()
-            return confirm(proof)
+        trunk, current = observed()
         if 'push-intent' in prior:
+            if uploaded(trunk, current):
+                _, proof = evidence()
+                return confirm(proof)
+            if current[0] not in (head, lease_head):
+                raise RebaseError('the remote child head changed outside this rebased update')
             return result('awaiting-confirmation','rebased-push-outcome-unconfirmed')
-        if current not in _old_tips(child, landed[-1], base):
+        if current not in _old_tips(child, effective, landed[-1], trunk):
             raise RebaseError('the remote child changed outside this rebased update')
+        if trunk != base:
+            _require_forward_main(reader, repo, base, trunk)
+            if 'retarget-intent' in prior and current[1] != 'main':
+                return result('awaiting-confirmation','retarget-outcome-unconfirmed')
+            return result('stale-base','main moved after fresh verification')
         if current[1] != 'main':
             if 'retarget-intent' in prior:
                 return result('awaiting-confirmation','retarget-outcome-unconfirmed')
             evidence()
-            if (observed() != current or time.monotonic() >= deadline
+            if (observed() != (base, current) or time.monotonic() >= deadline
                     or cli.digest(plan_path) != plan_sha or cli.digest(receipt_path) != receipt_sha):
                 raise RebaseError('publication inputs changed before retarget')
-            run_control.admit(original_task, RebaseError)
-            run_control.admit(task, RebaseError)
+            admitted()
             mark('retarget-intent')
             try:
                 reader.retarget(repo,number)
             except (delivery.DeliveryError, OSError) as error:
                 return result('awaiting-confirmation',str(error))
         data, proof = evidence()
-        if (observed() != (child['head'],'main',base) or time.monotonic() >= deadline
+        if (observed() != (base,(lease_head,'main',base)) or time.monotonic() >= deadline
                 or cli.digest(plan_path) != plan_sha or cli.digest(receipt_path) != receipt_sha):
             raise RebaseError('rebased upload requires the confirmed current main base and old head')
-        run_control.admit(original_task, RebaseError)
-        run_control.admit(task, RebaseError)
+        admitted()
         mark('push-intent')
         try:
-            reader.push_rebased(data['repo'],repo,branch,child['head'],head)
+            reader.push_rebased(data['repo'],repo,branch,lease_head,head)
         except (RebaseError, delivery.DeliveryError, OSError) as error:
             return result('awaiting-confirmation',str(error))
-        if observed() != (head,'main',base):
+        if not uploaded(*observed()):
             return result('awaiting-confirmation','rebased-push-outcome-unconfirmed')
         return confirm(proof)
 
@@ -484,14 +531,15 @@ def continue_shipping(plan_path, *, tasks_root, workspaces_root, seconds, seed_i
                 if any(evidence.get(key) != value for key, value in binding.items()):
                     raise RebaseError('pending restack checkpoint belongs to a different plan or frontier')
                 updated = publish(receipt, seconds=left, reader=reader)
-                if updated.get('status') != 'updated':
+                if updated.get('status') not in ('updated', 'stale-base'):
                     return finish({**run['result'], 'status':updated['status'], 'reason':updated['reason'],
                                    'restack':str(receipt)})
                 del run['pending_update']
                 cli.write(run_path, run)
                 continue
             result = ship(path, timeout=left, github=reader)
-            if result.get('reason') != 'fresh-base-verification-required' or not result.get('landed'):
+            if (result.get('reason') not in ('fresh-base-verification-required', 'published-restack-base-moved')
+                    or not result.get('landed')):
                 return finish(result)
             if result != run.get('result'):
                 finish(result)

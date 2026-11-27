@@ -67,8 +67,12 @@ python3 -m workbench.stack_rebase update --receipt tasks/child-on-main-restack/r
 ```
 
 The update accepts GitHub's automatic retarget to the inspected main. It
-requires that exact base and the old head for the lease. Once GitHub confirms
-the update, the original shipping journal records the fresh evidence. Run
-`land` again with the same plan. If main advances after publication, stop at
-that PR and report the stale base. Report each confirmed PR and the first
-pending or blocked member. Use `workbench.stack_verify` for read-only handoff.
+requires that exact base and the confirmed PR head for the lease. The
+shipping journal records each confirmed update and its independent evidence.
+Run `land` again with the same plan, or use `continue` to replay again if
+main has advanced while checks were pending. Each replay starts from the
+original patch and verifies it against the latest main. It updates the same
+PR only if its head still matches the last confirmed update. A rewritten
+main, an outside head change, or an unconfirmed write halts further writes.
+Report each confirmed PR and the first pending or blocked member. Use
+`workbench.stack_verify` for read-only handoff.

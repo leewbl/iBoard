@@ -111,28 +111,44 @@ def _journal(path, digest, *, create=False):
     return journal_path, journal
 
 
-def _member(original, journal, repo):
-    update = journal.get('restacked', {}).get(str(original['number']))
-    if update is None:
-        return original
+def _restack_receipt(update):
     path = Path(update['receipt'])
-    if path.is_symlink() or not path.is_absolute() or cli.digest(path) != update['receipt_sha256']:
+    expected = update['receipt_sha256']
+    if path.is_symlink() or not path.is_absolute() or cli.digest(path) != expected:
         raise ShippingError('the restack receipt changed after publication')
     receipt = verify_pr._bounded_json(path, 64_000)
+    if cli.digest(path) != expected:
+        raise ShippingError('the restack receipt changed after publication')
+    return receipt
+
+
+def _member(original, journal, repo):
+    number = str(original['number'])
+    update = journal.get('restacked', {}).get(number)
+    history = journal.get('restack_history', {}).get(number, [])
+    if update is None:
+        if history:
+            raise ShippingError('the current restack receipt is missing')
+        return original
     identity = {'repo':repo, 'pr':original['number'], 'old_base':original['base'],
                 'old_head':original['head'], 'head_branch':original['head_branch'],
                 'parent_branch':original['base_branch'], 'old_task':original['task'],
                 'shipping_plan_sha256':journal['plan_digest'], 'status':'verified'}
-    proof = update['proof']
-    if (any(receipt.get(key) != value for key, value in identity.items())
-            or any(not isinstance(receipt.get(key), str) or not pr_watch.SHA.fullmatch(receipt[key])
-                   for key in ('head', 'base'))
-            or receipt['head'] in (original['head'], receipt['base'])
-            or receipt['base'] == original['base'] or not Path(receipt['task']).is_absolute()
-            or proof.get('status') != 'verified'
-            or any(proof.get(key) != receipt['verification'].get(key) for key in ('review', 'review_sha256'))
-            or cli.digest(path) != update['receipt_sha256']):
-        raise ShippingError('the published restack is not bound to the original member and fresh proof')
+    previous_sha, lease, previous_base = None, original['head'], original['base']
+    for attempt in [*history, update]:
+        receipt = _restack_receipt(attempt)
+        proof = attempt['proof']
+        if (any(receipt.get(key) != value for key, value in identity.items())
+                or receipt.get('previous_receipt_sha256') != previous_sha
+                or receipt.get('lease_head', original['head']) != lease
+                or any(not isinstance(receipt.get(key), str) or not pr_watch.SHA.fullmatch(receipt[key])
+                       for key in ('head', 'base'))
+                or receipt['head'] in (original['head'], lease, receipt['base'])
+                or receipt['base'] in (original['base'], previous_base) or not Path(receipt['task']).is_absolute()
+                or proof.get('status') != 'verified'
+                or any(proof.get(key) != receipt['verification'].get(key) for key in ('review', 'review_sha256'))):
+            raise ShippingError('the published restack is not bound to the original member and fresh proof')
+        previous_sha, lease, previous_base = attempt['receipt_sha256'], receipt['head'], receipt['base']
     return {**original, 'head':receipt['head'], 'base':receipt['base'], 'task':receipt['task'],
             'base_branch':'main', 'proof':proof}
 
@@ -246,14 +262,16 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                         run_control.admit(original['task'], ShippingError)
                     data = _proof(repo, member, task)
                     trunk = github.branch(repo, 'main')
+                    if step == 'retarget-intent':
+                        if pull['baseRefName'] != 'main' or pull['baseRefOid'] != trunk:
+                            return result('awaiting-confirmation', pr=number, reason='retarget-outcome-unconfirmed')
+                        save(member, 'retargeted', head=member['head'], base=member['base'])
                     if trunk != member['base']:
                         reason = ('published-restack-base-moved' if member is not original
                                   else 'fresh-base-verification-required')
                         return {**result('blocked', pr=number, reason=reason),
                                 'verified_base':member['base'], 'current_main':trunk}
                     if pull['baseRefName'] != 'main':
-                        if step == 'retarget-intent':
-                            return result('awaiting-confirmation', pr=number, reason='retarget-outcome-unconfirmed')
                         if not confirmed or pull['baseRefName'] != member['base_branch'] or pull['baseRefOid'] != trunk:
                             raise ShippingError('retarget would change the verified base or dependency')
                         if data.get('local_gate'):

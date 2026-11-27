@@ -362,18 +362,39 @@ class StackShippingTests(unittest.TestCase):
     def test_continuation_resumes_lost_push_response_with_original_budget_and_roots(self):
         self.assert_multi_layer_continuation(interrupt_last_push=True)
 
-    def assert_multi_layer_continuation(self, *, interrupt_last_push):
+    def test_continuation_replays_again_when_main_advances_during_ci(self):
+        self.assert_multi_layer_continuation(frontier_change='advance')
+
+    def test_continuation_reconciles_lost_push_after_main_advances(self):
+        self.assert_multi_layer_continuation(frontier_change='lost-push')
+
+    def test_continuation_rejects_unexpected_published_head(self):
+        self.assert_multi_layer_continuation(frontier_change='unknown-head')
+
+    def test_continuation_rejects_rewritten_published_base(self):
+        self.assert_multi_layer_continuation(frontier_change='rewrite-main')
+
+    def test_continuation_replays_after_confirmed_retarget_and_main_advancement(self):
+        self.assert_multi_layer_continuation(frontier_change='retargeted')
+
+    def test_continuation_reconciles_lost_retarget_after_main_advances(self):
+        self.assert_multi_layer_continuation(frontier_change='lost-retarget')
+
+    def assert_multi_layer_continuation(self, *, interrupt_last_push=False, frontier_change=None):
         third = self.append_member('third','third.txt')
         outside = self.append_member('fourth','outside-plan.txt')
         frozen = cli.read(self.plan)
         frozen.update(members=self.github.members[:3],ceiling=3)
         cli.write(self.plan,frozen)
         plan_digest = cli.digest(self.plan)
-        self.github.squash_next = True
-        self.github.auto_retarget.add(1)
+        initial_retarget = frontier_change in ('retargeted','lost-retarget')
+        self.github.squash_next = not initial_retarget
+        if not initial_retarget:
+            self.github.auto_retarget.add(1)
         cli.write(Path(frozen['members'][0]['task']),{'schema':cli.SCHEMA,'required_ci_workflows':['CI']})
 
         retained, reviews, replayed = {}, {}, {}
+        replay_attempts = []
         for member in self.github.members[1:3]:
             number = member['number']
             request = f'Original acceptance input for PR {number}.\n'.encode()
@@ -404,9 +425,14 @@ class StackShippingTests(unittest.TestCase):
                                                              'changes':data['criterion_changes']})
             self.assertEqual(arguments['implementer'],'pr-contributor')
             self.assertEqual(arguments['required_ci_workflows'],['CI'])
-            self.assertEqual(target['restacked_from'],{'shipping_plan_sha256':plan_digest,'old_task':str(task),
-                                                      'old_head':original['head'],'old_base':original['base']})
-            self.assertEqual(target['base'],self.github.squash[number-1])
+            binding = {'shipping_plan_sha256':plan_digest,'old_task':str(task),
+                       'old_head':original['head'],'old_base':original['base']}
+            if number in replayed:
+                previous = replayed[number]
+                binding.update(previous_receipt_sha256=cli.digest(Path(previous['receipt'])),
+                               lease_head=previous['head'])
+            self.assertEqual(target['restacked_from'],binding)
+            self.assertEqual(target['base'],self.github.branch(REPO,'main'))
             self.assertNotEqual(target['head'],original['head'])
             worktree = arguments['repo']
             head,base = target['head'],target['base']
@@ -440,17 +466,25 @@ class StackShippingTests(unittest.TestCase):
         def prepare_rebase(path, **options):
             self.assertEqual(options['seed_image'],seed)
             landed_count = len(self.github.landed)
-            self.assertEqual(options['expected_base'],self.github.squash[landed_count])
+            self.assertEqual(options['expected_base'],self.github.branch(REPO,'main'))
             if landed_count == 1:
                 self.assertEqual(self.github.pull(REPO,2)['baseRefName'],'main')
-                self.assertEqual(self.github.writes,[('land',1)])
+                expected = [('land',1)]
+                if initial_retarget:
+                    expected.append(('retarget',2))
+                expected.extend([('update',2)] * len(replay_attempts))
+                self.assertEqual(self.github.writes,expected)
             replay = stack_rebase.prepare(path,launch=launch,**options)
             number = replay['pr']
             self.assertEqual(number,landed_count+1)
-            self.assertNotIn(number,replayed)
+            if number in replayed:
+                self.assertIn(frontier_change,('advance','lost-push','rewrite-main'))
+                self.assertEqual(replayed[number]['old_patch_id'],replay['old_patch_id'])
+                self.assertNotEqual(replayed[number]['head'],replay['head'])
             self.assertEqual(replay['status'],'verified')
             self.assertTrue(replay['patch_id_matches'])
             replayed[number] = replay
+            replay_attempts.append(replay)
             return replay
 
         def publish(receipt, **options):
@@ -458,8 +492,7 @@ class StackShippingTests(unittest.TestCase):
             if applied['status'] == 'updated':
                 replay = replayed[applied['pr']]
                 self.assertEqual((applied['base'],applied['head']),(replay['base'],replay['head']))
-            if applied['pr'] == 2:
-                self.assertEqual(applied['status'],'updated')
+            if applied['pr'] == 2 and applied['status'] == 'updated':
                 self.assertEqual(self.github.pull(REPO,3)['baseRefOid'],replayed[2]['head'])
                 self.assertNotEqual(third['base'],replayed[2]['head'])
                 saved = receipt.read_bytes()
@@ -479,21 +512,125 @@ class StackShippingTests(unittest.TestCase):
                    'seconds':45,'seed_image':seed,'reader':self.github,
                    'ship':lambda path, **settings: stack_ship.execute(path,merge=self.github.merge,**settings),
                    'prepare_rebase':prepare_rebase,'publish':publish}
-        if interrupt_last_push:
+        if frontier_change:
+            self.github.pending_checks.add(2)
+        if frontier_change == 'lost-retarget':
+            retarget = self.github.retarget
+
+            def lose_retarget_response(repo, number):
+                retarget(repo,number)
+                if number == 2:
+                    raise delivery.DeliveryError('lost child retarget response')
+
+            self.github.retarget = lose_retarget_response
+        if interrupt_last_push or frontier_change == 'lost-push':
             push = self.github.push_rebased
 
-            def lost_last_push(checkout, repo, branch, old, head):
+            def lose_push_response(checkout, repo, branch, old, head):
                 push(checkout,repo,branch,old,head)
-                if branch == third['head_branch']:
+                if interrupt_last_push and branch == third['head_branch']:
                     raise delivery.DeliveryError('lost third branch update response')
+                if frontier_change == 'lost-push' and branch == 'second' and old == self.github.members[1]['head']:
+                    raise delivery.DeliveryError('lost first child branch update response')
 
-            self.github.push_rebased = lost_last_push
+            self.github.push_rebased = lose_push_response
+
+        def main_commit(parent, title):
+            checkout = self.github.checkout
+            tree = cli.git(checkout,'rev-parse',f'{parent}^{{tree}}')
+            return cli.git(checkout,'commit-tree',tree,'-p',parent,'-m',title)
+
+        def assert_still_waiting(result):
+            self.assertEqual((result['status'],result['landed'],result['pr'],result['ceiling']),
+                             ('blocked',[1],2,3),result)
+            self.assertIn('pending-checks',result['reason'])
 
         with (patch.object(stack_rebase,'_retained',side_effect=retained_task),
               patch.object(stack_ship.stack_verify,'_proof_locked',side_effect=independent_proof),
               patch.object(stack_ship,'_proof',side_effect=self.shipping_proof),
               patch.object(cli,'gate',side_effect=lambda data, head:(head,[]))):
             result = stack_rebase.continue_shipping(self.plan,**options)
+            if frontier_change:
+                lost_responses = {'lost-push':'lost first child branch update response',
+                                  'lost-retarget':'lost child retarget response'}
+                if frontier_change in lost_responses:
+                    self.assertEqual((result['status'],result['landed'],result['pr'],result['ceiling']),
+                                     ('awaiting-confirmation',[1],2,3),result)
+                    self.assertEqual(result['reason'],lost_responses[frontier_change])
+                else:
+                    assert_still_waiting(result)
+                first_write = 'retarget' if initial_retarget else 'update'
+                initial_writes = [('land',1),(first_write,2)]
+                initial_replays = [] if initial_retarget else [2]
+                self.assertEqual(self.github.writes,initial_writes)
+                self.assertEqual([replay['pr'] for replay in replay_attempts],initial_replays)
+                if initial_retarget:
+                    child = frozen['members'][1]
+                    self.assertEqual(self.github.branch(REPO,'second'),child['head'])
+                    self.assertEqual(self.github.pull(REPO,2)['baseRefName'],'main')
+                    step = cli.read(Path(result['journal']))['steps']['2']
+                    expected_phase = 'retarget-intent' if frontier_change == 'lost-retarget' else 'retargeted'
+                    self.assertEqual(step['phase'],expected_phase)
+                    verified_base = child['base']
+                    self.github.squash_next = True
+                else:
+                    first_replay = replayed[2]
+                    first_receipt = Path(first_replay['receipt'])
+                    first_receipt_digest = cli.digest(first_receipt)
+                    verified_base = first_replay['base']
+                continuation = Path(result['continuation'])
+                initial_deadline = cli.read(continuation)['deadline']
+                checkout,remote = self.github.checkout,self.github.remote
+                upstream = self.root/'upstream-change'
+                cli.git(checkout,'worktree','add','--detach',str(upstream),verified_base)
+                (upstream/'upstream.txt').write_text('Another change landed while checks were pending.\n')
+                cli.git(upstream,'add','upstream.txt')
+                cli.git(upstream,'commit','-qm','Advance main while child CI is pending')
+                advanced = cli.sha(upstream,'HEAD')
+                delivery._fast_forward_push(checkout,str(remote),verified_base,advanced)
+                self.assertEqual(self.github.branch(REPO,'main'),advanced)
+                if frontier_change == 'unknown-head':
+                    replacement = main_commit(first_replay['head'],'External change to the published child head')
+                    ref = 'refs/heads/second'
+                    cli.git(checkout,'push',f"--force-with-lease={ref}:{first_replay['head']}",str(remote),
+                            f'{replacement}:{ref}')
+                    self.github.rebased_heads[2] = replacement
+                    stopped = stack_rebase.continue_shipping(self.plan,**options)
+                    self.assertEqual((stopped['status'],stopped['landed']),('blocked',[1]),stopped)
+                    self.assertEqual(self.github.writes,[('land',1),('update',2)])
+                    self.assertEqual([replay['pr'] for replay in replay_attempts],[2])
+                    self.assertEqual(self.github.branch(REPO,'second'),replacement)
+                    return
+
+                waiting = stack_rebase.continue_shipping(self.plan,**options)
+                assert_still_waiting(waiting)
+                self.assertEqual([replay['pr'] for replay in replay_attempts],initial_replays+[2])
+                self.assertEqual(self.github.writes,initial_writes+[('update',2)])
+                self.assertEqual((replayed[2]['base'],self.github.branch(REPO,'second')),
+                                 (advanced,replayed[2]['head']))
+                if not initial_retarget:
+                    self.assertEqual(cli.digest(first_receipt),first_receipt_digest)
+                    history = cli.read(Path(waiting['journal']))['restack_history']['2']
+                    self.assertEqual([(item['receipt'],item['receipt_sha256']) for item in history],
+                                     [(str(first_receipt),first_receipt_digest)])
+                self.assertEqual(cli.read(continuation)['deadline'],initial_deadline)
+                if frontier_change == 'rewrite-main':
+                    rewritten = main_commit(verified_base,'Rewrite main instead of advancing it')
+                    cli.git(checkout,'push',f'--force-with-lease=refs/heads/main:{advanced}',str(remote),
+                            f'{rewritten}:refs/heads/main')
+                    try:
+                        stopped = stack_rebase.continue_shipping(self.plan,**options)
+                    except stack_rebase.RebaseError as error:
+                        self.assertIn('main',str(error))
+                    else:
+                        self.assertEqual((stopped['status'],stopped['landed']),('blocked',[1]),stopped)
+                        self.assertNotIn('pending-checks',stopped['reason'])
+                    self.assertEqual(self.github.writes,[('land',1),('update',2),('update',2)])
+                    self.assertEqual([replay['pr'] for replay in replay_attempts],[2,2])
+                    self.assertEqual(self.github.branch(REPO,'main'),rewritten)
+                    return
+                self.github.pending_checks.remove(2)
+                result = stack_rebase.continue_shipping(self.plan,**options)
             self.assertEqual(set(replayed),{2,3},result)
             if interrupt_last_push:
                 self.assertEqual((result['status'],result['landed'],result['pr'],result['ceiling']),
@@ -524,17 +661,25 @@ class StackShippingTests(unittest.TestCase):
             self.assertEqual(stack_rebase.continue_shipping(self.plan,**options)['landed'],[1,2,3])
 
         expected_writes = [('land',1),('update',2),('land',2),('retarget',3),('update',3),('land',3)]
+        if initial_retarget:
+            expected_writes.insert(1,('retarget',2))
+        elif frontier_change:
+            expected_writes.insert(2,('update',2))
         self.assertEqual(self.github.writes,expected_writes)
-        self.assertEqual(self.github.push_bindings,[(number,self.github.members[number-1]['head'],replayed[number]['head'])
-                                                   for number in (2,3)])
+        expected_pushes = [(2,self.github.members[1]['head'],replay_attempts[0]['head'])]
+        if frontier_change and not initial_retarget:
+            expected_pushes.append((2,replay_attempts[0]['head'],replayed[2]['head']))
+        expected_pushes.append((3,self.github.members[2]['head'],replayed[3]['head']))
+        self.assertEqual(self.github.push_bindings,expected_pushes)
         for number,base,head,task in self.github.merge_bindings[1:]:
             replay = replayed[number]
             self.assertEqual((base,head,task),(replay['base'],replay['head'],Path(replay['task'])))
-        self.assertEqual(set(self.github.squash),{1,2,3})
+        self.assertEqual(set(self.github.squash),{2,3} if initial_retarget else {1,2,3})
         self.assertEqual(self.github.branch(REPO,'main'),self.github.squash[3])
         self.assertEqual(self.github.pull(REPO,outside['number'])['state'],'OPEN')
         self.assertEqual(self.github.branch(REPO,'fourth'),outside['head'])
-        self.assertEqual(cli.git(self.github.checkout,'ls-tree','--name-only',self.github.squash[3]),'file\nthird.txt')
+        merge_tree = 'file\nthird.txt\nupstream.txt' if frontier_change else 'file\nthird.txt'
+        self.assertEqual(cli.git(self.github.checkout,'ls-tree','--name-only',self.github.squash[3]),merge_tree)
         self.assertEqual(cli.digest(self.plan),plan_digest)
 
     def test_changed_plan_cannot_resume_a_started_shipping_run(self):
