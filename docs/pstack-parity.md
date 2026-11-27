@@ -48,9 +48,11 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 分诊交接写入前保存已审定的计划和截止时间。工作进程在写入后中断时，可用原事件接续，并由原交接日志核对回执。本机测试模拟了回帖已确认、事件尚未结算时中断，恢复后分诊和回帖各只执行一次。复现已落盘时，重启会核对原事件、部署提交和探针证据。已用签名回调和真实断网 Docker 验证重启沿用原探针回执。修复任务已准备完成时，重启只接续原任务和工作树，沿用原预算。草稿交付会用原日志及远端记录核对已有分支和草稿 PR，本机模拟中确认只创建一次。复现结果未落盘或任务输入不全时，保留原记录供核查。
 
+配置独立的运维频道和写入身份后，每个报告有一条运维状态消息。协调者就地更新复现、修复与草稿状态，确认草稿后在同一线程回帖附链接。模拟回帖提交后中断，重启只核对原消息，复现和草稿交付都保持一次。运维追问、原报告的复现通知和真实 Slack 验收仍待完成。
+
 [Slack 来源入口](../skills/setup-benny/SKILL.md) 读取一条指定报告。它固定工作区、原频道和根线程，核对分诊作者与最后一行标记，并保留显式认领和修复链接。已有修复可直接进入只读复验。线程在复验前后都需匹配原快照，变化时保留运行结果并暂缓确认。Slack 读协议已用本机测试服务联调，真实工作区读取和回帖仍待实测或接入。
 
-[Benny 新故障复现](../skills/reproduce-and-fix-issues/SKILL.md#reproduce-an-unclaimed-fault) 从可信分诊的未认领报告开始，把原线程、Git 基线、镜像和两份检查固定下来。两份检查各复现两次才能继续，之后使用同一套检查验证候选。认领窗口结束并排除已有 GitHub 修复后可生成暂停任务，任务内记录根因验证要求。界面故障还需要固定两条画面条件，并复审两次基线录制。已用 OpenClaw #202294 的历史候选、断网 Docker、真实 GitHub 读取和本地 Slack 模拟确认前后差异，并验证已有 PR 会阻止重复建任务。[`workbench.benny_repair`](../skills/reproduce-and-fix-issues/SKILL.md#run-the-prepared-repair) 启动暂停的修复任务。协调者在每次变更前核对认领和已有 PR。Claude Code + GLM 在独立工作树中分析和修改，协调者先做根因对照，再在修复后执行原来的两条探针并进行独立终审。验证通过后保留候选与证据，停在本地交付阶段。[`workbench.benny_draft`](../skills/reproduce-and-fix-issues/SKILL.md#submit-the-verified-repair-as-a-draft) 接着核对任务、断网证据和个人 fork，将该报告的固定分支推送到验证时的基线并创建草稿 PR。两次 GitHub 写入前重新查认领、已有修复和原始证据。返回不明确时查询原操作回执。界面修复会重建候选浏览器产物，独立检查两次录制和最终截图，要求终审引用第二次截图的原始回执，再在草稿写入前复核完整证据。真实 Slack 到 GitHub 的端到端交付和操作线程更新仍待完成。
+[Benny 新故障复现](../skills/reproduce-and-fix-issues/SKILL.md#reproduce-an-unclaimed-fault) 从可信分诊的未认领报告开始，把原线程、Git 基线、镜像和两份检查固定下来。两份检查各复现两次才能继续，之后使用同一套检查验证候选。认领窗口结束并排除已有 GitHub 修复后可生成暂停任务，任务内记录根因验证要求。界面故障还需要固定两条画面条件，并复审两次基线录制。已用 OpenClaw #202294 的历史候选、断网 Docker、真实 GitHub 读取和本地 Slack 模拟确认前后差异，并验证已有 PR 会阻止重复建任务。[`workbench.benny_repair`](../skills/reproduce-and-fix-issues/SKILL.md#run-the-prepared-repair) 启动暂停的修复任务。协调者在每次变更前核对认领和已有 PR。Claude Code + GLM 在独立工作树中分析和修改，协调者先做根因对照，再在修复后执行原来的两条探针并进行独立终审。验证通过后保留候选与证据，停在本地交付阶段。[`workbench.benny_draft`](../skills/reproduce-and-fix-issues/SKILL.md#submit-the-verified-repair-as-a-draft) 接着核对任务、断网证据和个人 fork，将该报告的固定分支推送到验证时的基线并创建草稿 PR。两次 GitHub 写入前重新查认领、已有修复和原始证据。返回不明确时查询原操作回执。界面修复会重建候选浏览器产物，独立检查两次录制和最终截图，要求终审引用第二次截图的原始回执，再在草稿写入前复核完整证据。真实 Slack 到 GitHub 的端到端交付仍待验收。
 
 [Benny 分诊](../skills/triage-issue-reports/SKILL.md) 将同一份报告、固定提交的源码与历史、指定 GitHub 工单搜索结果交给 Claude Code + GLM。核对结论引用的原文和工单，保留无法判断的事实与附件。目录不全、发现来源已登记或复验前报告发生改变时，不提出新建工单。分诊本身输出本地建议。
 

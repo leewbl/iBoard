@@ -47,7 +47,8 @@ def _token(path):
 
 
 class Slack:
-    METHODS = {'auth.test': 'POST', 'conversations.replies': 'GET', 'chat.getPermalink': 'GET', 'files.info': 'GET'}
+    METHODS = {'auth.test': 'POST', 'conversations.replies': 'GET', 'conversations.history': 'GET',
+               'chat.getPermalink': 'GET', 'files.info': 'GET'}
 
     def __init__(self, token_file, *, connection=http.client.HTTPSConnection):
         self.token = _token(token_file)
@@ -154,6 +155,40 @@ class Slack:
             seen.add(cursor)
         raise SlackError('Slack source thread exceeded the page limit')
 
+    def history(self, channel, *, oldest, deadline):
+        if (not isinstance(channel, str) or not CHANNEL.fullmatch(channel)
+                or not isinstance(oldest, str) or not STAMP.fullmatch(oldest)):
+            raise ValueError('Slack history needs an exact channel and a lower timestamp bound')
+        limit = 15
+        lower = int(oldest.replace('.', ''))
+        messages, timestamps, cursors = [], set(), set()
+        query = {'channel': channel, 'oldest': oldest, 'inclusive': 'true', 'limit': limit}
+        for _ in range(16):
+            data = self.call('conversations.history', deadline, **query)
+            rows = data.get('messages')
+            more = data.get('has_more', False)
+            if (not isinstance(rows, list) or len(rows) > limit or len(messages) + len(rows) > MAX_MESSAGES
+                    or data.get('channel', channel) != channel or type(more) is not bool
+                    or data.get('is_limited') is True):
+                raise SlackError('Slack did not provide complete bounded operations history')
+            for row in rows:
+                timestamp = row.get('ts') if isinstance(row, dict) else None
+                if (not isinstance(timestamp, str) or not STAMP.fullmatch(timestamp) or timestamp in timestamps
+                        or int(timestamp.replace('.', '')) < lower or row.get('channel', channel) != channel
+                        or not isinstance(row.get('type'), str)):
+                    raise SlackError('Slack operations history returned invalid message coordinates')
+                timestamps.add(timestamp)
+            messages.extend(rows)
+            metadata = data.get('response_metadata', {})
+            cursor = metadata.get('next_cursor', '') if isinstance(metadata, dict) else None
+            if not isinstance(cursor, str) or len(cursor) > 1000 or cursor in cursors or (more and not cursor):
+                raise SlackError('Slack operations history pagination is incomplete')
+            if not cursor:
+                return messages
+            cursors.add(cursor)
+            query['cursor'] = cursor
+        raise SlackError('Slack operations history exceeded the page limit')
+
     def permalink(self, channel, root, deadline):
         result = self.call('chat.getPermalink', deadline, conversation=channel, message_ts=root)
         link = result.get('permalink')
@@ -166,28 +201,63 @@ class Slack:
 
 
 class SlackWriter(Slack):
-    """A separate credential can reply in one exact source thread."""
+    """A separate credential for writes to an approved report or operations channel."""
 
     def identity(self, team, user, deadline):
         info = self.call('auth.test', deadline)
         if (info.get('team_id'), info.get('user_id')) != (team, user):
-            raise SlackError('Slack writer is not the configured triage identity')
+            raise SlackError('Slack writer is not the configured identity')
+
+    def _write(self, endpoint, fields, deadline, description):
+        payload = json.dumps(fields, ensure_ascii=False).encode()
+        raw, _ = self._request('slack.com', 'POST', '/api/' + endpoint, deadline, MAX_PAGE, endpoint, payload=payload)
+        try:
+            data = json.loads(raw)
+        except (UnicodeError, ValueError) as error:
+            raise SlackError(f'Slack did not confirm the {description}') from error
+        if not isinstance(data, dict) or type(data.get('ok')) is not bool:
+            raise SlackError(f'Slack did not confirm the {description}')
+        if not data['ok']:
+            raise SlackRejected(f'Slack rejected the {description}')
+        return data
+
+    def _post(self, fields, deadline, description):
+        return self._write('chat.postMessage', {**fields, 'mrkdwn': False, 'parse': 'none',
+                           'unfurl_links': False, 'unfurl_media': False}, deadline, description)
 
     def reply(self, *, channel, root, text, deadline):
         if (not CHANNEL.fullmatch(channel) or not STAMP.fullmatch(root) or not isinstance(text, str)
                 or not 1 <= len(text) <= 3500):
             raise ValueError('Slack reply needs a nonempty exact source thread and bounded text')
-        payload = json.dumps({'channel': channel, 'thread_ts': root, 'text': text, 'mrkdwn': False, 'parse': 'none',
-                              'unfurl_links': False, 'unfurl_media': False}, ensure_ascii=False).encode()
-        raw, _ = self._request('slack.com', 'POST', '/api/chat.postMessage', deadline, MAX_PAGE,
-                               'chat.postMessage', payload=payload)
-        data = json.loads(raw)
-        if not isinstance(data, dict) or type(data.get('ok')) is not bool:
-            raise SlackError('Slack did not confirm the reply')
-        if data['ok'] is False:
-            raise SlackRejected('Slack rejected the source-thread reply')
+        data = self._post({'channel': channel, 'thread_ts': root, 'text': text}, deadline, 'source-thread reply')
         message, timestamp = data.get('message'), data.get('ts')
         if (data.get('channel') != channel or not isinstance(timestamp, str) or not STAMP.fullmatch(timestamp)
                 or timestamp == root or not isinstance(message, dict) or message.get('thread_ts') != root):
             raise SlackError('Slack did not confirm reply coordinates')
         return timestamp
+
+    def _operations_coordinates(self, data, channel, *, expected=None):
+        message, timestamp = data.get('message'), data.get('ts')
+        if (data.get('channel') != channel or not isinstance(timestamp, str) or not STAMP.fullmatch(timestamp)
+                or (expected is not None and timestamp != expected) or not isinstance(message, dict)
+                or message.get('thread_ts', timestamp) != timestamp or message.get('ts', timestamp) != timestamp
+                or message.get('channel', channel) != channel):
+            raise SlackError('Slack did not confirm the operations root coordinates')
+        return timestamp
+
+    def operations_root(self, *, channel, text, deadline):
+        if (not isinstance(channel, str) or not CHANNEL.fullmatch(channel) or not isinstance(text, str)
+                or not 1 <= len(text) <= 3500 or '\0' in text):
+            raise ValueError('Slack operations post needs an exact channel and bounded text')
+        result = self._post({'channel': channel, 'text': text}, deadline, 'operations root')
+        return self._operations_coordinates(result, channel)
+
+    def update_status(self, *, channel, root, text, deadline):
+        if (not isinstance(channel, str) or not CHANNEL.fullmatch(channel) or not isinstance(root, str)
+                or not STAMP.fullmatch(root) or not isinstance(text, str) or not 1 <= len(text) <= 3500 or '\0' in text):
+            raise ValueError('Slack operations update needs exact root coordinates and bounded text')
+        fields = {'channel': channel, 'ts': root, 'text': text, 'parse': 'none'}
+        if self.token.startswith('xoxb-'):
+            fields['as_user'] = True
+        result = self._write('chat.update', fields, deadline, 'operations status update')
+        return self._operations_coordinates(result, channel, expected=root)

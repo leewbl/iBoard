@@ -357,3 +357,65 @@ class BennyAutomationTests(unittest.TestCase):
         self.assertEqual(deliveries, [Path(result['task'])] * 2)
         run.assert_called_once()
         prepared.assert_called_once()
+
+    def test_operations_notification_recovers_without_reentering_native_delivery(self):
+        event = 'Ev789OPS'
+        _, reproduce, prepare = self.queue_repair(event)
+        channel = 'G012IBOARD'
+        self.opts['reproduce']['operations'] = {'channel': channel, 'identity': TRIAGE}
+        cli.write(self.policy, self.opts)
+        slack, writer = self.source.fixture.slack, self.source.fixture.writer
+        source_messages = slack.messages
+        second = int(time.time())
+        root = f'{second}.000050'
+        reply_timestamp = f'{second}.000051'
+        url = f'https://github.com/{RULES["repository"]}/pull/27'
+        rows, writes = [], []
+
+        def thread(conversation, timestamp, deadline):
+            if conversation != channel:
+                return source_messages(conversation, timestamp, deadline)
+            self.assertEqual(timestamp, root)
+            return rows[:]
+
+        def post_root(*, channel, text, deadline):
+            self.assertEqual(channel, self.opts['reproduce']['operations']['channel'])
+            rows.append({'channel': channel, 'type': 'message', 'ts': root, 'user': TRIAGE, 'text': text})
+            writes.append(('root', text.splitlines()[0]))
+            return root
+
+        def edit_root(*, channel, root, text, deadline):
+            self.assertEqual((channel, root), (rows[0]['channel'], rows[0]['ts']))
+            rows[0]['text'] = text
+            writes.append(('edit', text.splitlines()[0]))
+            return root
+
+        def post_reply(*, channel, root, text, deadline):
+            self.assertEqual((channel, root), (rows[0]['channel'], rows[0]['ts']))
+            rows.append({'channel': channel, 'type': 'message', 'ts': reply_timestamp, 'user': TRIAGE,
+                         'text': text, 'thread_ts': root})
+            writes.append(('reply', text))
+            raise KeyboardInterrupt('stopped after Slack accepted the draft reply')
+
+        watch_options = dict(repo=self.source.repo, rules=RULES, state=self.store, policy=self.policy,
+                             slack=slack, operations_writer=writer, seconds=3, max_events=1, poll_seconds=1)
+        with patch.object(slack, 'messages', side_effect=thread), patch.object(slack, 'history', return_value=[]), \
+             patch.object(writer, 'operations_root', side_effect=post_root), \
+             patch.object(writer, 'update_status', side_effect=edit_root), patch.object(writer, 'reply', side_effect=post_reply), \
+             patch.object(benny_reproduce, 'reproduce', side_effect=reproduce) as native_reproduce, \
+             patch.object(benny_reproduce, 'prepare_repair', side_effect=prepare) as native_prepare, \
+             patch.object(benny_draft, 'deliver', return_value={'status': 'draft', 'url': url}) as native_draft:
+            with self.assertRaises(KeyboardInterrupt):
+                benny_automation.watch(**watch_options)
+            self.assertFalse((self.store/'processed'/f'{event}.json').exists())
+            self.assertEqual(benny_automation.watch(**watch_options)['events'], {event: 'draft'})
+            result = self.work(event, operations_writer=writer, slack=slack)
+        native_reproduce.assert_called_once()
+        native_prepare.assert_called_once()
+        native_draft.assert_called_once()
+        self.assertEqual(writes, [('root', 'Reproducing'), ('edit', 'Reproduced'), ('edit', 'Attempting bounded fix'),
+                                  ('edit', 'Draft pull request opened'), ('reply', f'Draft pull request opened. {url}')])
+        receipt = result['operations']
+        self.assertEqual(cli.digest(receipt['path']), receipt['sha256'])
+        self.assertEqual(cli.read(receipt['path'])['draft']['url'], url)
+        self.assertFalse(self.source.fixture.sent)
