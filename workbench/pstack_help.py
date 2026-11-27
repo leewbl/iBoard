@@ -305,8 +305,8 @@ SCENARIOS = {
     'worktree-cleanup': Scenario(
         'Inventory registered worktrees before considering cleanup', 'skills/poteto-mode/playbooks/worktree-cleanup.md',
         'skills/worktree-cleanup/SKILL.md', 'worktree_cleanup inventory --inspect-recent-chats',
-        'Registered paths, Git state, live occupancy, recent chat evidence and checks on each approved removal',
-        'Inventory is read-only. Removal requires exact selected paths, reviewed chat evidence and refreshed host holds.'),
+        'Registered paths, Git state, live occupancy, recent chat evidence and optional Codex desktop pins',
+        'Removal requires exact selected paths and refreshed host holds. When supplied, refresh --codex-pins after approval.'),
     'autonomous-run': Scenario(
         'Drive an approved task to a frozen outcome', 'skills/poteto-mode/playbooks/autonomous-run.md',
         'skills/autonomous-run/SKILL.md', 'autonomous_run freeze',

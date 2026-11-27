@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 
-from workbench import cli, pr_watch, stack_rebase, swarm, worktree_recent, worktree_usage
+from workbench import cli, pr_watch, stack_rebase, swarm, worktree_pins, worktree_recent, worktree_usage
 from workbench.task_lock import task_lock
 
 
@@ -20,6 +20,8 @@ LIVE_HOLD = 'live local process or Claude session'
 LIVE_UNKNOWN = 'live local usage could not be verified'
 RECENT_REVIEW = 'recent chat usage requires review'
 RECENT_UNKNOWN = 'recent chat usage could not be verified'
+PIN_HOLD = 'pinned Codex session'
+PIN_UNKNOWN = 'Codex pin usage could not be verified'
 
 
 class CleanupError(ValueError):
@@ -237,7 +239,7 @@ def _summary_path(path, checkouts):
 
 
 def inventory(repo, base_ref='origin/HEAD', *, holds=None, tasks_roots=(), destination=None, measure_size=False,
-              inspect_recent_chats=False, reader=None):
+              inspect_recent_chats=False, codex_pins=None, reader=None):
     repo = _absolute(repo).resolve(strict=True)
     if (not isinstance(base_ref, str) or not base_ref or len(base_ref) > 300
             or not base_ref.isprintable() or base_ref.startswith('-')):
@@ -251,7 +253,8 @@ def inventory(repo, base_ref='origin/HEAD', *, holds=None, tasks_roots=(), desti
     registry = _registry(roots)
     digest, keep, reviewed = _holds(holds)
     prs = _pr_heads(destination, reader)
-    usage, active = worktree_usage.scan([row['path'] for row in checkouts])
+    paths = [row['path'] for row in checkouts]
+    usage, active = worktree_usage.scan(paths)
     entries = [_describe(repo, row, base, registry, keep, prs, checkout=repo, measure_size=measure_size,
                          usage=usage, live=active.get(row['path'], []))
                for row in checkouts]
@@ -260,7 +263,7 @@ def inventory(repo, base_ref='origin/HEAD', *, holds=None, tasks_roots=(), desti
               'destination': destination, 'disk_free_bytes': shutil.disk_usage(repo).free,
               'live_usage': usage, 'worktrees': entries}
     if inspect_recent_chats:
-        recent, matches = worktree_recent.scan([row['path'] for row in checkouts])
+        recent, matches = worktree_recent.scan(paths)
         report['recent_chats'] = recent
         for row in entries:
             if row['primary']:
@@ -276,6 +279,22 @@ def inventory(repo, base_ref='origin/HEAD', *, holds=None, tasks_roots=(), desti
                 row['reasons'].append(RECENT_UNKNOWN)
             if row['reasons']:
                 row['bucket'] = 'keep'
+    if codex_pins is not None:
+        observed = worktree_pins.load(_absolute(codex_pins), paths[0])
+        coverage, matches = worktree_pins.scan(paths, observed)
+        report['codex_pins'] = {**coverage, 'host_id': observed['host_id'],
+                                'captured_at': observed['captured_at'], 'snapshot_sha256': observed['sha256']}
+        for row in entries:
+            if row['primary']:
+                continue
+            pins = matches.get(row['path'], [])
+            row['codex_pin_matches'] = pins
+            if pins:
+                row['reasons'].append(PIN_HOLD)
+            if coverage['status'] != 'available':
+                row['reasons'].append(PIN_UNKNOWN)
+            if row['reasons']:
+                row['bucket'] = 'keep'
     return report
 
 
@@ -287,11 +306,11 @@ def _identity(row):
 
 
 def freeze(repo, base_ref, selected, out, *, holds, tasks_roots=(), destination=None, inspect_recent_chats=False,
-           reader=None):
+           codex_pins=None, reader=None):
     if not selected or len(selected) > 64 or len(set(selected)) != len(selected):
         raise CleanupError('select one to 64 distinct, explicitly approved worktrees')
     snapshot = inventory(repo, base_ref, holds=holds, tasks_roots=tasks_roots, destination=destination,
-                         inspect_recent_chats=inspect_recent_chats, reader=reader)
+                         inspect_recent_chats=inspect_recent_chats, codex_pins=codex_pins, reader=reader)
     index = {row['path']: row for row in snapshot['worktrees']}
     if snapshot['base'] is None or snapshot['holds_sha256'] is None:
         raise CleanupError('reclamation requires a known base and an explicit usage snapshot')
@@ -309,13 +328,15 @@ def freeze(repo, base_ref, selected, out, *, holds, tasks_roots=(), destination=
     record['selected'] = identities
     if inspect_recent_chats:
         record['inspect_recent_chats'] = True
+    if 'codex_pins' in snapshot:
+        record['codex_pin_scope'] = {'host_id': snapshot['codex_pins']['host_id'], 'approved_at': cli.now()}
     if plan.exists() or plan.is_symlink():
         raise CleanupError('cleanup approval path must be unused')
     cli.write(plan, record)
     return {'plan': str(plan), 'sha256': cli.digest(plan), 'selected': identities}
 
 
-def apply(plan, sha256, *, holds, out, reader=None):
+def apply(plan, sha256, *, holds, out, codex_pins=None, reader=None):
     plan = _absolute(plan)
     if not isinstance(sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', sha256):
         raise CleanupError('supply the exact approved cleanup plan digest')
@@ -325,7 +346,14 @@ def apply(plan, sha256, *, holds, out, reader=None):
     repo = _absolute(data['repo']).resolve(strict=True)
     holds = _absolute(holds)
     path = _summary_path(out, _records(repo))
-    if path in (plan.resolve(), holds.resolve()) or any(path.is_relative_to(Path(item['path'])) for item in data['selected']):
+    inputs = {plan.resolve(), holds.resolve()}
+    if codex_pins is not None:
+        codex_pins = _absolute(codex_pins)
+        inputs.add(codex_pins.resolve())
+    pin_scope = data.get('codex_pin_scope')
+    if pin_scope is not None and codex_pins is None:
+        raise CleanupError('refresh the Codex pin observation after cleanup approval')
+    if path in inputs or any(path.is_relative_to(Path(item['path'])) for item in data['selected']):
         raise CleanupError('cleanup receipt cannot overwrite an approval or lie inside a selected worktree')
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     common = Path(_git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir').decode().strip())
@@ -342,6 +370,8 @@ def apply(plan, sha256, *, holds, out, reader=None):
         report['live_usage'] = {}
         if data.get('inspect_recent_chats'):
             report['recent_chats'] = {}
+        if codex_pins is not None:
+            report['codex_pins'] = {}
         cli.write(path, report)
         try:
             for selected in data['selected']:
@@ -351,9 +381,14 @@ def apply(plan, sha256, *, holds, out, reader=None):
                 estimate = None if name in report['removed'] else _size(Path(name))
                 check = inventory(repo, data['base_ref'], holds=holds, tasks_roots=data['tasks_roots'],
                                   destination=data['destination'],
-                                  inspect_recent_chats=data.get('inspect_recent_chats', False), reader=reader)
+                                  inspect_recent_chats=data.get('inspect_recent_chats', False),
+                                  codex_pins=codex_pins, reader=reader)
                 if check['base'] != data['base']:
                     raise CleanupError('PR base changed after cleanup was approved')
+                pins = check.get('codex_pins')
+                if pin_scope is not None and (pins['host_id'] != pin_scope['host_id'] or
+                        worktree_pins.stamp(pins['captured_at']) <= worktree_pins.stamp(pin_scope['approved_at'])):
+                    raise CleanupError('refresh the Codex pin observation from the approved host after cleanup approval')
                 current = next((row for row in check['worktrees'] if row['path'] == name), None)
                 if name in report['removed']:
                     if current or Path(name).exists():
@@ -364,6 +399,9 @@ def apply(plan, sha256, *, holds, out, reader=None):
                 if 'recent_chats' in check:
                     report['recent_chats'][name] = {'observation': check['recent_chats'],
                                                     'matches': current['recent_chats'] if current else []}
+                if pins is not None:
+                    report['codex_pins'][name] = {'observation': pins,
+                                                   'matches': current['codex_pin_matches'] if current else []}
                 if current and current.get('recent_chat_sha256') != selected.get('recent_chat_sha256'):
                     report['blocked'][name] = [*current['reasons'], 'recent chat evidence changed after approval']
                     cli.write(path, report)
@@ -383,6 +421,8 @@ def apply(plan, sha256, *, holds, out, reader=None):
                         raise CleanupError(LIVE_UNKNOWN)
                     if active.get(name):
                         raise CleanupError(LIVE_HOLD)
+                    if codex_pins is not None and cli.digest(codex_pins) != pins['snapshot_sha256']:
+                        raise CleanupError('Codex pin observation changed during preflight')
                     # Git repeats its own dirty and locked checks. Preserve branches and avoid force/prune.
                     _git(repo, 'worktree', 'remove', '--', name, timeout=60)
                     if Path(name).exists() or any(row['path'] == name for row in _records(repo)):
@@ -414,6 +454,7 @@ def main(argv=None):
         command.add_argument('--tasks-root', action='append', default=[], dest='tasks_roots')
         command.add_argument('--destination')
         command.add_argument('--inspect-recent-chats', action='store_true')
+        command.add_argument('--codex-pins')
         if action == 'inventory':
             command.add_argument('--measure-size', action='store_true')
         else:
@@ -422,6 +463,7 @@ def main(argv=None):
     remove = sub.add_parser('apply')
     for argument in ('plan', 'sha256', 'holds', 'out'):
         remove.add_argument('--' + argument, required=True)
+    remove.add_argument('--codex-pins')
     args = vars(parser.parse_args(argv))
     action = args.pop('action')
     try:

@@ -59,7 +59,7 @@ def _fingerprint(info):
     return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
 
 
-def _codex_scope(stream, paths):
+def _codex_metadata(stream):
     raw = stream.readline(recall_discovery.HEADER_LIMIT + 1)
     if len(raw) > recall_discovery.HEADER_LIMIT:
         raise ValueError('Codex session header size limit')
@@ -69,7 +69,7 @@ def _codex_scope(stream, paths):
     row = header.get('payload')
     if not isinstance(row, dict) or not isinstance(row.get('id'), str) or not UUID.fullmatch(row['id']):
         raise ValueError('invalid Codex session identity')
-    return row['id'], worktree_usage._checkout(row.get('cwd'), paths)
+    return row
 
 
 def _references(stream, size, matcher, known):
@@ -108,7 +108,9 @@ def _session(file, host, project, paths, selected, matcher, remaining):
             raise ValueError('session record is not a regular file')
         direct = None
         if host == 'codex':
-            ident, direct = _codex_scope(stream, paths)
+            metadata = _codex_metadata(stream)
+            ident = metadata['id']
+            direct = worktree_usage._checkout(metadata.get('cwd'), paths)
             if direct is None:
                 return None, {}, 0  # Leave other projects' transcript bodies unread.
         elif host == 'cursor':
