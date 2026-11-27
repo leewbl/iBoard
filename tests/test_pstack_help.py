@@ -34,6 +34,7 @@ class PstackHelpTests(unittest.TestCase):
             'setup-benny': 'benny freeze',
             'triage-issue-reports': 'benny_triage',
             'benny-handoff': 'benny_handoff prepare',
+            'benny-followup': 'benny_followup',
             'benny-reproduce': 'benny verify',
             'review-pr': 'interrogate',
             'ship-stack': 'stack_ship plan',

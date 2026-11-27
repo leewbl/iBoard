@@ -219,6 +219,11 @@ SCENARIOS = {
         'automations/benny/templates/triage-automation-prompt.md', 'skills/triage-issue-reports/SKILL.md',
         'benny_handoff prepare', 'Exact planned payloads, tracker evidence and a verified original-thread reply',
         'Apply is separately authorized. It uses the journal to avoid repeated writes and can close only a new issue it created.'),
+    'benny-followup': Scenario(
+        'Watch the original triage thread for direct questions and concrete corrections',
+        'automations/benny/templates/triage-automation-prompt.md', 'skills/triage-issue-reports/SKILL.md',
+        'benny_followup', 'One bounded, replayable window with cited replies and tracker correction receipts',
+        'The window starts with the confirmed verdict. The coordinator stops on request and emits no second marker.'),
     'benny-reproduce': Scenario(
         'Recheck the Slack report and verify the existing fix',
         'automations/benny/skills/reproduce-and-fix-issues/SKILL.md',

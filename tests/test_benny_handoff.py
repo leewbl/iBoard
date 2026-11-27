@@ -57,6 +57,8 @@ class FakeTracker:
     def comment(self, repo, number, body):
         self.actions.append(('comment', repo, number))
         self.entries.append({'id': len(self.entries) + 1, 'number': number, 'body': body, 'user': {'login': self.actor}})
+        if self.failure == 'lost-comment':
+            raise delivery.DeliveryError('lost comment response')
         return self.entries[-1]
 
     def close(self, repo, number):
@@ -87,7 +89,7 @@ class HandoffTests(unittest.TestCase):
         cli.git(self.repo, 'add', '.')
         cli.git(self.repo, 'commit', '-qm', 'Keep selected label')
 
-    def prepare(self, *, category='bug', duplicate=False):
+    def prepare(self, *, category='bug', duplicate=False, followup_seconds=0):
         frozen = benny.freeze(rules=RULES, slack=self.fixture.slack, channel=CHANNEL, message_ts=ROOT,
                               out=self.root/'frozen')
         result = {'status': 'ready', 'category': category, 'title': 'Rename clears the label', 'summary': OBSERVED,
@@ -110,7 +112,8 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(triage['status'], 'ready', triage.get('reason'))
         receipt = output/'result.json'
         return benny_handoff.prepare(triage=receipt, sha256=cli.digest(receipt), state_dir=self.root/'delivery',
-                                     labels=('bug',) if not duplicate and category == 'bug' else ())
+                                     labels=('bug',) if not duplicate and category == 'bug' else (),
+                                     followup_seconds=followup_seconds)
 
     def apply(self, plan):
         return benny_handoff.apply(plan=plan['plan'], sha256=plan['sha256'], slack=self.fixture.slack,

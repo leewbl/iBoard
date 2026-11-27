@@ -59,7 +59,9 @@ def _preview(plan, issue=None):
     return {'channel': recipient['channel'], 'root': recipient['root'], 'text': '\n'.join([*lines, mark])}
 
 
-def prepare(*, triage, sha256, state_dir, labels=()):
+def prepare(*, triage, sha256, state_dir, labels=(), followup_seconds=0):
+    if type(followup_seconds) is not int or not 0 <= followup_seconds <= 3600:
+        raise ValueError('choose a follow-up window between 0 and 3600 seconds')
     result_path = Path(triage).expanduser().resolve(strict=True)
     triage_result = _load(result_path, sha256, 'benny-triage')
     if triage_result.get('status') != 'ready' or not isinstance(triage_result.get('proposal'), dict):
@@ -114,7 +116,8 @@ def prepare(*, triage, sha256, state_dir, labels=()):
             'source': location, 'permalink': snapshot['permalink'], 'rules': rules,
             'action': action, 'tracker': repo, 'issue': issue, 'labels': list(labels), 'link': link,
             'marker': marker, 'marker_line': marker_line, 'unread': unread,
-            'summary': outbound[0], 'question': outbound[1], 'destination': outbound[2]}
+            'summary': outbound[0], 'question': outbound[1], 'destination': outbound[2],
+            'followup_seconds': followup_seconds}
     if action == 'draft-new-issue':
         plan['title'] = _text(computed['title'])
         plan['body'] = _issue_body(computed['fields'], marker)
@@ -248,7 +251,8 @@ class Handoff:
                    and _normalize(row['text']) == expected]
         if len(replies) == 1 and self.state.get('slack_ts', replies[0]['ts']) == replies[0]['ts']:
             others = [row for row in current['messages'] if row != replies[0]]
-            return self.save('confirmed', slack_ts=replies[0]['ts'], source_changed_after_post=others != self.source['messages'])
+            return self.save('confirmed', slack_ts=replies[0]['ts'], confirmed_at=cli.now(),
+                             source_changed_after_post=others != self.source['messages'])
         if rejected and not replies:
             return self.compensate('reply-rejected')
         return self.save('rejected' if rejected else 'posting', 'reply-unconfirmed')
@@ -347,6 +351,7 @@ def main(argv=None):
     for name in ('triage', 'sha256', 'state-dir'):
         ready.add_argument('--' + name, required=True)
     ready.add_argument('--label', dest='labels', action='append', default=[])
+    ready.add_argument('--followup-seconds', type=int, default=0)
     send = commands.add_parser('apply')
     for name in ('plan', 'sha256', 'read-token-file', 'write-token-file'):
         send.add_argument('--' + name, required=True)

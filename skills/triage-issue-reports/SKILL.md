@@ -47,4 +47,18 @@ python3 -m workbench.benny_handoff apply --plan "$PLAN" --sha256 "$PLAN_SHA" \
 
 New issues carry the original Slack link and an exact run marker. A confirmed duplicate gets a recurrence comment, preserving the issue body and state. The coordinator rereads the source immediately before a reply, sends only via Slack's [thread reply parameters](https://docs.slack.dev/reference/methods/chat.postMessage/), then checks the same thread for the posted verdict. Resume with the same plan to reconcile a lost acknowledgement. A request with an unknown outcome is not sent again. An explicit reply rejection and a fresh complete thread read can close an issue created by this run with `not_planned`. The run rereads the issue and checks that state. A source change before sending can also trigger that same scoped compensation. An existing issue is never closed by the handoff.
 
-The local journal records every stage and whether GitHub or Slack needs reconciliation. Attachments remain local. Live tenant validation, attachment publishing and the later follow-up window are separate.
+The local journal records every stage and whether GitHub or Slack needs reconciliation. Attachments remain local. Live tenant validation and attachment publishing are separate.
+
+## Watch one follow-up window
+
+To enable follow-up, include `--followup-seconds 600` when preparing the original handoff. The window starts with the confirmed verdict. After an authorized handoff, the coordinator can watch the original thread with the same plan and credentials.
+
+```sh
+python3 -m workbench.benny_followup --plan "$PLAN" --sha256 "$PLAN_SHA" \
+  --read-token-file "$SLACK_READ_KEY" --write-token-file "$SLACK_WRITE_KEY" \
+  --seconds 60 --poll-seconds 15
+```
+
+The coordinator responds only to human questions addressed to the configured triage identity. Claude Code + GLM can use the frozen report, verdict and tracker link. An answer needs an exact supporting excerpt and contains no new triage marker. A directed correction from the reporter can append a field-specific comment to the same open GitHub issue. Write it as `@Benny Correction: Environment: macOS 15`, or use `Version`, `Trigger`, `Expected`, `Observed` or `Frequency`. The comment links the correcting message and leaves existing issue fields intact.
+
+Each outgoing effect is journaled against the source message. Resume within the same window to reconcile a lost response without sending it again. A stop request such as `Stop Benny.` closes the window. An altered or missing initial verdict also stops follow-up. Repeated invocations cannot move the deadline. The command consumes up to its own `--seconds` budget inside the original window.

@@ -48,7 +48,9 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [Benny 分诊](../skills/triage-issue-reports/SKILL.md) 将同一份报告、固定提交的源码与历史、指定 GitHub 工单搜索结果交给 Claude Code + GLM。核对结论引用的原文和工单，保留无法判断的事实与附件。目录不全、发现来源已登记或复验前报告发生改变时，不提出新建工单。分诊本身输出本地建议。
 
-[Benny 工单交接](../skills/triage-issue-reports/SKILL.md#apply-a-reviewed-handoff) 将批准的建议绑定到来源线程和工单目标，允许创建工单或为现有重复工单追加来源评论。协调者在回帖前读取原线程，提交后复读。已发送但无明确结果的请求只核对回执。收到明确拒绝且回读证明回帖缺失时，关闭本次创建的新工单并核对状态。GitHub 和 Slack 均已用本机 HTTP 模拟联调，真实账号权限与后续跟进窗口待验。
+[Benny 工单交接](../skills/triage-issue-reports/SKILL.md#apply-a-reviewed-handoff) 将批准的建议绑定到来源线程和工单目标，允许创建工单或为现有重复工单追加来源评论。协调者在回帖前读取原线程，提交后复读。已发送但无明确结果的请求只核对回执。收到明确拒绝且回读证明回帖缺失时，关闭本次创建的新工单并核对状态。GitHub 和 Slack 均已用本机 HTTP 模拟联调，真实账号权限待验。
+
+[Benny 跟进窗口](../skills/triage-issue-reports/SKILL.md#watch-one-follow-up-window) 从已确认的回帖计时。协调者只处理直接问它的问题和报告人的具体更正。前者附原文依据，后者在原工单追加具名字段及来源链接。重复运行只核对未知回执，不延长窗口。已用本机线程、工单模拟与真实 GLM 验证定向回复、更正和停止。
 
 [附件取证](../skills/triage-issue-reports/SKILL.md#attachments) 根据原线程中的文件 ID 读取私有 Slack 文件，记录原件哈希、文字引文和图片观察。MP4 取三个时间点的帧，单独记录观察及证据限制。已用本机 Slack 协议测试服务、真实 FFmpeg 和 GLM 视觉模型验证。抽样和未读取的附件仍算证据缺口，保存的附件或帧变更会阻止确认分诊建议。
 

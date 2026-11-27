@@ -99,7 +99,8 @@ class Fixture:
                         self.send_error(503)
                         return
                     else:
-                        row = reply(80 + len(fixture.sent), payload['text'], user=fixture.user)
+                        highest = max(int(row['ts'].split('.')[-1]) for page in fixture.pages for row in page)
+                        row = reply(max(80 + len(fixture.sent), highest - 9), payload['text'], user=fixture.user)
                         fixture.pages[-1].append(row)
                         if 'reply_count' in fixture.root:
                             fixture.root['reply_count'] += 1
