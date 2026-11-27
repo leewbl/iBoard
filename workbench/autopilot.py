@@ -151,8 +151,10 @@ def _sleep_before_ci_poll(task, sleep):
     sleep(min(30, max(0, remaining - 1)))
 
 
-def _wait_for_ci(task, repo, number, expected_head, *, github=None, sleep=time.sleep):
+def _wait_for_ci(task, repo, number, expected_head, *, github=None, sleep=time.sleep, once=False, observe=False):
     """Wait only for explicit pending checks; the merger remains the final gate."""
+    if observe and not once:
+        raise AutopilotError('a read-only CI observation must be a single pass')
     github = github or delivery.GitHub()
     task_data = cli.read(task)
     try:
@@ -164,6 +166,10 @@ def _wait_for_ci(task, repo, number, expected_head, *, github=None, sleep=time.s
     while True:
         run_control.admit(task, AutopilotError)
         data = cli.read(task)
+        if observe:
+            if data['status'] != 'paused':
+                raise AutopilotError('CI observation requires a retained paused task')
+            data = {**data, 'status': 'running'}
         _remaining(data)
         if isinstance(github, delivery.GitHub):
             github.set_task_deadline(data)
@@ -178,6 +184,8 @@ def _wait_for_ci(task, repo, number, expected_head, *, github=None, sleep=time.s
         except delivery.DeliveryError as error:
             if not transient.search(str(error)):
                 raise
+            if once:
+                return False
             _sleep_before_ci_poll(task, sleep)
             continue
         if (not isinstance(pull, dict) or pull.get('state') != 'OPEN' or pull.get('isDraft')
@@ -258,6 +266,8 @@ def _wait_for_ci(task, repo, number, expected_head, *, github=None, sleep=time.s
             except delivery.DeliveryError as error:
                 if not transient.search(str(error)):
                     raise
+                if once:
+                    return False
                 _sleep_before_ci_poll(task, sleep)
                 continue
             evidence = failures[0] if len(failures) == 1 else {
@@ -270,7 +280,9 @@ def _wait_for_ci(task, repo, number, expected_head, *, github=None, sleep=time.s
         if not pending:
             if failed_check:
                 raise AutopilotError(failed_check)
-            return
+            return True if once else None
+        if once:
+            return False
         _sleep_before_ci_poll(task, sleep)
 
 
@@ -782,7 +794,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         source_mode='workspace', candidate_image=None, memory_mb=2048, build_source_image=False, reverify=False,
         model=execute_model, check=workflow.run_check, merge=delivery.guarded_merge,
         publisher=publish.publish, closer=delivery.close_verified_issue, vision=describe_screenshot,
-        architecture_review=None, phase_measure=None, phase_verification=nullcontext, phase_active=None):
+        architecture_review=None, phase_measure=None, phase_verification=nullcontext, phase_active=None,
+        ci_once=False, local_handoff=False):
     """Resume a task, preserving each completed phase; never accept a model claim as proof."""
     task = Path(task_path).expanduser().resolve(strict=True)
     issue_path = Path(issue_path).expanduser().resolve(strict=True)
@@ -1735,8 +1748,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             _validate_adoption(task, cli.read(task), issue_path, image, pr_repo, source_mode, candidate_image,
                                build_source_image, memory_mb)
             if not pr_repo:
-                if phase or refactor_plan:
-                    label = 'multi-phase' if phase else 'refactoring'
+                if phase or refactor_plan or local_handoff:
+                    label = 'multi-phase' if phase else 'refactoring' if refactor_plan else 'local'
                     _pause(task, f'{label} candidate verified; inspect the retained delivery evidence')
                     return state
                 raise AutopilotError('PR must exist or specify a personal fork for publishing')
@@ -1744,6 +1757,17 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 phase_contract.require_delivery(cli.read(task), state['candidate_commit'], destination=pr_repo)
             if arena:
                 delivery.require_feature_arena_delivery(cli.read(task), feature, state['candidate_commit'], pr_repo)
+            waiting = state.get('ci_wait')
+            if waiting is not None:
+                published = state.get('published_pr') or {}
+                expected = {'repo': pr_repo, 'head': state['candidate_commit'], 'base': data['base_commit'],
+                            'pr': published.get('pr')}
+                if (waiting != expected or type(expected['pr']) is not int or expected['pr'] < 1
+                        or published.get('repo') != pr_repo or published.get('head') != expected['head']
+                        or (pr_number is not None and pr_number != expected['pr'])
+                        or state.get('ci_republish') is not None):
+                    raise AutopilotError('retained CI observation no longer matches the published candidate')
+                pr_number = expected['pr']
             pending_update = state.get('ci_republish')
             if pending_update:
                 if (not isinstance(pending_update, dict) or pending_update.get('repo') != pr_repo or
@@ -1782,10 +1806,19 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                 return state
             if merge is delivery.guarded_merge and not cli.read(task).get('local_gate'):
                 try:
-                    _wait_for_ci(task, pr_repo, pr_number, state['candidate_commit'])
+                    complete = _wait_for_ci(task, pr_repo, pr_number, state['candidate_commit'],
+                                            **({'once': True} if ci_once else {}))
+                    if ci_once and complete is False:
+                        state['ci_wait'] = {'repo': pr_repo, 'pr': pr_number, 'head': state['candidate_commit'],
+                                            'base': data['base_commit']}
+                        cli.write(state_path, state)
+                        _pause(task, 'required CI is pending on the recorded PR head')
+                        return state
                 except CIFailure as error:
                     data = cli.read(task)
                     _remaining(data)
+                    if state.pop('ci_wait', None) is not None:
+                        cli.write(state_path, state)
                     if error.evidence.get('head') != state['candidate_commit']:
                         raise AutopilotError('CI failure does not belong to the candidate') from error
                     evidence = {**error.evidence, 'repo': pr_repo, 'pr': pr_number, 'base': data['base_commit']}
@@ -1845,7 +1878,9 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                        memory_mb=memory_mb, build_source_image=build_source_image,
                                        model=model, check=check, merge=merge, publisher=publisher,
                                        closer=closer, vision=vision, architecture_review=architecture_review,
-                                       phase_measure=phase_measure)
+                                       phase_measure=phase_measure, ci_once=ci_once, local_handoff=local_handoff)
+            if state.pop('ci_wait', None) is not None:
+                cli.write(state_path, state)
             require_active()
             result = merge(task, pr_repo, pr_number)
             state.update(phase='close-issue', delivery=result, delivery_repo=pr_repo, delivery_pr=pr_number)

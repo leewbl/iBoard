@@ -107,6 +107,11 @@ SCENARIOS = {
         'skills/pause-safely/SKILL.md', 'run_control hold',
         'An operator request ID and the verifiable checkpoint shown by run_control show',
         'Requires an explicit named task. Release is a separate action after the current step has finished.'),
+    'autonomous-run': Scenario(
+        'Drive an approved task to a frozen outcome', 'skills/poteto-mode/playbooks/autonomous-run.md',
+        'skills/autonomous-run/SKILL.md', 'autonomous_run freeze',
+        'A frozen outcome, a run journal, and exact candidate and delivery proof',
+        'Uses the original task budget and observes pending CI without launching another worker.'),
     'catch-up': Scenario(
         'See progress since a selected time', 'skills/ketchup/SKILL.md',
         'skills/pickup/SKILL.md', 'pickup', 'Task events, supporting artifacts and optional live PR state',

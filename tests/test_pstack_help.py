@@ -24,6 +24,7 @@ class PstackHelpTests(unittest.TestCase):
             'inspect-task': 'pickup',
             'resume-task': 'resume',
             'pause-task': 'run_control hold',
+            'autonomous-run': 'autonomous_run freeze',
             'generate-verify': 'project_verify create',
             'maintain-verify': 'project_verify maintain',
             'create-formal-verify': 'formal_verify create',

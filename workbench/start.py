@@ -172,10 +172,13 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
           feature_arena_out=None, visual_baseline=None, visual_baseline_sha256=None,
           refactor_contract=None, refactor_contract_sha256=None,
+          prepare_only=False,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
         raise StartError('provide exactly one issue file or GitHub issue URL')
+    if prepare_only and feature_arena_out:
+        raise StartError('prepare-only cannot run an Arena comparison')
     if kind not in cli.TASK_KINDS or surface not in ('ui', 'non-ui') or iterations < 1 or seconds < 1:
         raise StartError('task kind, surface and positive limits are required')
     refactor_input = None
@@ -415,6 +418,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                     }
                     cli.write(task, data)
                 cli.write(task.parent / 'input-stage.json', stage)
+                if prepare_only:
+                    autopilot._pause(task, 'intake prepared for a separately authorized run')
+                    return {**info, 'phase': 'plan', 'status': 'paused'}
                 if screenshots:
                     _finish_screenshots(task, vision=vision)
                 return run(task, request, image, pr_repo=pr_repo, source_mode=source_mode,
@@ -447,6 +453,9 @@ def main(argv=None):
     parser.add_argument('--image', required=True)
     parser.add_argument('--pr-repo')
     parser.add_argument('--publish-only', action='store_true', help='create the verified PR without waiting for CI or merging')
+    parser.add_argument('--prepare-only', action='store_true', help='retain a paused intake without running the task')
+    parser.add_argument('--criterion', action='append', default=[], metavar='ID=TEXT',
+                        help='freeze an acceptance criterion at intake; may be repeated')
     parser.add_argument('--required-ci-workflow', action='append', dest='required_ci_workflows',
                         help='GitHub Actions workflow name required for delivery; may be repeated')
     parser.add_argument('--ci-skip-policy', choices=cli.CI_SKIP_POLICIES)
@@ -466,6 +475,12 @@ def main(argv=None):
     parser.add_argument('--refactor-contract', help='completed frozen refactoring contract')
     parser.add_argument('--refactor-contract-sha256', help='expected SHA-256 of the frozen refactoring contract')
     args = parser.parse_args(argv)
+    criteria = []
+    for item in args.criterion:
+        key, separator, text = item.partition('=')
+        if not separator or not key.strip() or not text.strip():
+            parser.error('--criterion requires ID=TEXT')
+        criteria.append({'id': key, 'text': text})
     result = start(task_id=args.id, repo=args.repo, issue_file=args.issue_file, issue_url=args.issue_url,
                    source=args.source, kind=args.kind, surface=args.surface, iterations=args.iterations,
                    seconds=args.seconds, image=args.image, pr_repo=args.pr_repo, tasks_root=args.tasks_root,
@@ -477,7 +492,8 @@ def main(argv=None):
                    feature_manifest=args.feature_manifest, feature_sha256=args.feature_sha256,
                    feature_arena_out=args.feature_arena_out, visual_baseline=args.visual_baseline,
                    visual_baseline_sha256=args.visual_baseline_sha256, refactor_contract=args.refactor_contract,
-                   refactor_contract_sha256=args.refactor_contract_sha256)
+                   refactor_contract_sha256=args.refactor_contract_sha256, prepare_only=args.prepare_only,
+                   criteria=criteria)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
