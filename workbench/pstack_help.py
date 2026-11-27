@@ -197,6 +197,12 @@ SCENARIOS = {
     'verify-pr': Scenario(
         'Independently verify an existing PR', 'skills/poteto-mode/playbooks/shipping.md',
         'skills/verify-pr/SKILL.md', 'verify_pr', 'Baseline and candidate evidence bound to the selected PR revisions'),
+    'verify-existing-fix': Scenario(
+        'Measure a reported fault on the original version and its existing GitHub fix',
+        'automations/benny/skills/reproduce-and-fix-issues/references/verify-existing-fix.md',
+        'skills/reproduce-and-fix-issues/SKILL.md', 'verify_existing_fix',
+        'Paired user-path evidence, two independent observations per side, and a GitHub artifact recheck',
+        'This route reads the selected artifact and runs offline. It does not edit or publish a PR.'),
     'open-verified-pr': Scenario(
         'Open an independently verified task as a ready GitHub PR',
         'skills/poteto-mode/playbooks/opening-a-pr.md', 'skills/opening-a-pr/SKILL.md', 'pr_brief prepare',

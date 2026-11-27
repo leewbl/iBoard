@@ -207,7 +207,7 @@ def _failure_diagnostics(invoke, docker, container_output, report, until):
 def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=2048, invoke=subprocess.run,
                 find_executable=shutil.which, screenshot_output=None, source_root="/workspace",
                 workspace_read_only=False, regression_source=None, regression_file=None, profile_output=None,
-                statechart_output=None, pids_limit=256):
+                statechart_output=None, pids_limit=256, capture_failure_screenshot=False):
     """Return an execution report. The chosen workspace must contain test data only.
 
     ``source_root`` selects the mounted workspace or the verified image source;
@@ -219,6 +219,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
     disposable container mount.
     Statechart writes only named TLC reports and charts through a separate
     mount, including a normal invariant-violation exit.
+    A declared screenshot check can also retain its PNG on an observed exit 1.
     ``invoke`` and ``find_executable`` permit unit testing without a Docker daemon.
     """
     docker = find_executable("docker")
@@ -231,6 +232,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
         raise SandboxError("invalid Docker image reference")
     if not command or not command[0] or command[0].startswith("-"):
         raise SandboxError("a command with a valid executable is required")
+    if capture_failure_screenshot and screenshot_output is None:
+        raise SandboxError("failure screenshot capture requires a screenshot output path")
     regression = regression_source is not None or regression_file is not None
     profile = None
     if profile_output is not None:
@@ -363,7 +366,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                 result = invoke([docker, "start", "--attach", name], stdout=stdout, stderr=stderr,
                                 timeout=remaining, check=False)
                 report["exit_code"] = result.returncode
-                if screenshot_output is not None and result.returncode == 0:
+                capture_codes = (0, 1) if capture_failure_screenshot else (0,)
+                if screenshot_output is not None and result.returncode in capture_codes:
                     report['screenshot_sha256'] = _copy_screenshot(artifact_dir, screenshot_output)
                     report['screenshot_path'] = str(Path(screenshot_output).resolve())
                 if profile is not None and result.returncode == 0:

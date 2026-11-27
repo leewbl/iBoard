@@ -30,6 +30,7 @@ class PstackHelpTests(unittest.TestCase):
             'typescript-best-practices': 'typescript_discipline check',
             'pr-status': 'pr_watch --mode check',
             'verify-pr': 'verify_pr',
+            'verify-existing-fix': 'verify_existing_fix',
             'review-pr': 'interrogate',
             'ship-stack': 'stack_ship plan',
             'inspect-task': 'pickup',

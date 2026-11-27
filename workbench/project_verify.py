@@ -255,7 +255,7 @@ class Verification:
             raise ValueError("project verification time limit expired")
         return left
 
-    def drive(self, bundle, check, attempt):
+    def drive(self, bundle, check, attempt, *, capture_failure_screenshot=False):
         key, helper = check["id"], check["helper"]
         basename = key + attempt
         command = _command(check)
@@ -278,6 +278,7 @@ class Verification:
                     run = self.sandbox(scratch, self.report["verified_image_id"], command, self.remaining(),
                                        memory_mb=self.memory_mb, workspace_read_only=True,
                                        source_root="/app", screenshot_output=screenshot,
+                                       **({"capture_failure_screenshot": True} if capture_failure_screenshot else {}),
                                        **({"pids_limit": 384} if browser else {}))
             except (ValueError, OSError, SandboxError) as error:
                 run = {"error": str(error), "diagnostic": "sandbox"}

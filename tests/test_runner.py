@@ -529,6 +529,24 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(len(digest), 64)
         self.assertEqual((self.workspace / 'output.png').read_bytes(), tiny_png())
 
+    def test_declared_failure_can_retain_a_screenshot_without_turning_it_into_a_pass(self):
+        def invoke(args, **kwargs):
+            if args[1] == 'create':
+                mount = next(arg for arg in args if arg.endswith('dst=/artifacts'))
+                (Path(mount.split(',')[1].removeprefix('src=')) / 'screenshot.png').write_bytes(tiny_png())
+            if args[1] == 'start':
+                return subprocess.CompletedProcess(args, 1)
+            return self.fake(args, **kwargs)
+
+        for capture in (False, True):
+            destination = self.workspace / f'failure-{capture}.png'
+            report = self.run_it(invoke, screenshot_output=destination, capture_failure_screenshot=capture)
+            self.assertTrue(report['cleanup_confirmed'])
+            self.assertEqual(report['exit_code'], 1)
+            self.assertEqual(destination.is_file(), capture)
+            if capture:
+                self.assertEqual(report['screenshot_sha256'], hashlib.sha256(tiny_png()).hexdigest())
+
 
 if __name__ == "__main__":
     unittest.main()

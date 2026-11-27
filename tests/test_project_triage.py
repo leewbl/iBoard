@@ -43,6 +43,7 @@ class ProjectTriageTests(unittest.TestCase):
         self.states = {}
         self.calls = []
         self.derivations = []
+        self.reuse_container = False
 
     def attester(self, repo, image, timeout, *, commit):
         self.assertEqual(commit, self.base)
@@ -73,7 +74,10 @@ class ProjectTriageTests(unittest.TestCase):
         exit_code, line, cleanup, truncated = output[action]
         return {'image': image, 'command': argv, 'workspace_read_only': True, 'container_created': True,
                 'cleanup_confirmed': cleanup, 'stdout': line + '\n', 'exit_code': exit_code,
-                'stdout_truncated': truncated}
+                'stdout_truncated': truncated, 'stderr_truncated': False, 'source_root': '/app',
+                'memory_mb': kwargs['memory_mb'], 'timed_out': False, 'create_exit_code': 0,
+                'create_stdout': f'{1 if self.reuse_container else len(self.calls):064x}\n',
+                'runtime_diagnostics': {'state':{'status':'exited', 'exit_code':exit_code, 'oom_killed':False}}}
 
     def invoke(self, name, **override):
         args = dict(repo=self.repo, base=self.base, revision=self.revision, image='runtime:local',
@@ -121,3 +125,32 @@ class ProjectTriageTests(unittest.TestCase):
         self.oracle.write_bytes((self.helpers / 'main.sh').read_bytes())
         with self.assertRaisesRegex(ValueError, 'own implementation'):
             self.invoke('copied')
+
+    def test_existing_fix_requires_both_probes_to_fail_twice_before_and_pass_twice_after(self):
+        source = {'url': 'https://github.com/owner/repo/pull/1', 'kind': 'pull'}
+        self.states[(BASE_IMAGE, 'MAIN')] = self.states[(BASE_IMAGE, 'ORACLE')] = 'observed'
+        result = self.invoke('verified-fix', existing_fix=(source, b'Original report.'))
+        self.assertEqual(result['outcome'], 'artifact-unconfirmed')
+        self.assertEqual(result['runtime_outcome'], 'confirmed')
+        self.assertEqual(result['artifact'], source)
+        self.assertEqual(cli.digest(self.root/'verified-fix/frozen/report.txt'), result['report_sha256'])
+        for side, image in (('baseline', BASE_IMAGE), ('candidate', CANDIDATE_IMAGE)):
+            for probe in ('MAIN', 'ORACLE'):
+                self.assertEqual(self.calls.count((image, probe)), 2)
+            self.assertTrue(all(run['cleanup_confirmed'] for run in result['rounds'][side]['runs']))
+
+    def test_existing_fix_distinguishes_no_change_from_an_inconclusive_run(self):
+        frozen = {'kind': 'commit'}, b'Original report.'
+        self.states.update({(image, probe): 'observed' for image in (BASE_IMAGE, CANDIDATE_IMAGE)
+                            for probe in ('MAIN', 'ORACLE')})
+        self.assertEqual(self.invoke('unchanged', existing_fix=frozen)['runtime_outcome'], 'insufficient-fix')
+        self.states[(CANDIDATE_IMAGE, 'ORACLE')] = 'crash'
+        self.assertEqual(self.invoke('crash-after', existing_fix=frozen)['runtime_outcome'], 'inconclusive')
+        self.states[(BASE_IMAGE, 'MAIN')] = 'pass'
+        self.assertEqual(self.invoke('healthy-before', existing_fix=frozen)['runtime_outcome'], 'inconclusive')
+
+    def test_existing_fix_rejects_reused_containers(self):
+        self.reuse_container = True
+        self.states[(BASE_IMAGE, 'MAIN')] = self.states[(BASE_IMAGE, 'ORACLE')] = 'observed'
+        result = self.invoke('duplicate', existing_fix=({'kind': 'commit'}, b'Original report.'))
+        self.assertEqual(result['runtime_outcome'], 'environment-blocked')

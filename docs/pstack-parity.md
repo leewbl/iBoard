@@ -42,6 +42,8 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [`workbench.verify_pr`](../skills/verify-pr/SKILL.md) 可为已存在的 GitHub PR 创建只用于复验的任务。它在新工作树中固定原始条件和两个提交，在父提交运行基线场景，再切到已存在的候选提交运行断网检查和独立终审。验证失败时保留报告和候选现场。`workbench.stack_verify` 对照当前 PR、原始输入、证据哈希和独立报告，从根 PR 开始找出连续通过的范围。
 
+[Benny 已有修复复验](../skills/reproduce-and-fix-issues/SKILL.md) 从指定 GitHub PR 或已合入的提交固定版本，在隔离环境从基线镜像派生候选。主驱动和独立探针各在两版运行两次并保留实际输出。只有基线重复出现原症状、候选重复达成预期且 GitHub 工件仍一致时，才出具确认结果。过程保留原 PR 归属，只有读取权限。Slack 受理、认领及回帖仍需接入。
+
 [`workbench.stack_ship`](../skills/shipping/SKILL.md) 可把一条已验证的依赖路径固化为交付计划，并在获授权的个人 fork 上自下而上执行。每次写入前重新核对任务记录和合并门禁，随后读取 GitHub PR 和主分支确认结果。父 PR 快进合入时，子 PR 可改为指向同一提交的主分支。若主分支提交不同，`workbench.stack_rebase verify` 在独立工作树重放下一项，保留其原始请求、验收历史与本地门禁，对新父提交和候选重新取证。明确授权的 `update` 命令核对主分支和旧 head 后更新原 PR。两阶段均保留可审计的回执。
 
 [`workbench.stack_autopilot`](../skills/autopilot-stack/SKILL.md) 从本地清单冻结一组已选 PR 的请求、验收条件、head 和 base。工作台按父子顺序独立复验，也能复用当前版本的已验收任务。交接前逐项核对当前 CI 或本地门禁，记录缺口。恢复时沿用冻结的输入和从首次启动起计算的总时限。此入口停在交接。

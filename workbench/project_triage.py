@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 import time
 
 from runner.sandbox import run_sandbox
-from workbench import cli, project_verify, workflow
+from workbench import cli, project_verify, verify_openclaw, workflow
 
 
 def _image_reference(value):
@@ -19,13 +19,15 @@ def _image_reference(value):
     return value
 
 
-def _derive(repo, base, head, image_id, timeout):
+def _derive(repo, base, head, image_id, timeout, *, rebuild_openclaw_ui=False):
     deadline = time.monotonic() + timeout
     with TemporaryDirectory(prefix="iboard-triage-worktree-") as scratch:
         workspace = Path(scratch) / "source"
         cli.git(repo, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach",
                 str(workspace), head, timeout=min(timeout, 60))
         try:
+            if rebuild_openclaw_ui:
+                return verify_openclaw.build_browser_image(workspace, base, image_id, head, deadline - time.monotonic())
             return workflow.build_source_image(workspace, base, image_id, deadline - time.monotonic())
         finally:
             cli.git(repo, "worktree", "remove", "--force", str(workspace), timeout=30)
@@ -63,15 +65,18 @@ def _classify(base, candidate, changed):
     return "inconclusive"
 
 
-def _probe(engine, bundle, doctor, primary, oracle, digests):
+def _probe(engine, bundle, doctor, primary, oracle, digests, containers=None):
     def checked_drive(check, suffix):
-        passed = engine.drive(bundle, check, suffix)
+        capture_failure = containers is not None and check.get("screenshot") and "failure_marker" in check
+        passed = engine.drive(bundle, check, suffix, capture_failure_screenshot=capture_failure)
         item = engine.report["runs"][-1]
         report = engine.output / item["report"]
         raw = cli.read(report)
         if (raw.get("helper_sha256") != digests[check["helper"]]
                 or raw.get("commit") != engine.revision or cli.digest(report) != item["sha256"]):
             raise ValueError("triage sandbox proof does not match the frozen inputs")
+        if containers is not None and not _complete_run(engine, check, raw, report, containers):
+            return False, {**raw, "error": "incomplete sandbox evidence"}
         return passed, raw
 
     result = {"doctor_healthy": checked_drive(doctor, "")[0], "primary": [], "oracle": []}
@@ -87,8 +92,47 @@ def _probe(engine, bundle, doctor, primary, oracle, digests):
     return result
 
 
+def _complete_run(engine, check, raw, report, containers):
+    identity = raw.get("create_stdout", "").strip()
+    diagnostics = raw.get("runtime_diagnostics", {})
+    if (not re.fullmatch(r"[a-f0-9]{64}", identity) or identity in containers
+            or raw.get("command") != project_verify._command(check) or raw.get("source_root") != "/app"
+            or raw.get("memory_mb") != engine.memory_mb or raw.get("create_exit_code") != 0
+            or raw.get("image") != engine.report["verified_image_id"] or raw.get("error")
+            or raw.get("container_created") is not True or raw.get("cleanup_confirmed") is not True
+            or raw.get("workspace_read_only") is not True
+            or raw.get("timed_out") is not False or raw.get("stdout_truncated") is not False
+            or raw.get("stderr_truncated") is not False or diagnostics.get("classification") == "docker-oom"):
+        return False
+    containers.add(identity)
+    if raw.get("exit_code") == 1 and diagnostics.get("state") != {
+            "status": "exited", "exit_code": 1, "oom_killed": False}:
+        return False
+    if check.get("screenshot"):
+        screenshot = report.with_suffix(".png")
+        if (not screenshot.is_file() or screenshot.is_symlink()
+                or cli.digest(screenshot) != raw.get("screenshot_sha256")
+                or (check.get("browser") and not project_verify._browser_receipt(raw, screenshot, engine.revision))):
+            return False
+    return True
+
+
+def _fix_outcome(base, candidate):
+    if not (base["doctor_healthy"] and candidate["doctor_healthy"]):
+        return "environment-blocked"
+    reproduced, resolved = ["observed-failure"] * 2, ["pass"] * 2
+    if base["primary"] != reproduced or base["oracle"] != reproduced:
+        return "inconclusive"
+    if candidate["primary"] == candidate["oracle"] == resolved:
+        return "confirmed"
+    if candidate["primary"] == candidate["oracle"] == reproduced:
+        return "insufficient-fix"
+    return "inconclusive"
+
+
 def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, oracle_marker, oracle_failure_marker,
-        out, timeout=600, memory_mb=3328, sandbox=run_sandbox, attester=workflow._verified_image, derive=_derive):
+        out, timeout=600, memory_mb=3328, sandbox=run_sandbox, attester=workflow._verified_image, derive=None,
+        existing_fix=None):
     repo = Path(repo).expanduser().resolve(strict=True)
     base = cli.sha(repo, base, timeout=10)
     revision = cli.sha(repo, revision, timeout=10)
@@ -100,12 +144,16 @@ def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, orac
     _image_reference(image)
     if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", base, revision],
                       capture_output=True, timeout=10).returncode:
-        raise ValueError("triage requires a candidate descended from the known-good commit")
+        raise ValueError("comparison requires a candidate descended from the selected baseline")
     contract = project_verify._load_contract(manifest)
     doctor = contract["doctor"]
     primary = next((item for item in contract["features"] if item["id"] == journey), None)
     if not primary or not primary.get("failure_marker"):
         raise ValueError("select a journey with a declared observed failure marker")
+    if derive is None:
+        rebuild = existing_fix is not None and bool(primary.get("browser")) and contract["project"] == "openclaw"
+        def derive(repo, base, revision, image, timeout):
+            return _derive(repo, base, revision, image, timeout, rebuild_openclaw_ui=rebuild)
     known_markers = {item[key] for item in (primary, doctor) for key in ("marker", "failure_marker") if key in item}
     if (not re.fullmatch(r"[A-Z][A-Z0-9_]{0,92}_PASS", oracle_marker)
             or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,92}_FAIL", oracle_failure_marker)
@@ -133,12 +181,21 @@ def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, orac
     project_verify._write_bundle(bundle / "bundle", {f"helpers/{name}": data for name, data in inputs.items()})
     snapshot = {"schema": cli.SCHEMA, "base_commit": base, "candidate_commit": revision, "journey": primary,
                 "doctor": doctor, "independent": alternate, "helper_digests": digests}
+    if existing_fix is not None:
+        source, request_bytes = existing_fix
+        snapshot["artifact"] = source
+        snapshot["report_sha256"] = hashlib.sha256(request_bytes).hexdigest()
+        (bundle / "report.txt").write_bytes(request_bytes)
     cli.write(bundle / "contract.json", snapshot)
     output_report = {"schema": cli.SCHEMA, "base_commit": base, "candidate_commit": revision,
                      "journey": journey, "inputs_sha256": cli.digest(bundle / "contract.json"),
                      "outcome": "environment-blocked", "rounds": {}}
+    if existing_fix is not None:
+        output_report.update(artifact=source, report_sha256=snapshot["report_sha256"],
+                             outcome="artifact-unconfirmed", runtime_outcome="environment-blocked")
     total_deadline = time.monotonic() + timeout
     active = None
+    containers = set() if existing_fix is not None else None
 
     def remaining():
         seconds = total_deadline - time.monotonic()
@@ -155,15 +212,21 @@ def run(*, repo, base, revision, image, manifest, helpers, journey, oracle, orac
             active = project_verify.Verification(repo, commit, pinned, destination, remaining(), memory_mb, sandbox, attester)
             active.report["verified_image_id"] = pinned
             output_report["rounds"][side] = active.report
-            active.report["observations"] = _probe(active, bundle / "bundle", doctor, primary, alternate, digests)
+            active.report["observations"] = _probe(active, bundle / "bundle", doctor, primary, alternate, digests,
+                                                   containers)
             cli.write(destination / "result.json", active.report)
         rounds = output_report["rounds"]
         if cli.digest(bundle / "contract.json") != output_report["inputs_sha256"]:
             raise ValueError("triage contract changed during verification")
         if any(cli.digest(bundle / "bundle" / "helpers" / name) != value for name, value in digests.items()):
             raise ValueError("triage helpers changed during verification")
-        output_report["outcome"] = _classify(rounds["baseline"]["observations"], rounds["candidate"]["observations"],
-                                               base != revision)
+        before, after = (rounds[key]["observations"] for key in ("baseline", "candidate"))
+        if existing_fix is None:
+            output_report["outcome"] = _classify(before, after, base != revision)
+        else:
+            if cli.digest(bundle / "report.txt") != output_report["report_sha256"]:
+                raise ValueError("original report changed during existing-fix verification")
+            output_report["runtime_outcome"] = _fix_outcome(before, after)
         output_report["comparison"] = "source-overlay" if base != revision else "same-image-replay"
     except project_verify.ERRORS as error:
         if active is not None:
