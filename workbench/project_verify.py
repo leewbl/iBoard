@@ -451,7 +451,7 @@ def run(mode, *, repo, revision, image, out, timeout=600, memory_mb=3328, manife
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
-    discovery = sub.add_parser("discover", help="Find unregistered and stale user commands from tracked source")
+    discovery = sub.add_parser("discover", help="Find unregistered and stale user entrypoints from tracked source")
     discovery.add_argument("--repo", required=True)
     discovery.add_argument("--revision", default="HEAD")
     discovery.add_argument("--since")

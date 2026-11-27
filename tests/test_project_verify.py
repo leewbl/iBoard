@@ -239,3 +239,102 @@ class ProjectVerificationTests(unittest.TestCase):
         self.assertEqual(proof['features'], {'first': 'passed'})
         self.assertFalse((self.root / 'incomplete' / 'verify-fixture').exists())
         self.assertIn('inventory needs map corrections', proof['reason'])
+
+    def use_session_status_inventory(self):
+        namespace = 'fixture sessions status'
+        self.contract['surface'] = 'Fixture CLI and Sessions UI'
+        self.contract['entrypoint_inventory'] = [{
+            'namespace': namespace,
+            'sources': [{'kind': 'jsx-options', 'path': 'sessions.tsx', 'component': 'SettingsSegmented',
+                         'label_key': 'sessionsView.sessionState'}],
+            'excluded': {},
+        }]
+        self.contract['features'][0]['entrypoints'] = [f'{namespace} active']
+        self.contract['features'][1]['entrypoints'] = [f'{namespace} archived']
+        self.manifest.write_text(json.dumps(self.contract))
+        return namespace
+
+    def commit_session_controls(self, source):
+        path = self.repo / 'sessions.tsx'
+        path.write_text(source)
+        cli.git(self.repo, 'add', 'sessions.tsx')
+        cli.git(self.repo, 'commit', '-qm', 'fixture Sessions controls')
+        self.revision = cli.sha(self.repo, 'HEAD')
+        return path
+
+    def test_jsx_discovery_reports_committed_option_changes_and_source_locations(self):
+        namespace = self.use_session_status_inventory()
+        before = (
+            '/* <SettingsSegmented ariaLabel={t("sessionsView.sessionState")} '
+            'options={[{value: "commented", label: "Comment"}]} /> */\n'
+            'const example = \'<SettingsSegmented ariaLabel={t("sessionsView.sessionState")} '
+            'options={[{value: "quoted", label: "Quote"}]} />\';\n'
+            'const unrelated = <SettingsSegmented ariaLabel={t("sessionsView.sortOrder")} '
+            'options={[{value: "updated", label: "Updated"}]} />;\n'
+            'const status = <SettingsSegmented<SessionStatus>\n'
+            '  value={props.statusFilter}\n'
+            '  ariaLabel={t("sessionsView.sessionState")}\n'
+            '  options={[\n'
+            '    { value: "active", label: t("common.active") },\n'
+            '    { value: "archived", label: t("sessionsView.archived") },\n'
+            '  ]}\n'
+            '  onChange={(value) => props.onStatusFilterChange(value)}\n'
+            '/>;\n'
+        )
+        path = self.commit_session_controls(before)
+        original = self.revision
+        after = before.replace('value: "archived"', "value: 'all'")
+        self.commit_session_controls(after)
+        path.write_text(after.replace("value: 'all'", 'value: "only-in-worktree"'))
+
+        result = project_verify.discover(repo=self.repo, revision=self.revision, since=original,
+                                         out=self.root / 'ui-discovery', manifest=self.manifest)
+        self.assertEqual(result['outcome'], 'review-required')
+        self.assertEqual(result['comparison']['errors'], [])
+        self.assertEqual(result['comparison']['added'], [f'{namespace} all'])
+        self.assertEqual(result['comparison']['removed'], [f'{namespace} archived'])
+        inventory = result['entrypoints']
+        self.assertEqual(inventory['errors'], [])
+        self.assertEqual(inventory['unmapped'], [f'{namespace} all'])
+        self.assertEqual(inventory['stale'], [f'{namespace} archived'])
+        entries = {row['command']: row for row in inventory['entries']}
+        self.assertEqual(set(entries), {f'{namespace} active', f'{namespace} all'})
+        blob = cli.git(self.repo, 'rev-parse', f'{self.revision}:sessions.tsx')
+        for option, line, status in (('active', 8, 'mapped'), ('all', 9, 'unmapped')):
+            entry = entries[f'{namespace} {option}']
+            self.assertEqual(entry['kind'], 'jsx-options')
+            self.assertEqual(entry['status'], status)
+            self.assertEqual(entry['locations'], [{'path': 'sessions.tsx', 'blob': blob, 'line': line}])
+        self.assertEqual(entries[f'{namespace} active']['journey'], 'first')
+
+    def test_unresolved_jsx_inventory_blocks_create_and_maintenance_even_with_green_drives(self):
+        self.use_session_status_inventory()
+        options = '[{ value: "active", label: "Active" }, { value: "archived", label: "Archived" }]'
+        control = (
+            '<SettingsSegmented ariaLabel={t("sessionsView.sessionState")} '
+            f'options={{{options}}} />'
+        )
+        self.commit_session_controls(f'const status = {control};\n')
+        bundle = self.create()
+        cases = {
+            'computed-options': control.replace(options, 'choices'),
+            'computed-value': control.replace('value: "active"', 'value: currentStatus'),
+            'ambiguous-control': f'<>{control}{control}</>',
+            'spread-attribute': control.replace('/>', '{...configuration} />'),
+            'repeated-options': control.replace('/>', 'options />'),
+            'escaped-override': control.replace('value: "active"', r'value: "active", "\u0076alue": "unmapped"'),
+        }
+        for case, body in cases.items():
+            with self.subTest(case=case):
+                self.commit_session_controls(f'const status = {body};\n')
+                created = self.run_mode('create', f'create-{case}', manifest=self.manifest, helpers=self.helpers)
+                self.assertEqual(created['outcome'], 'blocked')
+                self.assertEqual(created['features'], {'first': 'passed'})
+                self.assertFalse((self.root / f'create-{case}' / 'verify-fixture').exists())
+                maintained = self.run_mode('maintain', f'maintain-{case}', skill=bundle)
+                self.assertEqual(maintained['outcome'], 'blocked')
+                self.assertEqual(maintained['features'], {'first': 'passed', 'second': 'passed'})
+                for result in (created, maintained):
+                    self.assertIn('inventory needs map corrections', result['reason'])
+                    self.assertTrue(result['entrypoints']['errors'])
+                    self.assertTrue(all(error['path'] == 'sessions.tsx' for error in result['entrypoints']['errors']))

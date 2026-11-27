@@ -13,14 +13,14 @@ python3 -m workbench.project_verify discover --repo "$TARGET_REPO" --revision "$
   --manifest "$SKILL_DIR/contract.json" --out "$DISCOVERY_EVIDENCE"
 ```
 
-`discover` matches literal Commander registrations on the declared receivers, including bindings in separate source files. It records Git blob and line for mapped, excluded, and newly unmapped commands. Use `--since "$PREVIOUS_REVISION"` to compare registrations across commits. The audit covers the bound namespaces. Inspect dynamic registrations, nested command sets outside the declared scopes, and non-CLI routes separately. Require a source location and a user entry point before proposing a missing feature.
+`discover` matches literal Commander registrations on declared receivers and inline option values in declared JSX controls. It records the Git blob and line for mapped, excluded, and unmapped entrypoints. Use `--since "$PREVIOUS_REVISION"` to compare named entrypoints across commits. A declared JSX control with dynamic options or ambiguous bindings requires review. Inspect dynamic command registrations, other controls, and routes outside the declared scopes separately. Require a source location and a user entry point before proposing a missing feature.
 
 ```sh
 python3 -m workbench.project_verify maintain --repo "$TARGET_REPO" --revision "$REVISION" \
   --skill "$SKILL_DIR" --image "$LOCAL_IMAGE" --out "$EVIDENCE_DIR"
 ```
 
-The report checks the skill's index, files, source anchors and every mapped journey. It also checks any declared entrypoint inventory and withholds a clean verdict if a command is unmapped, stale or could not be read. The coordinator runs doctor before driving and again after a failed drive. Each drive has its own offline container. For browser journeys, the runner checks that the live page identifies the same commit as the attested image and binds the screenshot to the raw report. Raw stdout, stderr, screenshots when configured, and cleanup evidence survive the pass. Source and file drift are reported separately from failed behavior. Diagnose a behavior failure using the real command or a known-good revision before calling it a product regression.
+The report checks the skill's index, files, source anchors and every mapped journey. It also checks any declared entrypoint inventory and withholds a clean verdict if an entrypoint is unmapped, stale or could not be resolved. The coordinator runs doctor before driving and again after a failed drive. Each drive has its own offline container. For browser journeys, the runner checks that the live page identifies the same commit as the attested image and binds the screenshot to the raw report. Raw stdout, stderr, screenshots when configured, and cleanup evidence survive the pass. Source and file drift are reported separately from failed behavior. Diagnose a behavior failure using the real command or a known-good revision before calling it a product regression.
 
 For a journey that declares a `failure_marker`, run a comparison with an independently written probe that verifies the same user-visible behavior. The failing marker must come from an observed mismatch after cleanup. Setup errors, child crashes and timeouts should produce ordinary errors.
 

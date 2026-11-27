@@ -28,6 +28,18 @@
         "library": "Needs an authenticated test account and an isolated library or service fixture.",
         "search": "Needs a controlled search backend and test catalogue."
       }
+    },
+    {
+      "namespace": "openclaw control-ui session-status",
+      "sources": [
+        {
+          "kind": "jsx-options",
+          "path": "ui/src/pages/sessions/sessions-filters.tsx",
+          "component": "SettingsSegmented",
+          "label_key": "sessionsView.sessionState"
+        }
+      ],
+      "excluded": {}
     }
   ],
   "doctor": {
@@ -191,6 +203,11 @@
     },
     {
       "id": "control-ui-session-status-filter",
+      "entrypoints": [
+        "openclaw control-ui session-status active",
+        "openclaw control-ui session-status archived",
+        "openclaw control-ui session-status all"
+      ],
       "helper": "control-ui-connected.mjs",
       "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_STATUS_FILTER_PASS",
       "browser": true,
