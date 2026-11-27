@@ -76,6 +76,7 @@ PLAYBOOKS = {
          'resume': Action('resume', effect='inherited-delivery')}),
     'shipping': Playbook('Land a ready PR stack in dependency order after independent verification.', 'ship-stack',
         {**stages('stack_ship', plan='observe', land='inherited-delivery'),
+         'continue': Action('stack_rebase', ('continue',), effect='inherited-delivery'),
          'verify': Action('verify_pr', effect='observe')}),
     'trace-forensics': Playbook('Explain a trace already captured and identify the supported observations.', 'analyze-trace',
         {'inspect': Action('trace_forensics', effect='observe')}),

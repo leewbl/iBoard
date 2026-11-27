@@ -99,6 +99,44 @@ def _verify_plan(frozen):
         raise ShippingError('frozen ceiling does not match the selected members')
 
 
+def _journal(path, digest, *, create=False):
+    journal_path = path.with_suffix(path.suffix + '.journal.json')
+    if journal_path.is_symlink():
+        raise ShippingError('shipping journal must be a regular local file')
+    journal = (cli.read(journal_path) if journal_path.exists() or not create else
+               {'schema':cli.SCHEMA, 'plan_digest':digest, 'started_at':cli.now(),
+                'steps':{}, 'events':[]})
+    if journal.get('plan_digest') != digest:
+        raise ShippingError('cannot resume shipping with a changed plan')
+    return journal_path, journal
+
+
+def _member(original, journal, repo):
+    update = journal.get('restacked', {}).get(str(original['number']))
+    if update is None:
+        return original
+    path = Path(update['receipt'])
+    if path.is_symlink() or not path.is_absolute() or cli.digest(path) != update['receipt_sha256']:
+        raise ShippingError('the restack receipt changed after publication')
+    receipt = verify_pr._bounded_json(path, 64_000)
+    identity = {'repo':repo, 'pr':original['number'], 'old_base':original['base'],
+                'old_head':original['head'], 'head_branch':original['head_branch'],
+                'parent_branch':original['base_branch'], 'old_task':original['task'],
+                'shipping_plan_sha256':journal['plan_digest'], 'status':'verified'}
+    proof = update['proof']
+    if (any(receipt.get(key) != value for key, value in identity.items())
+            or any(not isinstance(receipt.get(key), str) or not pr_watch.SHA.fullmatch(receipt[key])
+                   for key in ('head', 'base'))
+            or receipt['head'] in (original['head'], receipt['base'])
+            or receipt['base'] == original['base'] or not Path(receipt['task']).is_absolute()
+            or proof.get('status') != 'verified'
+            or any(proof.get(key) != receipt['verification'].get(key) for key in ('review', 'review_sha256'))
+            or cli.digest(path) != update['receipt_sha256']):
+        raise ShippingError('the published restack is not bound to the original member and fresh proof')
+    return {**original, 'head':receipt['head'], 'base':receipt['base'], 'task':receipt['task'],
+            'base_branch':'main', 'proof':proof}
+
+
 def _scope(github, repo):
     owner = repo.split('/')[0]
     data = github.repository(repo)
@@ -156,7 +194,6 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
     if path.is_symlink():
         raise ShippingError('shipping plan must be a regular local file')
     path = path.resolve(strict=True)
-    journal_path = path.with_suffix(path.suffix + '.journal.json')
     github = github or GitHub()
     deadline = time.monotonic() + timeout
     with task_lock(path, lock_name=f'.{path.name}.shipping.lock'):
@@ -164,13 +201,7 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
         _verify_plan(frozen)
         plan_digest = cli.digest(path)
         repo = frozen['repo']
-        if journal_path.is_symlink():
-            raise ShippingError('shipping journal must be a regular local file')
-        journal = (cli.read(journal_path) if journal_path.exists() else
-                   {'schema':cli.SCHEMA, 'plan_digest':plan_digest, 'started_at':cli.now(),
-                    'steps':{}, 'events':[]})
-        if journal.get('plan_digest') != plan_digest:
-            raise ShippingError('cannot resume shipping with a changed plan')
+        journal_path, journal = _journal(path, plan_digest, create=True)
         if isinstance(github, GitHub):
             github.set_deadline(deadline)
         _scope(github, repo)
@@ -186,15 +217,16 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
             return {'status':status, 'repo':repo, 'ceiling':frozen['ceiling'], 'landed':confirmed,
                     'pr':pr, 'reason':reason, 'journal':str(journal_path)}
 
-        for member in frozen['members']:
-            number = member['number']
+        for original in frozen['members']:
+            number = original['number']
             if time.monotonic() >= deadline:
                 return result('blocked', pr=number, reason='shipping-time-limit')
             if isinstance(github, GitHub):
                 github.set_deadline(deadline)
             step = journal['steps'].get(str(number), {}).get('phase')
-            task = Path(member['task']).resolve(strict=True)
             try:
+                member = _member(original, journal, repo)
+                task = Path(member['task']).resolve(strict=True)
                 pull = _observe(github, repo, member)
                 if _landed(pull):
                     if step not in ('merge-intent', 'landed'):
@@ -210,10 +242,14 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                     raise ShippingError('the pinned PR must be open and ready for review')
                 with task_lock(task):
                     run_control.admit(task, ShippingError)
+                    if member is not original:
+                        run_control.admit(original['task'], ShippingError)
                     data = _proof(repo, member, task)
                     trunk = github.branch(repo, 'main')
                     if trunk != member['base']:
-                        return {**result('blocked', pr=number, reason='fresh-base-verification-required'),
+                        reason = ('published-restack-base-moved' if member is not original
+                                  else 'fresh-base-verification-required')
+                        return {**result('blocked', pr=number, reason=reason),
                                 'verified_base':member['base'], 'current_main':trunk}
                     if pull['baseRefName'] != 'main':
                         if step == 'retarget-intent':
@@ -240,9 +276,14 @@ def execute(path, *, timeout=600, github=None, merge=delivery._guarded_merge):
                     _ready(github, repo, member)
 
                     def before_write():
+                        if _member(original, journal, repo) != member:
+                            raise ShippingError('published restack changed before merge')
                         _proof(repo, member, task)
                         if time.monotonic() >= deadline or cli.digest(path) != plan_digest:
                             raise ShippingError('shipping deadline or plan changed before merge')
+                        run_control.admit(task, ShippingError)
+                        if member is not original:
+                            run_control.admit(original['task'], ShippingError)
                         save(member, 'merge-intent', head=member['head'], base=member['base'])
 
                     receipt = merge(task, repo, number, github, stack_binding=member,

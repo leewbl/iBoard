@@ -10,8 +10,15 @@ import subprocess
 import sys
 import time
 
-from workbench import cli, delivery, pr_watch, run_control, stack_ship, stack_verify, start, verify_pr
+from workbench import (cli, delivery, model_profiles, pr_watch, run_control, stack_ship, stack_verify,
+                       start, verify_openclaw, verify_pr, workflow)
 from workbench.task_lock import observe_task_lock, task_lock
+
+
+DEPENDENCY_INPUTS = {'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package-lock.json',
+                     'yarn.lock', 'bun.lock', 'bun.lockb', '.npmrc', '.pnpmfile.cjs', 'pnpmfile.cjs',
+                     'requirements.txt', 'pyproject.toml', 'uv.lock', 'poetry.lock',
+                     'Cargo.toml', 'Cargo.lock', 'go.mod', 'go.sum', 'Dockerfile'}
 
 
 class RebaseError(Exception):
@@ -58,28 +65,37 @@ def _patch_id(checkout, base, head, remaining):
     return result[0].decode('ascii') if result else None
 
 
-def _next(plan_path):
-    frozen = verify_pr._bounded_json(plan_path, 128_000)
-    stack_ship._verify_plan(frozen)
-    digest = cli.digest(plan_path)
-    journal_path = plan_path.with_suffix(plan_path.suffix + '.journal.json')
-    if journal_path.is_symlink():
-        raise RebaseError('shipping journal must be a regular local file')
-    journal = cli.read(journal_path)
-    if journal.get('plan_digest') != digest:
-        raise RebaseError('shipping journal does not match its frozen plan')
+def _require_same_dependencies(checkout, base, head, remaining):
+    paths = _output(_git(checkout, 'diff', '--name-only', '--no-renames', '-z', base, head, '--',
+                         seconds=min(15, remaining()))).split(b'\0')
+    if any(Path(os.fsdecode(path)).name in DEPENDENCY_INPUTS or path.startswith(b'patches/') for path in paths):
+        raise RebaseError('restack image overlay cannot reuse preinstalled dependencies across this change')
+
+
+def _next(frozen, journal):
     landed = []
     for member in frozen['members']:
+        effective = stack_ship._member(member, journal, frozen['repo'])
         step = journal['steps'].get(str(member['number']), {})
         if step.get('phase') == 'landed':
-            if step.get('head') != member['head']:
+            if step.get('head') != effective['head']:
                 raise RebaseError('shipping journal identifies a different landed head')
-            landed.append(member)
+            landed.append(effective)
             continue
         if not landed or step:
             raise RebaseError('restacking requires a confirmed parent and a child with no pending write')
-        return frozen['repo'], landed, member, digest
+        if effective is not member:
+            raise RebaseError('the rebased child is already published; resume the same shipping plan')
+        return landed, member
     raise RebaseError('the frozen shipping plan has already landed')
+
+
+def _load_plan(path):
+    frozen = verify_pr._bounded_json(path, 128_000)
+    stack_ship._verify_plan(frozen)
+    digest = cli.digest(path)
+    journal_path, journal = stack_ship._journal(path, digest)
+    return frozen, journal_path, journal
 
 
 def _retained(repo, member):
@@ -90,12 +106,23 @@ def _retained(repo, member):
         data = cli.read(task)
         if 'phase_binding' in data or any(event.get('type') == 'phase-bound' for event in data.get('events', [])):
             raise RebaseError('planned phases require phase_reverify to preserve performance and interaction review')
+        unsupported = sorted(set(data) & {'root_cause', 'coverage_swarm', 'visual_baseline', 'visual_parity_result',
+            'project_verification_maintenance', 'performance_contract', 'blast_radius', 'skill_authoring',
+            'refactor_contract', 'refactor_result', 'feature_context', 'regression_test', 'ci_skip_policy'})
+        if unsupported:
+            raise RebaseError('restack cannot preserve required evidence or policy: ' + ', '.join(unsupported))
         stage = start._read_input_stage(task)
         state = cli.read(task.with_name('autopilot.json'))
         request = (task.parent / 'issue.txt').read_bytes()
         if cli.digest(task.parent / 'issue.txt') != state['issue_digest']:
             raise RebaseError('retained request changed before restack')
     return task, data, stage, state, request
+
+
+def _old_tips(member, parent, trunk):
+    return {(member['head'], 'main', trunk),
+            (member['head'], member['base_branch'], member['base']),
+            (member['head'], member['base_branch'], parent['head'])}
 
 
 def _observe(reader, repo, landed, member):
@@ -105,17 +132,20 @@ def _observe(reader, repo, landed, member):
             raise RebaseError('the previous verified PR is not confirmed landed into main')
     trunk = stack_ship._confirmed_main(reader, repo, landed[-1])
     pull = stack_ship._observe(reader, repo, member)
-    if (pull['state'] != 'OPEN' or pull['baseRefName'] != member['base_branch']
-            or pull['baseRefOid'] != member['base'] or trunk == member['base']):
+    tips = (pull['headRefOid'], pull['baseRefName'], pull['baseRefOid'])
+    if (pull['state'] != 'OPEN' or pull['isDraft'] or trunk == member['base']
+            or tips not in _old_tips(member, landed[-1], trunk)):
         raise RebaseError('child PR or its parent changed since the frozen shipping run')
     return trunk
 
 
 def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=None, reader=None,
-            launch=start.start):
+            seed_image=None, expected_base=None, launch=start.start):
     if (not isinstance(task_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', task_id)
             or type(seconds) is not int or not 1 <= seconds <= 86_400):
         raise RebaseError('provide a fresh task ID and a bounded restack time')
+    if seed_image is not None and (image or not re.fullmatch(r'sha256:[a-f0-9]{64}', seed_image)):
+        raise RebaseError('provide a pinned local seed image or an exact new-main image')
     plan_path = Path(plan_path).expanduser().resolve(strict=True)
     deadline = time.monotonic() + seconds
 
@@ -125,18 +155,22 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
             raise RebaseError('restack time limit reached')
         return left
 
-    reader = reader or stack_ship.GitHub()
+    reader = reader or GitHub()
     if isinstance(reader, stack_ship.GitHub):
         reader.set_deadline(deadline)
     with task_lock(plan_path, lock_name=f'.{plan_path.name}.shipping.lock'):
-        repo, landed, member, plan_sha = _next(plan_path)
+        frozen, _, journal = _load_plan(plan_path)
+        repo, plan_sha = frozen['repo'], journal['plan_digest']
+        landed, member = _next(frozen, journal)
         new_base = _observe(reader, repo, landed, member)
+        if expected_base is not None and new_base != expected_base:
+            raise RebaseError('main moved before restack preparation')
         old_task, original, stage, state, request = _retained(repo, member)
         run_control.admit(old_task, RebaseError)
     settings = stage['run_settings']
     source_mode = settings['source_mode']
-    if source_mode == 'image' and not image:
-        raise RebaseError('provide a local image whose source matches the new main commit')
+    if source_mode == 'image' and not (image or seed_image):
+        raise RebaseError('provide a local image for new main or a pinned seed for the frozen root base')
     selected_image = image or settings['image']
     checkout = Path(original['repo']).resolve(strict=True)
     if _commit(checkout, member['head'], remaining) != member['head']:
@@ -183,7 +217,28 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
     cli.write(receipt_path,report)
     binding = {key:report[key] for key in ('shipping_plan_sha256','old_head','old_base','old_task')}
     local_policy = original.get('local_gate')
+    profile = original.get('model_profile')
     try:
+        if source_mode == 'image':
+            _require_same_dependencies(worktree, new_base, head, remaining)
+        if source_mode == 'image' and seed_image:
+            seed_base = frozen['members'][0]['base']
+            _require_same_dependencies(worktree, seed_base, new_base, remaining)
+            context = {**original, 'repo':str(worktree), 'base_commit':new_base}
+            if verify_openclaw.applies(context, repo) and (
+                    original['surface'] == 'ui' or verify_openclaw.needs_browser(context, head)):
+                selected_image = verify_openclaw.build_browser_image(
+                    worktree, seed_base, seed_image, new_base, remaining())
+            else:
+                selected_image = workflow.build_source_image(
+                    worktree, seed_base, seed_image, remaining(), revision=new_base)
+            report['baseline_image'] = {'seed':seed_image, 'seed_base':seed_base, 'image':selected_image}
+            cli.write(receipt_path, report)
+        options = {}
+        if profile is not None:
+            model_profiles.intake(old_task, original, stage)
+            options = {'model_profile':old_task.with_name(model_profiles.FILE),
+                       'model_profile_sha256':profile['sha256']}
         result = launch(task_id=task_id, repo=worktree, issue_file=request_file,
                         source=f'https://github.com/{repo}/pull/{member["number"]}',
                         kind=original['kind'], surface=original['surface'], iterations=1, seconds=remaining(),
@@ -194,8 +249,9 @@ def prepare(plan_path, *, task_id, tasks_root, workspaces_root, seconds, image=N
                         retained_contract={'criteria':original['criteria'],'changes':original['criterion_changes']},
                         local_verification=local_policy, implementer='pr-contributor',
                         verification_target={'repo':repo,'pr':member['number'],'head':head,'base':new_base,
-                                             'plan':state['plan'],'restacked_from':binding})
-    except (start.StartError, RebaseError) as error:
+                                             'plan':state['plan'],'restacked_from':binding}, **options)
+    except (start.StartError, RebaseError, model_profiles.ProfileError, workflow.WorkflowError,
+            cli.WorkbenchError) as error:
         report.update(status='verification-blocked',reason=str(error))
     else:
         verified = result.get('verification', {})
@@ -232,16 +288,27 @@ def publish_rebased(receipt_path, *, seconds=180, reader=None):
 
 
 def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadline):
-    repo, landed, child, plan_sha = _next(plan_path)
+    frozen, shipping_path, shipping = _load_plan(plan_path)
+    repo, plan_sha = frozen['repo'], shipping['plan_digest']
+    base, head, branch, number = (receipt[k] for k in ('base','head','head_branch','pr'))
+    updates = shipping.get('restacked', {})
+    if str(number) in updates:
+        update = updates[str(number)]
+        if (update['receipt'], update['receipt_sha256']) != (str(receipt_path), receipt_sha):
+            raise RebaseError('the shipping run has a different confirmed update for this PR')
+        original = next(member for member in frozen['members'] if member['number'] == number)
+        stack_ship._member(original, shipping, repo)
+        return {'status':'updated','repo':repo,'pr':number,'head':head,'base':base,
+                'reason':None,'journal':str(receipt_path.with_suffix('.publish.json'))}
+    landed, child = _next(frozen, shipping)
     bound = {'repo':repo,'pr':child['number'],'old_head':child['head'],'old_base':child['base'],
              'shipping_plan_sha256':plan_sha,'head_branch':child['head_branch'],'parent_branch':child['base_branch'],
              'old_task':str(Path(child['task']).resolve(strict=True))}
-    base, head, branch, number = (receipt[k] for k in ('base','head','head_branch','pr'))
     if (any(receipt.get(key) != value for key,value in bound.items()) or branch == 'main'
             or any(not isinstance(value,str) or not pr_watch.SHA.fullmatch(value) for value in (base,head))
             or base == child['base'] or head in (child['head'],base)):
         raise RebaseError('rebased candidate no longer matches the frozen shipping plan')
-    original_task, original, _, original_state, _ = _retained(repo, child)
+    original_task, original, original_stage, original_state, _ = _retained(repo, child)
     stack_ship._scope(reader, repo)
     task = Path(receipt['task']).resolve(strict=True)
     journal_path = receipt_path.with_suffix('.publish.json')
@@ -258,7 +325,8 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
                 or stack_ship._confirmed_main(reader,repo,parent) != base):
             raise RebaseError('main moved after fresh verification')
         remote = pr_watch._facts(reader,repo,number)
-        if (remote['state'] != 'OPEN' or remote['isCrossRepository'] or remote['headRefName'] != branch):
+        if (remote['state'] != 'OPEN' or remote['isDraft'] or remote['isCrossRepository']
+                or remote['headRefName'] != branch):
             raise RebaseError('the selected PR or head branch is no longer available')
         return remote['headRefOid'], remote['baseRefName'], remote['baseRefOid']
 
@@ -266,11 +334,17 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
         data = cli.read(task)
         target = data.get('verification_target', {})
         expected = {key:receipt[key] for key in ('shipping_plan_sha256','old_head','old_base','old_task')}
+        settings = target.get('settings', {})
+        retained_settings = original_stage['run_settings']
         if (target.get('restacked_from') != expected
                 or target.get('request_digest') != original_state.get('issue_digest')
+                or target.get('plan') != original_state.get('plan')
+                or any(settings.get(key) != retained_settings[key] for key in ('source_mode','memory_mb'))
+                or ('baseline_image' in receipt and settings.get('image') != receipt['baseline_image']['image'])
                 or receipt.get('request_digest') != original_state.get('issue_digest')
                 or cli.criteria_digest(data) != cli.criteria_digest(original)
-                or any(data.get(key) != original.get(key) for key in ('kind','surface','criterion_changes'))):
+                or any(data.get(key) != original.get(key) for key in
+                       ('kind','surface','criterion_changes','model_profile'))):
             raise RebaseError('fresh task does not preserve the original acceptance contract')
         member = {**child,'head':head,'base':base}
         proof = stack_verify._proof_locked(repo,member,task)
@@ -294,7 +368,10 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
                 raise RebaseError('rebased task lost the original local gate')
         if data.get('local_gate'):
             delivery.require_local_write(task,data,head,reader,repo)
-        return data
+            if (reader.branch_info(repo, 'main').get('protected') is not False
+                    or reader.branch_rules(repo, 'main') != []):
+                raise RebaseError('local-only update requires unprotected main without branch rules')
+        return data, proof
 
     def mark(action):
         journal['events'].append({'action':action,'at':cli.now()})
@@ -304,21 +381,34 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
         return {'status':status,'repo':repo,'pr':number,'head':head,'base':base,
                 'reason':reason,'journal':str(journal_path)}
 
+    def confirm(proof):
+        if cli.digest(plan_path) != plan_sha or cli.digest(receipt_path) != receipt_sha:
+            raise RebaseError('shipping plan or receipt changed before recording the confirmed update')
+        shipping.setdefault('restacked', {})[str(number)] = {
+            'receipt':str(receipt_path), 'receipt_sha256':receipt_sha, 'proof':proof,
+        }
+        stack_ship._member(child, shipping, repo)
+        cli.write(shipping_path, shipping)
+        if 'confirmed' not in [item['action'] for item in journal['events']]:
+            mark('confirmed')
+        return result('updated')
+
     with task_lock(task):
         prior = [item['action'] for item in journal['events']]
         current = observed()
         if current == (head,'main',base) and 'push-intent' in prior:
-            if 'confirmed' not in prior:
-                mark('confirmed')
-            return result('updated')
+            _, proof = evidence()
+            return confirm(proof)
         if 'push-intent' in prior:
             return result('awaiting-confirmation','rebased-push-outcome-unconfirmed')
-        if current == (child['head'],child['base_branch'],child['base']):
+        if current not in _old_tips(child, landed[-1], base):
+            raise RebaseError('the remote child changed outside this rebased update')
+        if current[1] != 'main':
             if 'retarget-intent' in prior:
                 return result('awaiting-confirmation','retarget-outcome-unconfirmed')
             evidence()
             if (observed() != current or time.monotonic() >= deadline
-                    or cli.digest(receipt_path) != receipt_sha):
+                    or cli.digest(plan_path) != plan_sha or cli.digest(receipt_path) != receipt_sha):
                 raise RebaseError('publication inputs changed before retarget')
             run_control.admit(original_task, RebaseError)
             run_control.admit(task, RebaseError)
@@ -327,11 +417,9 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
                 reader.retarget(repo,number)
             except (delivery.DeliveryError, OSError) as error:
                 return result('awaiting-confirmation',str(error))
-        elif current != (child['head'],'main',base) or 'retarget-intent' not in prior:
-            raise RebaseError('the remote child changed outside this rebased update')
-        data = evidence()
+        data, proof = evidence()
         if (observed() != (child['head'],'main',base) or time.monotonic() >= deadline
-                or cli.digest(receipt_path) != receipt_sha):
+                or cli.digest(plan_path) != plan_sha or cli.digest(receipt_path) != receipt_sha):
             raise RebaseError('rebased upload requires the confirmed current main base and old head')
         run_control.admit(original_task, RebaseError)
         run_control.admit(task, RebaseError)
@@ -342,8 +430,95 @@ def _publish_locked(receipt_path, receipt, receipt_sha, plan_path, reader, deadl
             return result('awaiting-confirmation',str(error))
         if observed() != (head,'main',base):
             return result('awaiting-confirmation','rebased-push-outcome-unconfirmed')
-        mark('confirmed')
-        return result('updated')
+        return confirm(proof)
+
+
+def continue_shipping(plan_path, *, tasks_root, workspaces_root, seconds, seed_image=None, reader=None,
+                      ship=stack_ship.execute, prepare_rebase=prepare, publish=publish_rebased):
+    """Advance a frozen stack through fresh base verification and exact-head publication."""
+    if type(seconds) is not int or not 1 <= seconds <= 86_400:
+        raise RebaseError('provide a bounded time for continuous shipping')
+    if seed_image is not None and not re.fullmatch(r'sha256:[a-f0-9]{64}', seed_image):
+        raise RebaseError('the local seed image must be pinned by image ID')
+    path = Path(plan_path).expanduser()
+    if path.is_symlink():
+        raise RebaseError('shipping plan must be a regular local file')
+    path = path.resolve(strict=True)
+    tasks_root = Path(tasks_root).expanduser().resolve()
+    workspaces_root = Path(workspaces_root).expanduser().resolve()
+    run_path = path.with_suffix(path.suffix + '.continue.json')
+    reader = reader or GitHub()
+    with task_lock(path, lock_name=f'.{path.name}.continue.lock', reentrant=False):
+        if run_path.is_symlink():
+            raise RebaseError('continuous shipping record must be a regular local file')
+        plan_sha = cli.digest(path)
+        config = {'plan_sha256':plan_sha, 'tasks_root':str(tasks_root),
+                  'workspaces_root':str(workspaces_root), 'seconds':seconds, 'seed_image':seed_image}
+        run = (cli.read(run_path) if run_path.exists() else
+               {'schema':cli.SCHEMA, 'config':config, 'deadline':time.time() + seconds})
+        if run.get('config') != config:
+            raise RebaseError('continue with the original plan, roots, image and time limit')
+        if not run_path.exists():
+            cli.write(run_path, run)
+
+        def remaining():
+            return max(0, int(run['deadline'] - time.time()))
+
+        def finish(result):
+            run['result'] = result
+            cli.write(run_path, run)
+            return {**result, 'continuation':str(run_path)}
+
+        while (left := remaining()) > 0:
+            if cli.digest(path) != plan_sha:
+                raise RebaseError('shipping plan changed during continuation')
+            pending = run.get('pending_update')
+            if pending is not None:
+                receipt = Path(pending['receipt'])
+                if receipt.is_symlink() or cli.digest(receipt) != pending['sha256']:
+                    raise RebaseError('pending restack receipt changed before reconciliation')
+                evidence = verify_pr._bounded_json(receipt, 64_000)
+                frontier = run['result']
+                binding = {'shipping_plan':str(path), 'shipping_plan_sha256':plan_sha,
+                           'pr':frontier['pr'], 'base':frontier['current_main']}
+                if any(evidence.get(key) != value for key, value in binding.items()):
+                    raise RebaseError('pending restack checkpoint belongs to a different plan or frontier')
+                updated = publish(receipt, seconds=left, reader=reader)
+                if updated.get('status') != 'updated':
+                    return finish({**run['result'], 'status':updated['status'], 'reason':updated['reason'],
+                                   'restack':str(receipt)})
+                del run['pending_update']
+                cli.write(run_path, run)
+                continue
+            result = ship(path, timeout=left, github=reader)
+            if result.get('reason') != 'fresh-base-verification-required' or not result.get('landed'):
+                return finish(result)
+            if result != run.get('result'):
+                finish(result)
+            base, pr = result['current_main'], result['pr']
+            ident = f'stack-{plan_sha[:12]}-{pr}-{base[:16]}'
+            records = tasks_root / (ident + '-restack')
+            receipt = records / 'restack.json'
+            if (left := remaining()) == 0:
+                break
+            if not records.exists():
+                prepare_rebase(path, task_id=ident, tasks_root=tasks_root, workspaces_root=workspaces_root,
+                               seconds=left, seed_image=seed_image, expected_base=base, reader=reader)
+            if not receipt.is_file() or receipt.is_symlink():
+                return finish({**result, 'reason':'restack-checkpoint-incomplete', 'records':str(records)})
+            evidence = verify_pr._bounded_json(receipt, 64_000)
+            if ((evidence.get('shipping_plan_sha256'), evidence.get('pr'), evidence.get('base'))
+                    != (plan_sha, pr, base)):
+                raise RebaseError('retained restack checkpoint belongs to a different candidate or base')
+            if evidence.get('status') != 'verified':
+                return finish({**result, 'reason':evidence.get('reason', evidence.get('status')),
+                               'restack':str(receipt)})
+            run['pending_update'] = {'receipt':str(receipt), 'sha256':cli.digest(receipt)}
+            cli.write(run_path, run)
+        last = run.get('result', {})
+        if last.get('status') == 'complete':
+            return {**last, 'continuation':str(run_path)}
+        return finish({**last, 'status':'blocked', 'reason':'shipping-time-limit'})
 
 
 def main(argv=None):
@@ -354,22 +529,31 @@ def main(argv=None):
         prepare_cli.add_argument('--'+name,required=True)
     prepare_cli.add_argument('--seconds',type=int,required=True)
     prepare_cli.add_argument('--image')
+    prepare_cli.add_argument('--seed-image')
     publish_cli = sub.add_parser('update', help='Publish a verified rebased candidate to its existing PR')
     publish_cli.add_argument('--receipt',required=True)
     publish_cli.add_argument('--seconds',type=int,default=180)
+    advance = sub.add_parser('continue', help='Advance the same frozen plan through each required replay')
+    for name in ('plan','tasks-root','workspaces-root'):
+        advance.add_argument('--'+name,required=True)
+    advance.add_argument('--seconds',type=int,required=True)
+    advance.add_argument('--seed-image')
     args=parser.parse_args(argv)
     try:
         with redirect_stdout(sys.stderr):
             if args.command == 'verify':
                 report = prepare(args.plan,task_id=args.id,tasks_root=args.tasks_root,workspaces_root=args.workspaces_root,
-                                 seconds=args.seconds,image=args.image)
-            else:
+                                 seconds=args.seconds,image=args.image,seed_image=args.seed_image)
+            elif args.command == 'update':
                 report = publish_rebased(args.receipt,seconds=args.seconds)
+            else:
+                report = continue_shipping(args.plan,tasks_root=args.tasks_root,workspaces_root=args.workspaces_root,
+                                           seconds=args.seconds,seed_image=args.seed_image)
     except (OSError,ValueError,RebaseError,verify_pr.VerifyError,pr_watch.WatchError,start.StartError,
             stack_ship.ShippingError,delivery.DeliveryError,cli.WorkbenchError) as error:
         parser.error(str(error))
     print(json.dumps(report,indent=2,ensure_ascii=False))
-    return 0 if report['status'] in ('verified','updated') else 1
+    return 0 if report['status'] in ('verified','updated','complete') else 1
 
 
 if __name__ == '__main__':
