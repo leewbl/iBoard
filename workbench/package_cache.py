@@ -18,7 +18,8 @@ from workbench.task_lock import task_lock
 from workbench.worktree_cleanup import _absolute
 
 
-SOURCE = 'skills/poteto-mode/playbooks/worktree-cleanup.md#package-caches'
+SOURCE = 'skills/poteto-mode/playbooks/worktree-cleanup.md#worktree-and-simulator-cleanup'
+KIND = 'package-cache'
 DOWNLOAD = re.compile(r'[a-f0-9]{64}--[^/]+')
 MANAGERS = ('uv', 'pnpm', 'brew', 'yarn')
 CACHE_SIGNATURE = b'Signature: 8a477f597d28d172789f06886806bc55'
@@ -156,7 +157,7 @@ def inventory(manager, *, cache_dir=None, store_dir=None, select=None):
             downloads = _brew_files(root)
     else:
         roots, argv, env = _yarn_scope(executable, cache)
-    return {'schema': cli.SCHEMA, 'source': SOURCE, 'manager': manager, 'tool': tool, 'roots': roots,
+    return {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': KIND, 'manager': manager, 'tool': tool, 'roots': roots,
             'downloads': downloads, 'argv': argv, 'env': env, 'inputs': inputs}
 
 
@@ -277,7 +278,7 @@ def _apply_new(plan, sha256, journal, data):
         if _snapshot(observed['roots']) != data['before'] or cli.digest(plan) != sha256:
             raise ResourceError('approved package-cache contents or plan changed')
         volumes = {role: Path(path).parent for role, path in data['roots'].items()}
-        report = {'schema': cli.SCHEMA, 'source': SOURCE, 'plan_sha256': sha256, 'status': 'pending',
+        report = {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': KIND, 'plan_sha256': sha256, 'status': 'pending',
                   'manager': data['manager'], 'tool': data['tool'], 'roots': data['roots'], 'argv': data['argv'],
                   'started_at': cli.now(),
                   'bytes_before': {role: entry['bytes'] for role, entry in data['before'].items()},
@@ -299,7 +300,7 @@ def apply(plan, sha256, *, out):
         raise ResourceError('provide the exact approved package-cache plan digest')
     plan = _artifact(plan, {})
     data = swarm._read(plan, sha256)
-    if data['source'] != SOURCE or data['approval_path'] != str(plan):
+    if (data.get('source'), data.get('kind'), data.get('approval_path')) != (SOURCE, KIND, str(plan)):
         raise ResourceError('use the original package-cache approval path')
     out = _artifact(out, data['roots'])
     journal = plan.with_name('.' + plan.name + '.package-cache.json')
