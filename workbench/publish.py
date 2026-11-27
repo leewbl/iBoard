@@ -438,6 +438,14 @@ def _pr_body(data, head):
         body += ('\n## Skill verification\n\n'
                  f'Checked committed metadata and references with {proof["probes"]} offline structural runs. '
                  f'Evidence SHA-256 `{proof["sha256"]}`.\n')
+    if 'performance_contract' in data:
+        from workbench import perf_issue
+        measurement = perf_issue.require(data, head)
+        body += ('\n## Performance verification\n\n'
+                 f'Alternating {measurement["scope"]} workload: '
+                 f'{measurement["baseline_ms"]:.3f} ms → {measurement["candidate_ms"]:.3f} ms '
+                 f'({measurement["delta_pct"]:.2f}% lower median). '
+                 f'Evidence SHA-256 `{measurement["artifact"]["sha256"]}`.\n')
     if data.get('kind') == 'refactor':
         from workbench import refactor, refactor_delivery
         try:
@@ -674,6 +682,11 @@ def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=
         packet = _brief(latest, head, repo)
         if packet['parent']:
             _base_matches(github, repo, latest, packet['parent'])
+    if 'performance_contract' in data or 'performance_contract' in latest:
+        from workbench import perf_issue
+        if any(latest.get(key) != data.get(key) for key in ('performance_contract', 'performance_result')):
+            raise PublishError('the performance proof changed before GitHub write')
+        perf_issue.require(latest, head)
     if data.get('phase_binding'):
         if latest.get('phase_binding') != data['phase_binding']:
             raise PublishError('approved phase changed before GitHub write')

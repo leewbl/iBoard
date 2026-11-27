@@ -1134,6 +1134,33 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual([row['evidence_status'] for row in journal['rows'][1:5]],
                          ['hash-matches', 'hash-matches', 'commit-resolves', 'hash-matches'])
 
+    def test_performance_failure_blocks_publication_after_functional_checks(self):
+        from workbench import perf_issue
+
+        data = cli.read(self.task)
+        data['performance_contract'] = {'path': '/frozen/plan.json', 'sha256': 'a' * 64}
+        data['limits']['iterations'] = 1
+        cli.write(self.task, data)
+        prompts = []
+
+        def model(workspace, prompt, timeout, *, read_only):
+            prompts.append(prompt)
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+
+        def publisher(*_):
+            self.fail('published without meeting the frozen performance target')
+
+        with patch.object(perf_issue, 'planning_context', return_value={'baseline_marker': 'HOTSPOT'}), \
+                patch.object(perf_issue, 'compare_candidate', side_effect=ValueError('insufficient measured improvement')):
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'iteration limit'):
+                autopilot.run(self.task, self.issue, 'image', model=model, check=self.check,
+                              pr_repo='user/fork', publisher=publisher)
+        self.assertIn('HOTSPOT', prompts[0])
+        self.assertIn('test-result:independent-verifier', self.calls)
+        self.assertNotIn('final-review', self.calls)
+        failure = next(self.task.parent.glob('verification-failure-*.json'))
+        self.assertIn('insufficient measured improvement', json.loads(failure.read_text())['reason'])
+
     def test_issue_close_failure_can_resume_without_merging_twice(self):
         data = cli.read(self.task)
         data['source'] = 'https://github.com/user/fork/issues/12'

@@ -225,6 +225,11 @@ SCENARIOS = {
         'skills/statechart/SKILL.md', 'statechart check',
         'TLC report, shortest paths, raw logs, Mermaid and Pele SVG within the graph budget',
         'Prepare a local pinned Java, TLC and Pele image before running the check offline.'),
+    'perf-issue': Scenario(
+        'Freeze an observed performance problem and remeasure the fix before shipping',
+        'skills/poteto-mode/playbooks/perf-issue.md', 'skills/perf-issue/SKILL.md', 'perf_issue freeze',
+        'Same-commit control, baseline and candidate profiles, material delta and publication evidence',
+        'Bind the measurement before editing. Use an offline source-attested image and the same frozen workload.'),
     'check-performance': Scenario(
         'Verify a performance claim against a baseline', 'skills/benchmark-checklist/SKILL.md',
         'skills/benchmark-checklist/SKILL.md', 'benchmark', 'Controlled workload, execution samples and comparable results'),

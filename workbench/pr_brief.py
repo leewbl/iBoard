@@ -23,7 +23,7 @@ ERRORS = (OSError, ValueError, KeyError, TypeError, cli.WorkbenchError, delivery
 TEST_HEADINGS = {'Reproduction', 'Resolution', 'Test Result', 'Tdd Red', 'Tdd Green'}
 LINK_HEADINGS = {'Screenshot', 'Functional documentation'}
 EVIDENCE_HEADINGS = {'Root cause', 'Visual parity', 'Refactoring equivalence', 'Skill verification',
-                     'Phase acceptance', 'Offline OpenClaw verification'}
+                     'Phase acceptance', 'Offline OpenClaw verification', 'Performance verification'}
 
 
 def _line(value, limit):

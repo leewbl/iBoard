@@ -281,6 +281,12 @@ def evidence_gate(data, expected):
             skill_authoring.require(data, target)
         except WorkbenchError as error:
             issues.append(str(error))
+    if 'performance_contract' in data:
+        from workbench import perf_issue
+        try:
+            perf_issue.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
     if data.get('regression_test') is not None:
         required.update(('tdd-red', 'tdd-green'))
     required.add('screenshot' if data['surface'] == 'ui' else 'runtime-log')

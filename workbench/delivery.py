@@ -468,6 +468,7 @@ def _independent_verification(data, target, *, destination=None):
                         'revision': 1} not in data['criteria']:
         raise DeliveryError('refactoring requires its approved behavior criterion')
     refactor_proof = None
+    performance = None
     try:
         feature = feature_context.read(data)
         phase_contract.require_delivery(data, target, destination=destination)
@@ -475,6 +476,9 @@ def _independent_verification(data, target, *, destination=None):
         if is_refactor:
             from workbench import refactor_delivery
             refactor_proof = refactor_delivery.require(data, target)
+        if 'performance_contract' in data:
+            from workbench import perf_issue
+            performance = perf_issue.require(data, target)
     except (OSError, ValueError, cli.WorkbenchError) as error:
         raise DeliveryError(str(error)) from error
     require_feature_arena_delivery(data, feature, target, destination)
@@ -485,7 +489,7 @@ def _independent_verification(data, target, *, destination=None):
                 or item['criteria_digest'] != cli.criteria_digest(data)):
             continue
         try:
-            if (feature or parity or refactor_proof) and cli.digest(item['path']) != item['sha256']:
+            if (feature or parity or refactor_proof or performance) and cli.digest(item['path']) != item['sha256']:
                 continue
             report = json.loads(Path(item['path']).read_text())
         except (OSError, ValueError, cli.WorkbenchError):
@@ -496,6 +500,8 @@ def _independent_verification(data, target, *, destination=None):
                 or report.get('criterion_digest') != cli.criteria_digest(data)):
             continue
         if report.get('visual_parity_sha256') != (parity['sha256'] if parity else None):
+            continue
+        if report.get('performance_result_sha256') != (performance['artifact']['sha256'] if performance else None):
             continue
         assessments, reports = report.get('assessments'), report.get('reports')
         if not isinstance(assessments, list) or len(assessments) != len(desired_ids) or not isinstance(reports, dict):
