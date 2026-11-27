@@ -79,4 +79,14 @@ python3 -m workbench.benny_reproduce prepare-repair --token-file "$SLACK_KEY" \
   --task-id "$TASK_ID" --tasks-root "$TASKS_ROOT" --workspaces-root "$WORKSPACES_ROOT"
 ```
 
-Paused intake fixes the baseline and enables the root-cause requirement. A dedicated repair launch and draft-only PR delivery still need integration. Browser repair intake also needs independent review of the recording.
+Paused intake fixes the baseline, enables the root-cause requirement and retains the approved GitHub searches.
+
+## Run the prepared repair
+
+```sh
+python3 -m workbench.benny_repair --task "$TASK_JSON" --token-file "$SLACK_KEY"
+```
+
+The coordinator rechecks the source thread and matching GitHub PRs before launch and before each edit. The model has workspace file tools. The coordinator holds the Slack reader, runs the causal comparison and checks the unchanged candidate in offline Docker. The independent root-cause review must support the mechanism and rule out a competing explanation before implementation. A failed frozen probe enters the bounded repair loop, with its original output retained. An execution failure pauses the task with evidence.
+
+The runner stops at a verified local candidate once both frozen probes pass twice, the focused tests pass, and independent review confirms the correction and related behavior. It retains the commit, the candidate and baseline receipts, and the independent review. A second call at this checkpoint verifies those files again and returns the same candidate. For older prepared tasks, supply the original `--fix-search` phrases. The draft PR route and browser recording review are separate remaining integration work.

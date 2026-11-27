@@ -210,20 +210,12 @@ def verify_candidate(*, receipt, sha256, revision, out, seconds=600, sandbox=run
     return result
 
 
-def prepare_repair(*, slack, receipt, sha256, task_id, tasks_root, workspaces_root, seconds=1800, iterations=3,
-                   launch=start.start, tracker=None, fix_search=()):
-    path, proof, contract, _ = _approved(receipt, sha256)
-    if contract['journey'].get('browser'):
-        raise ValueError('browser cases need the independent recording review before starting repair')
-    _limits(seconds, contract['memory_mb'])
-    if type(iterations) is not int or not 1 <= iterations <= 20:
-        raise ValueError('Benny repair needs a fixed iteration budget')
+def _check_repair_owner(slack, proof, fix_search, deadline, tracker=None):
     if (not 1 <= len(fix_search) <= 4 or any(not benny_triage._text(term, 140) or not term.isprintable()
                                                 or '"' in term or '\\' in term for term in fix_search)):
         raise ValueError('provide one to four approved precise GitHub fix-search phrases')
     if time.time() < datetime.fromisoformat(proof['finished_at']).timestamp() + proof['claim_seconds']:
         raise ValueError('the configured ownership window is still open')
-    deadline = time.monotonic() + min(seconds, 90)
     _, route = benny.load_route(proof['route']['path'], proof['route']['sha256'])
     repo = _repository(proof['checkout'], proof['repository'])
     source = _source(slack, route, deadline)
@@ -235,8 +227,19 @@ def prepare_repair(*, slack, receipt, sha256, task_id, tasks_root, workspaces_ro
             item['item_type'] == 'pull' and (item['state'] == 'open' or item['merged']) for item in candidates.values()):
         raise ValueError('possible existing fix or incomplete tracker search; use the existing-fix route or narrow the phrases')
     _source(slack, route, deadline)
+    return repo, source, searches
 
-    binding = {'path': str(path), 'sha256': sha256, 'base': proof['base']}
+
+def prepare_repair(*, slack, receipt, sha256, task_id, tasks_root, workspaces_root, seconds=1800, iterations=3,
+                   launch=start.start, tracker=None, fix_search=()):
+    path, proof, contract, _ = _approved(receipt, sha256)
+    if contract['journey'].get('screenshot'):
+        raise ValueError('visual cases need the independent recording review before starting repair')
+    _limits(seconds, contract['memory_mb'])
+    if type(iterations) is not int or not 1 <= iterations <= 20:
+        raise ValueError('Benny repair needs a fixed iteration budget')
+    repo, source, _ = _check_repair_owner(slack, proof, fix_search, time.monotonic() + min(seconds, 90), tracker)
+    binding = {'path': str(path), 'sha256': sha256, 'base': proof['base'], 'fix_search': list(fix_search)}
 
     def prepare(**options):
         prepared = workflow.prepare(**options, base_commit=proof['base'])
