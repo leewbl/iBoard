@@ -179,6 +179,22 @@ class RepairPremiseTests(unittest.TestCase):
         self.assertIsNone(repair_premise.retain(state, {'gate': {**gate, 'kind': 'test-result'}, 'head': 'b' * 40}))
         self.assertEqual(repair_premise.retain(state, {'gate': gate, 'head': 'b' * 40})[0], first)
 
+    def test_review_classification_can_change_without_changing_its_criterion(self):
+        state = {}
+        for index, finding_class in enumerate(('coverage', 'behavior')):
+            head = 'ab'[index] * 40
+            path = self.task.parent / f'rejected-{index}.json'
+            raw = {'schema': cli.SCHEMA, 'kind': 'independent-review', 'head': head,
+                   'base': 'c' * 40, 'source_mode': 'workspace', 'actor': 'independent-verifier',
+                   'criteria_sha256': 'd' * 64, 'rejection': {'blocked_criteria': [
+                       {'id': 'route', 'class': finding_class, 'reason': 'Review rejected the route.', 'evidence': ['R5']}]}}
+            cli.write(path, raw)
+            failure, = repair_premise.external_failures(self.task, path, raw, head)
+            pair = repair_premise.retain(state, failure)
+            if index == 0:
+                self.assertIsNone(pair)
+        self.assertEqual([row['head'] for row in pair], ['a' * 40, 'b' * 40])
+
     def test_changed_failure_receipt_blocks_diagnosis_before_the_probe(self):
         model = self.model
 

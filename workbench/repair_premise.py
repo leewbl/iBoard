@@ -121,7 +121,7 @@ def _external_gates(raw):
                               'repo': raw['repo'], 'pr': raw['pr']})
         return gates if len({_sha(gate) for gate in gates}) == len(gates) else []
     if kind == 'independent-review':
-        return [{'criterion': item['id'], 'criterion_failure': item['class'], 'actor': raw['actor'],
+        return [{'criterion': item['id'], 'actor': raw['actor'],
                  'criterion_digest': raw['criteria_sha256']} for item in raw['rejection']['blocked_criteria']]
     return []
 
