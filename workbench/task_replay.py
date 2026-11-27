@@ -18,7 +18,7 @@ class ReplayError(ValueError):
 ERRORS = (*autonomous_run.ERRORS, local_gate.LocalGateError, stack_rebase.RebaseError)
 CONTRACT_FIELDS = ('id', 'kind', 'surface', 'source', 'original_source', 'implementer', 'started_at',
                    'limits', 'iterations', 'criteria', 'criterion_changes', 'impact_review',
-                   'required_ci_workflows', 'regression_test', 'publish_only', 'root_cause')
+                   'required_ci_workflows', 'regression_test', 'publish_only', 'root_cause', 'coverage_swarm')
 
 
 def _regular(path):

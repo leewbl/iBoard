@@ -172,7 +172,7 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
           feature_arena_out=None, visual_baseline=None, visual_baseline_sha256=None,
           refactor_contract=None, refactor_contract_sha256=None,
-          prepare_only=False, require_root_cause=False,
+          prepare_only=False, require_root_cause=False, swarm_manifest=None, swarm_sha256=None,
           prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
@@ -183,6 +183,13 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('task kind, surface and positive limits are required')
     if require_root_cause and (kind != 'bug' or verification_target is not None):
         raise StartError('causal verification requires a new bug task')
+    coverage = None
+    if swarm_manifest is not None or swarm_sha256 is not None:
+        from workbench import swarm
+        try:
+            coverage = swarm.task_manifest(swarm_manifest, swarm_sha256)
+        except swarm.ERRORS as error:
+            raise StartError(f'invalid required coverage swarm: {error}') from error
     refactor_input = None
     if kind == 'refactor':
         from workbench import refactor, refactor_delivery
@@ -358,6 +365,10 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 if require_root_cause:
                     from workbench import bug_cause
                     data['root_cause'] = bug_cause.MODE
+                if coverage is not None:
+                    path = task.with_name('swarm-contract.json')
+                    cli.write(path, coverage)
+                    data['coverage_swarm'] = {'path': str(path), 'sha256': cli.digest(path)}
                 if publish_only:
                     data['publish_only'] = True
                 if visual_baseline:
@@ -416,6 +427,8 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                     stage['request_digest'] = cli.digest(request)
                 if require_root_cause:
                     stage['root_cause'] = bug_cause.MODE
+                if coverage is not None:
+                    stage['coverage_swarm'] = cli.read(task)['coverage_swarm']
                 if refactor_input:
                     stage['refactor_contract'] = refactor_input
                 if verification_target is not None:
@@ -470,6 +483,8 @@ def main(argv=None):
     parser.add_argument('--publish-only', action='store_true', help='create the verified PR without waiting for CI or merging')
     parser.add_argument('--prepare-only', action='store_true', help='retain a paused intake without running the task')
     parser.add_argument('--require-root-cause', action='store_true', help='require paired causal controls for a new bug')
+    parser.add_argument('--swarm-manifest', help='required coverage manifest with baseline and candidate lanes')
+    parser.add_argument('--swarm-sha256', help='approved SHA-256 of the coverage manifest')
     parser.add_argument('--criterion', action='append', default=[], metavar='ID=TEXT',
                         help='freeze an acceptance criterion at intake; may be repeated')
     parser.add_argument('--required-ci-workflow', action='append', dest='required_ci_workflows',
@@ -509,7 +524,8 @@ def main(argv=None):
                    feature_arena_out=args.feature_arena_out, visual_baseline=args.visual_baseline,
                    visual_baseline_sha256=args.visual_baseline_sha256, refactor_contract=args.refactor_contract,
                    refactor_contract_sha256=args.refactor_contract_sha256, prepare_only=args.prepare_only,
-                   criteria=criteria, require_root_cause=args.require_root_cause)
+                   criteria=criteria, require_root_cause=args.require_root_cause,
+                   swarm_manifest=args.swarm_manifest, swarm_sha256=args.swarm_sha256)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

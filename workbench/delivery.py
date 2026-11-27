@@ -460,7 +460,7 @@ def validate_phase_citations(assessments, reports, required):
 
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
-    from workbench import bug_cause, feature_context, phase_contract, tdd, visual_parity
+    from workbench import bug_cause, feature_context, phase_contract, swarm, tdd, visual_parity
     is_refactor = data.get('kind') == 'refactor'
     if not is_refactor and ('refactor_contract' in data or 'refactor_result' in data):
         raise DeliveryError('refactoring evidence requires a refactor task')
@@ -554,9 +554,10 @@ def _independent_verification(data, target, *, destination=None):
                 continue
         try:
             validate_impact_review(data, target, report.get('impact'), reports, actor)
-            if data.get('root_cause') is not None and cli.digest(item['path']) != item['sha256']:
+            if (data.get('root_cause') is not None or data.get('coverage_swarm') is not None) and cli.digest(item['path']) != item['sha256']:
                 continue
             bug_cause.validate(data, target, report.get('causal_verification'), actor)
+            swarm.require_task(data, target, report.get('coverage_swarm'))
             if data.get('regression_test') is not None:
                 if (report.get('regression_sha256') != tdd.digest(data['regression_test'])
                         or cli.digest(item['path']) != item['sha256']):
@@ -603,12 +604,12 @@ def _independent_verification(data, target, *, destination=None):
 def recheck_refactor_write(task_path, expected, head, destination, review):
     """Keep the same approved contract and independent review before remote mutations."""
     require_refactor_intake(task_path, expected)
-    if expected.get('root_cause'):
+    if expected.get('root_cause') or expected.get('coverage_swarm'):
         latest = cli.read(Path(task_path))
         require_refactor_intake(task_path, latest)
-        if latest.get('root_cause') != expected['root_cause'] or _independent_verification(
+        if any(latest.get(key) != expected.get(key) for key in ('root_cause', 'coverage_swarm')) or _independent_verification(
                 latest, head, destination=destination) != review:
-            raise DeliveryError('independent causal evidence changed before GitHub write')
+            raise DeliveryError('independent runtime evidence changed before GitHub write')
     if expected.get('kind') != 'refactor':
         return
     latest = cli.read(Path(task_path))
@@ -629,15 +630,18 @@ def require_refactor_intake(task_path, data):
             raise DeliveryError('frozen refactoring intake is missing before GitHub operation')
         if data.get('root_cause'):
             raise DeliveryError('frozen causal verification intake is missing before GitHub operation')
+        if data.get('coverage_swarm'):
+            raise DeliveryError('frozen coverage swarm intake is missing before GitHub operation')
         return
     try:
         stage = cli.read(path)
     except (AttributeError, OSError, TypeError, cli.WorkbenchError) as error:
         raise DeliveryError('task intake could not be verified before GitHub operation') from error
-    from workbench import bug_cause
+    from workbench import bug_cause, swarm
     try:
         bug_cause.require_intake(data, stage)
-    except bug_cause.CauseError as error:
+        swarm.intake(data, stage)
+    except (bug_cause.CauseError, *swarm.ERRORS) as error:
         raise DeliveryError(str(error)) from error
     if 'refactor_contract' in stage or data.get('kind') == 'refactor':
         if (data.get('kind') != 'refactor' or not stage.get('refactor_contract')

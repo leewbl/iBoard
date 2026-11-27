@@ -53,6 +53,11 @@ SCENARIOS = {
         'skills/bug-cause/SKILL.md', 'start --kind bug --require-root-cause',
         'Same-entrypoint trigger and control on the baseline and candidate, with an independent verdict',
         'Use a committed driver with one variable argument and an observable faulty and healthy outcome.'),
+    'swarm': Scenario(
+        'Verify required paths or compare candidates in parallel', 'skills/swarm/SKILL.md',
+        'skills/swarm/SKILL.md', 'swarm freeze',
+        'One receipt per lane, a combined verdict and the frozen race rule when selected',
+        'The native runner uses committed commands in offline Docker. Required coverage can gate task delivery.'),
     'test-first': Scenario(
         'Use the same regression test before and after a fix', 'skills/tdd/SKILL.md',
         'skills/tdd/SKILL.md', 'start --kind bug', 'Two baseline failures at the expected assertion and two isolated candidate passes',

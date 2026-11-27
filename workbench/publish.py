@@ -658,7 +658,7 @@ def publish(task_path, repo, github=None, *, replay_authority=None):
         raise PublishError('local evidence gate failed: ' + '; '.join(issues))
     _require_gateway(data, head, repo)
     review = delivery._independent_verification(data, head, destination=repo)
-    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') else None
+    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') or data.get('coverage_swarm') else None
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -747,7 +747,7 @@ def republish(task_path, repo, number, previous_head, github=None, *, replay_aut
         raise PublishError('new candidate is not independently verified or unchanged')
     _require_gateway(data, head, repo)
     review = delivery._independent_verification(data, head, destination=repo)
-    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') else None
+    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') or data.get('coverage_swarm') else None
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)

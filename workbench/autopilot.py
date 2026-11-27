@@ -815,17 +815,20 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
         raise AutopilotError('issue must be nonempty and at most 100000 characters')
     state_path = task.parent / 'autopilot.json'
     data = cli.read(task)
+    from workbench import swarm
     try:
         run_control.admit(task, AutopilotError)
         intake_path = task.with_name('input-stage.json')
         intake = cli.read(intake_path) if intake_path.exists() else {}
         cause_mode = bug_cause.require_intake(data, intake)
+        coverage_swarm = swarm.intake(data, intake)
         if cause_mode and intake.get('run_settings', {}).get('source_mode') != source_mode:
             raise AutopilotError('causal task source mode differs from its frozen intake')
         _validate_adoption(task, data, issue_path, image, pr_repo, source_mode, candidate_image,
                            build_source_image, memory_mb)
         _remaining(data)
-    except (AutopilotError, bug_cause.CauseError, cli.WorkbenchError) as error:
+    except (AutopilotError, bug_cause.CauseError, cli.WorkbenchError, swarm.SwarmError,
+            AttributeError, KeyError, TypeError, ValueError, OSError) as error:
         _pause(task, str(error))
         raise AutopilotError(str(error)) from error
     state_exists = state_path.exists()
@@ -1393,6 +1396,25 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             for kind, spec in [('resolution', 'resolution'), ('test-result', 'tests')]:
                 require_active()
                 results.append(_check(task, check_image, state['plan'][spec], kind, verifier, check, source_mode=source_mode, memory_mb=memory_mb))
+            swarm_result = None
+            swarm_instruction = ''
+            if coverage_swarm is not None:
+                def admit_lane():
+                    try:
+                        require_active()
+                    except AutopilotError as error:
+                        raise swarm.SwarmError(str(error)) from error
+
+                try:
+                    if cli.read(task).get('coverage_swarm') != coverage_swarm:
+                        raise swarm.SwarmError('required coverage swarm changed during verification')
+                    swarm_result = swarm.verify_task(current, candidate, task.parent / f'swarm-{uuid.uuid4().hex}',
+                                                     seconds=_remaining(cli.read(task)), admit=admit_lane)
+                except swarm.CoverageFailed as error:
+                    raise VerificationFailure(str(error)) from error
+                except swarm.ERRORS as error:
+                    raise AutopilotError(str(error)) from error
+                swarm_instruction = f'Required offline coverage passed. Review its receipts at {swarm_result["report"]}.\n'
             causal_report = None
             causal_instruction = ''
             if cause_mode:
@@ -1637,6 +1659,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                       'must cite an execution report. For UI tasks at least one '
                       f'criterion must cite the independent screenshot report {screenshot_id}.\n'
                       f'{guard_instruction}{impact_instruction}{design_instruction}{regression_instruction}{refactor_instruction}{causal_instruction}'
+                      f'{swarm_instruction}'
                       f'ISSUE:\n{issue}\nCRITERIA:\n{json.dumps(data["criteria"], ensure_ascii=False)}\n'
                       f'CRITERIA CHANGE HISTORY AND BASIS:\n{json.dumps(history, ensure_ascii=False)}\n'
                       f'FEATURE DOCUMENTATION:\n{feature_doc}\nSCREENSHOT SCRIPT (UNTRUSTED):\n{screenshot_script}\n'
@@ -1687,6 +1710,8 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
                                     'reports':reports}
             if regression is not None:
                 review_record['regression_sha256'] = tdd.digest(regression)
+            if swarm_result is not None:
+                review_record['coverage_swarm'] = swarm_result
             if causal_report is not None:
                 try:
                     causal_report['explanation'] = bug_cause.explanation(review)
