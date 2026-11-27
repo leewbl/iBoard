@@ -31,7 +31,7 @@ SCENARIOS = {
         'Probe available models and approve per-role model settings', 'skills/setup-pstack/SKILL.md',
         'skills/setup-pstack/SKILL.md', 'model_profiles probe',
         'Confirmed model options, a budget-derived role table, and the exact task snapshot',
-        'The main iBoard task stages use the profile. Arena, Swarm and other workflows retain separate runner contracts.'),
+        'Use the same approved profile with the main iBoard stages, Arena or Swarm model investigations.'),
     'help': Scenario(
         'Find a workflow for a task', HELP_SOURCE, 'skills/poteto-help/SKILL.md',
         'pstack_help', 'The pinned source, local guide, available entry point and its evidence requirements'),

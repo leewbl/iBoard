@@ -34,6 +34,22 @@ The acceptance script is outside the editable scope.
 python3 -m workbench.arena --manifest arena.json --out /path/outside/checkout/arena-run
 ```
 
+To use a [role profile](../setup-pstack/SKILL.md), replace the explicit
+`runners` and `judge_model` fields with
+`"model_profile":{"path":"/path/to/profile.json","sha256":"APPROVED_DIGEST"}`.
+Freeze the Arena seats and the first confirmed judge outside the parent
+vendor. The parent model scores alongside that judge. The selected
+feature/refactoring route synthesizes when synthesis is required. Each
+invocation records the role route, requested effort and any CLI-observed
+model ID. Failed provider calls block new calls to that provider. A
+malformed implementation note can be reformatted once in a read-only
+session while the original candidate stays subject to all checks.
+
+An approved Feature Arena can use the same profile in its `arena` settings.
+The receipt freezes the profile with the design and the winning commit.
+When the Feature task supplies a profile and requests a new comparison,
+the two approved profile digests must match.
+
 Use the same frozen task for every candidate. Candidate generation can run
 concurrently. The acceptance containers are disconnected and run serially.
 In image source mode the baseline image is verified against Git, and the

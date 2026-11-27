@@ -35,6 +35,15 @@ The model manifest uses `schema`, `revision`, `predicate`, `parallelism`, `secon
 
 Use `coverage` with a null rule or `race` with `first-pass`, `rank-all`, or `best-of`. For the ranked rules, name a judge model outside the race and freeze each rubric item as an `id` and `text`. The judge receives neutral labels and the original source. A tied score leaves the winner unresolved. For coverage and first-pass, use a null judge and an empty rubric. An invalid citation can be retried once. A provider failure stops new calls to that provider for the run.
 
+Add `model_profile` with the `path` and `sha256` of a [confirmed profile](../setup-pstack/SKILL.md)
+to inherit the `swarm-workers` route. Omit a lane's engine or use `"profile"` to
+inherit it. Explicit race arms can name another confirmed model and effort
+within the same budget. For ranked runs, use `"profile"` or `null` as the judge
+to select the first eligible confirmed judge outside the parent vendor and
+outside the race. An explicit judge must also be in the approved pool. The
+frozen plan retains the profile and all resolved routes. Audit checks the
+requested effort and model metadata along with the source quotes.
+
 ```sh
 python3 -m workbench.swarm_investigate freeze --manifest "$MANIFEST" --repo "$REPO" --out "$PLAN"
 python3 -m workbench.swarm_investigate run --plan "$PLAN/plan.json" --sha256 "$PLAN_DIGEST" --out "$EVIDENCE"

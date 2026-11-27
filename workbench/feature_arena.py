@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import time
 
-from workbench import architect, arena, cli, feature_context, interrogate, investigate, prototype
+from workbench import architect, arena, cli, feature_context, interrogate, investigate, model_profiles, prototype
 from workbench.prompt_profiles import PSTACK_COMMIT
 
 
@@ -16,7 +16,7 @@ FORMAT = 'iboard-feature-arena-v1'
 MANIFEST_LIMIT = 110_000
 SANDBOX_LIMIT = 13_000_000
 ARENA_FIELDS = {'image', 'source_mode', 'memory_mb', 'seconds', 'concurrency',
-                'check', 'runners', 'rubric', 'judge_model'}
+                'check', 'runners', 'rubric', 'judge_model', 'model_profile'}
 
 
 def _require(condition, message):
@@ -81,7 +81,7 @@ def _obligations(option):
     return [{'id': f'C{index}', **item} for index, item in enumerate(option['verification'], 1)]
 
 
-def _approval(path, sha256, repo, baseline):
+def _approval(path, sha256, repo, baseline, *, profile_snapshot=None):
     approval = feature_context._json(path, sha256, limit=MANIFEST_LIMIT)
     fields = {'design', 'review_model', 'criteria', 'checkpoint', 'arena'}
     _require(fields <= approval.keys() <= fields | {'prototypes', 'interrogate'},
@@ -99,6 +99,12 @@ def _approval(path, sha256, repo, baseline):
     settings = approval['arena']
     _require(isinstance(settings, dict) and settings.keys() <= ARENA_FIELDS,
              'Feature Arena approval cannot replace its derived repository, request, scope or alternatives')
+    if 'model_profile' in settings:
+        ref = settings['model_profile']
+        if profile_snapshot is not None:
+            _require(ref['sha256'] == profile_snapshot['sha256'], 'Feature Arena model profile changed after approval')
+            ref = profile_snapshot
+        settings = {**settings, 'model_profile': model_profiles.binding(ref, path.parent)}
     challenge = approval.get('interrogate')
     if 'interrogate' in approval:
         interrogate.settings(challenge)
@@ -181,6 +187,10 @@ def _selection(directory, repo, config, result):
              and len(candidates) == 2 and {item['design'] for item in candidates} == {'A', 'B'}
              and {item['id'] for item in candidates} == {'A1', 'A2'},
              'Feature Arena did not successfully compare both approved designs')
+    if 'model_routes' in config:
+        _require(all(item['provider'] == config['runners']['AB'.index(item['design'])] for item in candidates),
+                 'Feature Arena candidate changed its approved model seat')
+    arena.verify_model_calls(directory, config, result)
     winner = next(item for item in candidates if item['id'] == label)
     _require(winner['design'] == choice and winner['head'] == result['head']
              and winner['verification'] == result['verification'],
@@ -206,7 +216,8 @@ def _selection(directory, repo, config, result):
         recommendation, totals = arena._scores(scorecard['answer'], candidates, config['rubric'])
         _require(scorecard['totals'] == totals, 'Feature Arena scorecard totals changed')
         recommendations.add(recommendation)
-    _require(label in recommendations and result['scorecards']['openai']['model'] == config['judge_model'],
+    cross = config.get('model_routes', {}).get('cross', {'provider': 'openai'})
+    _require(label in recommendations and result['scorecards'][cross['provider']]['model'] == config['judge_model'],
              'Feature Arena selection disagrees with both independent scorecards')
     baseline_proof = result['baseline_verification']
     _sandbox(directory, 'baseline', baseline_proof, config, baseline)
@@ -216,7 +227,7 @@ def _selection(directory, repo, config, result):
     entry = feature_context._git(repo, 'cat-file', 'blob', f"{baseline}:{config['entry']}")
     _require(semantic.get('verdict') == 'PASS' and review.get('verdict') == 'PASS'
              and review.get('schema') == cli.SCHEMA and review.get('head') == winner['head']
-             and review.get('model') == config['judge_model'] and review.get('provider') == 'openai'
+             and review.get('model') == config['judge_model'] and review.get('provider') == cross['provider']
              and review.get('sandbox_sha256') == winner['verification']['sha256']
              and review.get('baseline_sandbox_sha256') == baseline_proof['sha256']
              and review.get('acceptance_sha256') == hashlib.sha256(entry).hexdigest(),
@@ -234,11 +245,12 @@ def _validate(receipt_path, receipt, repo, baseline, design, design_sha256):
              and receipt.get('design_sha256') == design_sha256,
              'Feature Arena receipt does not match the prepared baseline and design')
     approval_path, digest = Path(receipt['approval']['path']), receipt['approval']['sha256']
-    handoff, prototypes, source_ref, source, settings, challenge = _approval(approval_path, digest, repo, baseline)
-    _require(receipt['source_design'] == source_ref, 'Feature Arena source approval changed')
-    request = _bytes(directory / 'request.txt', 8_000, receipt['request_sha256']).decode('utf-8')
     input_path = directory / 'arena-input.json'
     arena_input = _local_evidence(input_path, receipt['input']['path'], receipt['input']['sha256'])
+    handoff, prototypes, source_ref, source, settings, challenge = _approval(
+        approval_path, digest, repo, baseline, profile_snapshot=arena_input.get('model_profile'))
+    _require(receipt['source_design'] == source_ref, 'Feature Arena source approval changed')
+    request = _bytes(directory / 'request.txt', 8_000, receipt['request_sha256']).decode('utf-8')
     origin = Path(arena_input['repo']).resolve(strict=True)
     _require(arena_input == _arena_input(origin, baseline, source, handoff, settings, request,
                                         arena_input['seconds']),
@@ -280,7 +292,7 @@ def validate_receipt(receipt_path, receipt, *, repo, baseline, design, design_sh
         raise feature_context.FeatureContextError(f'invalid Feature Arena receipt ({error})') from error
 
 
-def resolve(manifest, expected_sha256, repo, request, out, *, seconds_limit=None, run=arena.run,
+def resolve(manifest, expected_sha256, repo, request, out, *, seconds_limit=None, expected_model_profile=None, run=arena.run,
             challenge_runner=interrogate.run):
     """Run the authorized comparison and emit a Feature handoff only on verification."""
     started = time.monotonic()
@@ -289,6 +301,9 @@ def resolve(manifest, expected_sha256, repo, request, out, *, seconds_limit=None
         repo = Path(repo).expanduser().resolve(strict=True)
         baseline = cli.sha(repo, 'HEAD', timeout=10)
         handoff, _, source_ref, source, settings, challenge = _approval(manifest, expected_sha256, repo, baseline)
+        if expected_model_profile is not None:
+            _require(settings.get('model_profile', {}).get('sha256') == expected_model_profile,
+                     'Feature Arena must use the same approved profile as its task')
         raw_request = _bytes(Path(request).expanduser(), 8_000)
         request_text = arena._bounded(raw_request.decode('utf-8'), 8_000, 'Feature request')
         settings_limit = arena._limit(settings.get('seconds', 600), 1, 3600, 'seconds')

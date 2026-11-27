@@ -163,6 +163,12 @@ class FeatureArenaTests(unittest.TestCase):
             self.resolve()
         self.assertEqual(self.runs, [])
 
+    def test_feature_cannot_start_arena_with_a_different_model_profile(self):
+        with self.assertRaisesRegex(feature_context.FeatureContextError, 'same approved profile'):
+            self.resolve(expected_model_profile='a' * 64)
+        self.assertEqual(self.runs, [])
+        self.assertFalse(self.out.exists())
+
     def test_failed_independent_review_withholds_the_design_handoff(self):
         def reject_final(prompt, model, timeout):
             if prompt.startswith('Independently verify the selected'):

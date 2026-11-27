@@ -11,7 +11,7 @@ from threading import Event, Lock
 import time
 
 from model import claude_glm, codex_review
-from workbench import arena, autopilot, cli, investigate, swarm
+from workbench import arena, autopilot, cli, investigate, model_profiles, swarm
 from workbench.prompt_profiles import PSTACK_COMMIT
 
 
@@ -34,11 +34,12 @@ def _digest(value):
 
 
 def _provider(value):
-    if not isinstance(value, dict) or set(value) != {'provider', 'model'}:
+    if not isinstance(value, dict) or set(value) not in ({'provider', 'model'}, {'provider', 'model', 'effort'}):
         raise ModelSwarmError('each selected provider needs an exact model name')
     provider, model = value['provider'], value['model']
     prefix = {'glm': 'glm', 'openai': 'gpt'}.get(provider)
-    if not prefix or not isinstance(model, str) or not re.fullmatch(prefix + r'-[a-z0-9][a-z0-9.-]{0,64}', model):
+    if (not prefix or not isinstance(model, str) or not re.fullmatch(prefix + r'-[a-z0-9][a-z0-9.-]{0,64}', model)
+            or ('effort' in value and value['effort'] not in model_profiles.EFFORTS)):
         raise ModelSwarmError('supply an explicit GLM or OpenAI model name')
 
 
@@ -70,7 +71,7 @@ def _manifest(data):
     judge, rubric = data['judge'], data['rubric']
     if rule in ('rank-all', 'best-of'):
         _provider(judge)
-        if any(lane['engine'] == judge for lane in lanes):
+        if any(_identity(lane['engine']) == _identity(judge) for lane in lanes):
             raise ModelSwarmError('the blind judge must use a model outside the race')
         if (not isinstance(rubric, list) or not 1 <= len(rubric) <= 6
                 or any(not isinstance(row, dict) or set(row) != {'id', 'text'}
@@ -82,6 +83,31 @@ def _manifest(data):
         raise ModelSwarmError('a judge and rubric only apply to ranked comparisons')
 
 
+def _identity(engine):
+    return engine['provider'], engine['model']
+
+
+def _apply_profile(data, profile, choices):
+    if len(choices['workers']) != len(data['lanes']):
+        raise ModelSwarmError('the profile needs one recorded preference per lane')
+    lanes = [{**lane, 'engine': model_profiles.resolve(profile, 'swarm-workers', choice)}
+             for lane, choice in zip(data['lanes'], choices['workers'])]
+    judge = choices['judge']
+    if data['race_rule'] in ('best-of', 'rank-all'):
+        parent = profile['choices']['parent']['provider']
+        used = {_identity(lane['engine']) for lane in lanes}
+        pool = [model_profiles.invocation(route) for route in profile['routes']['arena-cross-judge-pool']
+                if route['provider'] != parent and _identity(route) not in used]
+        if judge not in (None, 'profile'):
+            _provider(judge)
+            pool = [route for route in pool if _identity(route) == _identity(judge)
+                    and ('effort' not in judge or judge['effort'] == route['effort'])]
+        if not pool:
+            raise ModelSwarmError('ranked Swarm needs a cross-vendor judge outside the race from the approved pool')
+        judge = pool[0]
+    return {**data, 'lanes': lanes, 'judge': judge}
+
+
 def _sources(repo, head, lane):
     actual, evidence = investigate._collect(repo, head, lane['files'], history=False, remaining=lambda: 12)
     if actual != head or sum(len(row['text']) for row in evidence.values()) > 24_000:
@@ -90,14 +116,24 @@ def _sources(repo, head, lane):
 
 
 def freeze(manifest, repo, out):
-    data = swarm._read(Path(manifest).expanduser())
+    path = Path(manifest).expanduser()
+    data = swarm._read(path)
+    binding = data.pop('model_profile', None)
+    extra = {}
+    if binding is not None:
+        bound = model_profiles.binding(binding, path.parent)
+        choices = {'workers': [lane.get('engine') for lane in data['lanes']], 'judge': data['judge']}
+        data = _apply_profile(data, bound['profile'], choices)
+        extra = {'model_profile': bound, 'profile_choices': choices}
+    elif any('effort' in lane.get('engine', {}) for lane in data['lanes']) or 'effort' in (data['judge'] or {}):
+        raise ModelSwarmError('explicit efforts require a confirmed model profile')
     _manifest(data)
     repo = Path(investigate._git(repo, 'rev-parse', '--show-toplevel').decode().strip()).resolve(strict=True)
     output = Path(out).expanduser().resolve()
     if output.is_relative_to(repo):
         raise ModelSwarmError('keep model swarm records outside the inspected checkout')
     source_hashes = {lane['id']: _digest(_sources(repo, data['revision'], lane)) for lane in data['lanes']}
-    record = {**data, 'source': SOURCE, 'pstack_commit': PSTACK_COMMIT, 'repo': str(repo),
+    record = {**data, **extra, 'source': SOURCE, 'pstack_commit': PSTACK_COMMIT, 'repo': str(repo),
               'source_hashes': source_hashes}
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = output / 'plan.json'
@@ -113,10 +149,18 @@ def _load(plan, sha256):
     if not isinstance(sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', sha256):
         raise ModelSwarmError('supply the approved model swarm plan SHA-256')
     data = swarm._read(Path(plan).expanduser(), sha256)
-    extras = {'source', 'pstack_commit', 'repo', 'source_hashes'}
+    extras = {'source', 'pstack_commit', 'repo', 'source_hashes', 'model_profile', 'profile_choices'}
     if data['source'] != SOURCE or data['pstack_commit'] != PSTACK_COMMIT:
         raise ModelSwarmError('invalid frozen model swarm version')
-    _manifest({key: value for key, value in data.items() if key not in extras})
+    manifest = {key: value for key, value in data.items() if key not in extras}
+    _manifest(manifest)
+    if 'model_profile' in data:
+        profile = model_profiles.binding(data['model_profile'], Path(plan).parent)['profile']
+        if 'profile_choices' not in data or manifest != _apply_profile(manifest, profile, data['profile_choices']):
+            raise ModelSwarmError('frozen engine routes no longer match their approved profile')
+    elif 'profile_choices' in data or any('effort' in lane['engine'] for lane in data['lanes']) or (
+            'effort' in (data['judge'] or {})):
+        raise ModelSwarmError('frozen model effort lacks its profile')
     sources = {lane['id']: _sources(data['repo'], data['revision'], lane) for lane in data['lanes']}
     if {key: _digest(value) for key, value in sources.items()} != data['source_hashes']:
         raise ModelSwarmError('approved source scopes no longer match Git')
@@ -167,6 +211,8 @@ def _validate(raw, evidence):
 
 
 def _invoke(engine, prompt, seconds):
+    if 'effort' in engine:
+        return model_profiles.read_only(engine, prompt, seconds)
     if engine['provider'] == 'glm':
         with TemporaryDirectory(prefix='iboard-swarm-model-') as directory:
             result = claude_glm.execute(Path(directory), prompt, seconds, read_only=True, file_tools_only=True,
@@ -183,6 +229,14 @@ def _invoke(engine, prompt, seconds):
 def _matches_engine(engine, observed):
     return (observed is None if engine['provider'] == 'openai' else
             isinstance(observed, str) and observed.removesuffix('[1M]') == engine['model'])
+
+
+def _observations(engine, reply):
+    if ('observed_model' not in reply or not _matches_engine(engine, reply['observed_model'])
+            or ('requested_effort' in reply) != ('effort' in engine)
+            or reply.get('requested_effort') != engine.get('effort')):
+        raise ProviderUnavailable('provider did not confirm the approved invocation identity')
+    return {key: reply[key] for key in ('observed_model', 'requested_effort') if key in reply}
 
 
 class Calls:
@@ -202,9 +256,11 @@ class Calls:
                 raise ProviderUnavailable('provider stopped accepting new swarm work')
         try:
             reply = self.invoke(engine, prompt, left)
-            if (not isinstance(reply, dict) or set(reply) != {'answer', 'observed_model'}
-                    or not _matches_engine(engine, reply['observed_model'])):
+            expected = {'answer', 'observed_model', 'requested_effort'} if 'effort' in engine else {
+                'answer', 'observed_model'}
+            if not isinstance(reply, dict) or set(reply) != expected:
                 raise ProviderUnavailable('provider did not confirm the approved invocation identity')
+            _observations(engine, reply)
             return reply
         except PROVIDER_ERRORS as error:
             with self.guard:
@@ -230,7 +286,7 @@ def _worker(lane, data, evidence, directory, approval, calls):
         else:
             try:
                 row['answer'] = _validate(reply['answer'], evidence)
-                row.update(status='PASS', observed_model=reply['observed_model'])
+                row.update(status='PASS', **_observations(lane['engine'], reply))
             except (*ERRORS, arena.ArenaError) as error:
                 row.update(status='INVALID', reason=str(error)[:500], response_sha256=_digest(reply.get('answer')))
         settled = time.monotonic_ns()
@@ -246,7 +302,7 @@ def _worker(lane, data, evidence, directory, approval, calls):
     if row['status'] == 'PASS':
         outcome['findings'] = row['answer']['findings']
         outcome['unknowns'] = row['answer']['unknowns']
-        outcome['observed_model'] = row['observed_model']
+        outcome.update(_observations(lane['engine'], row))
     return outcome
 
 
@@ -294,7 +350,7 @@ def _judge(data, rows, evidence, output, calls):
         result = calls.call(data['judge'], brief)
         answer = _answer(result['answer'])
         row.update(status='PASS', answer=answer, scores=_scores(data, answer, labels),
-                   observed_model=result['observed_model'])
+                   **_observations(data['judge'], result))
     except (*ERRORS, arena.ArenaError) as error:
         row.update(status='BLOCKED', reason=str(error)[:500])
     path = output / 'judge.json'
@@ -342,6 +398,8 @@ def run(plan, sha256, out, *, invoke=_invoke):
     result = {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': 'model-swarm', 'plan_sha256': sha256,
               'revision': data['revision'], 'predicate': data['predicate'], 'race_rule': data['race_rule'],
               'lanes': rows, 'judge': judged, **_outcome(data, rows, judged)}
+    if 'model_profile' in data:
+        result['model_profile_sha256'] = data['model_profile']['sha256']
     path = output / 'result.json'
     cli.write(path, result)
     return {**result, 'report': str(path), 'sha256': cli.digest(path)}
@@ -376,10 +434,8 @@ def _audit_lane(path, approval, data, lane, evidence, row):
                 'attempts': attempts, 'settled_ns': settled, 'status': 'BLOCKED'}
     if raw['status'] == 'PASS':
         answer = _validate(raw['answer'], evidence)
-        if not _matches_engine(lane['engine'], raw.get('observed_model')):
-            raise ModelSwarmError('worker did not confirm the approved model')
         expected.update(status='PASS', findings=answer['findings'], unknowns=answer['unknowns'],
-                        observed_model=raw.get('observed_model'))
+                        **_observations(lane['engine'], raw))
     if row != expected:
         raise ModelSwarmError('lane outcome disagrees with the model receipt')
 
@@ -400,8 +456,9 @@ def _audit_judge(path, data, rows, evidence, reference):
         raise ModelSwarmError('blind judge did not use the original rubric and eligible arms')
     scores = None
     if raw['status'] == 'PASS':
-        if len(brief.encode()) > 88_000 or not _matches_engine(data['judge'], raw.get('observed_model')):
+        if len(brief.encode()) > 88_000:
             raise ModelSwarmError('blind judge request did not match the approved bounds')
+        _observations(data['judge'], raw)
         scores = _scores(data, raw['answer'], labels)
     if scores != raw.get('scores') or scores != reference.get('scores'):
         raise ModelSwarmError('model race ranking does not reproduce')
@@ -416,6 +473,7 @@ def audit(plan, sha256, report, report_sha256):
     summary = swarm._read(report, report_sha256, 600_000)
     if (summary.get('source') != SOURCE or summary.get('kind') != 'model-swarm'
             or summary.get('plan_sha256') != sha256
+            or summary.get('model_profile_sha256') != data.get('model_profile', {}).get('sha256')
             or any(summary[key] != data[key] for key in ('revision', 'predicate', 'race_rule'))
             or len(summary['lanes']) != len(data['lanes'])):
         raise ModelSwarmError('retained summary refers to a different model swarm')

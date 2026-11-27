@@ -277,6 +277,57 @@ def select(profile, role, *, other_than=None):
     return next((item for item in routes if item['provider'] != other_than), None)
 
 
+def binding(reference, directory):
+    """Freeze a profile by value so an approved run need not reread an installed file."""
+    if set(reference) == {'path', 'sha256'}:
+        value = load(Path(directory) / Path(reference['path']).expanduser(), reference['sha256'])
+        reference = {'profile': value, 'sha256': reference['sha256']}
+    _require(set(reference) == {'profile', 'sha256'} and
+             hashlib.sha256(_serialized(reference['profile'])).hexdigest() == reference['sha256'],
+             'model profile snapshot does not match the approved bytes')
+    _profile(reference['profile'])
+    return reference
+
+
+def invocation(route):
+    return {name: route[name] for name in ('provider', 'model', 'effort')}
+
+
+def resolve(profile, role, preference=None):
+    if preference in (None, 'profile'):
+        return invocation(profile['routes'][role])
+    _require(isinstance(preference, dict) and set(preference) in (
+        {'provider', 'model'}, {'provider', 'model', 'effort'}), 'invalid explicit role choice')
+    engine = _model({key: preference[key] for key in ('provider', 'model')})
+    cap = max(0, EFFORTS.index(ROLES[role]) - BUDGETS[profile['choices']['budget']])
+    pool = _available(profile['inventory'])
+    requested = preference.get('effort')
+    for effort in reversed(EFFORTS[:cap + 1]):
+        if (requested is None or requested == effort) and (engine['provider'], engine['model'], effort) in pool:
+            return {**engine, 'effort': effort}
+    raise ProfileError(f'{role} has no confirmed effort within the approved budget for {engine["model"]}')
+
+
+def confirm_glm(route, raw):
+    observed = raw.get('model')
+    _require(raw.get('exit_code') == 0 and not raw.get('timed_out') and raw.get('trace_completed') is True
+             and isinstance(observed, str) and observed.removesuffix('[1M]') == route['model']
+             and raw.get('requested_effort') == route['effort'], 'Claude Code did not confirm the approved invocation')
+    return observed
+
+
+def read_only(route, prompt, seconds, *, editor=claude_glm.execute, reviewer=codex_review.review):
+    if route['provider'] == 'glm':
+        with TemporaryDirectory(prefix='iboard-role-review-') as folder:
+            raw = editor(Path(folder).resolve(), prompt, seconds, read_only=True, file_tools_only=True,
+                         capture_trace=True, private_workspace=True, requested_model=route['model'],
+                         requested_effort=route['effort'])
+        return {'answer': raw.get('stdout'), 'observed_model': confirm_glm(route, raw),
+                'requested_effort': raw['requested_effort']}
+    return {'answer': reviewer(prompt, route['model'], seconds, effort=route['effort']),
+            'observed_model': None, 'requested_effort': route['effort']}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)

@@ -337,8 +337,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
     if feature_arena_out:
         from workbench import feature_arena
         try:
+            profile_options = {'expected_model_profile': model_profile_sha256} if selected_profile else {}
             resolution = feature_arena.resolve(feature_manifest, feature_sha256, repo, issue_file,
-                                               feature_arena_out, seconds_limit=int(remaining()))
+                                               feature_arena_out, seconds_limit=int(remaining()), **profile_options)
             if resolution['status'] != 'resolved':
                 raise StartError(f'feature Arena comparison blocked; evidence retained at {feature_arena_out}')
             handoff = feature_context.load_input(resolution['handoff'], resolution['handoff_sha256'], repo)
