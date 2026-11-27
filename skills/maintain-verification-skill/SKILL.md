@@ -33,8 +33,28 @@ python3 -m workbench.project_triage --repo "$TARGET_REPO" --base "$KNOWN_GOOD" \
 
 The comparison freezes all scripts, checks the baseline image, and overlays the candidate's tracked source on the same runtime. Each script runs twice per revision in fresh containers. A product regression needs passing baseline runs, repeated observed failures from both candidate probes, and healthy doctor checks. A harness gap needs a failing primary probe and repeated independent success. Other conflicts remain inconclusive. Keep the reports with the original failed audit. Candidates that require dependency installation or compilation need a separate runtime comparison before drawing broader conclusions.
 
-When a correction belongs in the skill, rerun maintenance with `--manifest "$CORRECTED_CONTRACT" --helpers "$CORRECTED_HELPERS"` and a new evidence directory. Review the full map, exact source citations and runtime proof. A successful changed run exports a verified bundle and a skill-scoped diff. Submit one PR for proven corrections if the task authorizes it. Leave a suspected product regression open with its original evidence and affected path.
+When a correction belongs in the skill, rerun maintenance with `--manifest "$CORRECTED_CONTRACT" --helpers "$CORRECTED_HELPERS"` and a new evidence directory. Review the full map, exact source citations and runtime proof. A successful changed run exports a verified bundle and a skill-scoped diff. Leave a suspected product regression open with its original evidence and affected path.
 
 - `clean` means the map matches the bundle and all journeys passed on the selected revision.
 - `changed` means an offered replacement changed the bundle and passed the full audit.
 - `blocked` means source, map, doctor, runtime or cleanup evidence could not support a conclusion. Inspect the individual reports.
+
+## Ship a verified correction
+
+Review and commit the generated correction in the existing verification skill directory in the iBoard task worktree. Record why any changed acceptance condition still reflects the user-visible behavior, and cite the source or runtime evidence. Keep product fixes in a separate task. Use an image matching the task baseline and an output directory outside the worktree.
+
+```sh
+python3 -m workbench.project_verify_delivery check --repo "$WORKTREE" \
+  --base "$BASE" --candidate "$HEAD" --skill "$REPO_RELATIVE_SKILL" \
+  --image "$BASELINE_IMAGE" --out "$DELIVERY_EVIDENCE"
+```
+
+The command reads both bundles from Git, checks the scope of every new commit, and reruns doctor and every feature in the corrected contract. The baseline image runs the product code because the product tree is identical in the candidate. The receipt binds the candidate's exact bundle, the map and source checks, each run, and any screenshots or recordings.
+
+```sh
+python3 -m workbench.project_verify_delivery publish --task "$TASK_RECORD" \
+  --receipt "$DELIVERY_EVIDENCE/receipt.json" --sha256 "$RECEIPT_SHA256" \
+  --repository "$AUTHORIZED_FORK"
+```
+
+Use `attach` with the task, receipt and digest when publishing is a separate step. Publication uses the existing task's independent review and normal GitHub gates. The workbench rechecks the evidence before remote writes and reuses the matching task PR on retry. The PR body includes the skill, check count and receipt digest. The `publish` command opens or updates one PR. Merge continues through the separate delivery gate.

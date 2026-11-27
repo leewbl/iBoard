@@ -438,6 +438,12 @@ def _pr_body(data, head):
         body += ('\n## Skill verification\n\n'
                  f'Checked committed metadata and references with {proof["probes"]} offline structural runs. '
                  f'Evidence SHA-256 `{proof["sha256"]}`.\n')
+    if 'project_verification_maintenance' in data:
+        from workbench import project_verify_delivery
+        proof = project_verify_delivery.require(data, head)
+        body += ('\n## Verification skill maintenance\n\n'
+                 f'`{proof["skill"]}` passed {proof["runs"]} isolated checks, including doctor. '
+                 f'Evidence SHA-256 `{proof["sha256"]}`.\n')
     if 'performance_contract' in data:
         from workbench import perf_issue
         measurement = perf_issue.require(data, head)
@@ -686,6 +692,11 @@ def _require_gateway(data, head, repo):
 def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=None, replay_check=None):
     latest = cli.read(task_path)
     _require_gateway(latest, head, repo)
+    if latest.get('project_verification_maintenance') != data.get('project_verification_maintenance'):
+        raise PublishError('the verification maintenance proof changed before GitHub write')
+    if 'project_verification_maintenance' in latest:
+        from workbench import project_verify_delivery
+        project_verify_delivery.require(latest, head)
     if latest.get('pr_brief') != data.get('pr_brief'):
         raise PublishError('the PR briefing changed before GitHub write')
     if 'pr_brief' in latest:

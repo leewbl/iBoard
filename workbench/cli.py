@@ -281,6 +281,12 @@ def evidence_gate(data, expected):
             skill_authoring.require(data, target)
         except WorkbenchError as error:
             issues.append(str(error))
+    if 'project_verification_maintenance' in data:
+        from workbench import project_verify_delivery
+        try:
+            project_verify_delivery.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
     if 'performance_contract' in data:
         from workbench import perf_issue
         try:

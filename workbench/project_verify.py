@@ -244,6 +244,29 @@ def _changes(previous, candidate):
             for path in sorted(previous.keys() | candidate.keys()) if previous.get(path) != candidate.get(path)]
 
 
+def _run_passed(run, check, image, revision, screenshot=None, recording=None):
+    return (run.get("container_created") is True and run.get("cleanup_confirmed") is True
+            and run.get("workspace_read_only") is True and run.get("image") == image
+            and run.get("command") == _command(check) and run.get("exit_code") == 0 and not run.get("error")
+            and not run.get("timed_out") and check["marker"] in run.get("stdout", "").splitlines()
+            and (not check.get("browser") or _browser_receipt(run, screenshot, revision))
+            and (recording is None or browser_recording.receipt(run, recording, revision))
+            and (screenshot is None or screenshot.is_file() and cli.digest(screenshot) == run.get("screenshot_sha256")))
+
+
+def _source_coverage(repo, revision, contract):
+    cache = {}
+
+    def read_blob(path):
+        return _read_blob(repo, revision, path, cache)
+
+    checks = [contract["doctor"], *contract["features"]]
+    source = {check["id"]: _source(read_blob, check) for check in checks}
+    drift = [key for key, anchors in source.items() if any(not anchor["line"] for anchor in anchors)]
+    inventory = project_surface.scan(contract, read_blob)
+    return source, drift, inventory
+
+
 class Verification:
     def __init__(self, repo, revision, image, output, timeout, memory_mb, sandbox, attester):
         self.repo, self.revision, self.image = repo, revision, image
@@ -288,13 +311,7 @@ class Verification:
                                        **({"recording_output": recording} if recording else {}))
             except (ValueError, OSError, SandboxError) as error:
                 run = {"error": str(error), "diagnostic": "sandbox"}
-        passed = (run.get("container_created") is True and run.get("cleanup_confirmed") is True
-                  and run.get("workspace_read_only") is True and run.get("image") == self.report["verified_image_id"]
-                  and run.get("command") == command and run.get("exit_code") == 0 and not run.get("error")
-                  and not run.get("timed_out") and check["marker"] in run.get("stdout", "").splitlines()
-                  and (not browser or _browser_receipt(run, screenshot, self.revision))
-                  and (recording is None or browser_recording.receipt(run, recording, self.revision))
-                  and (screenshot is None or screenshot.is_file() and cli.digest(screenshot) == run.get("screenshot_sha256")))
+        passed = _run_passed(run, check, self.report["verified_image_id"], self.revision, screenshot, recording)
         path = self.output / f"{basename}.json"
         run.update(schema=cli.SCHEMA, commit=self.revision, check=key, passed=passed,
                    helper_sha256=helper_sha, expected_marker=check["marker"])
@@ -305,14 +322,9 @@ class Verification:
 
     def verify(self, bundle, contract, selected):
         doctor = contract["doctor"]
-        cache = {}
-        checks = [doctor, *contract["features"]]
-        def read_blob(path):
-            return _read_blob(self.repo, self.revision, path, cache)
-        self.report["source"] = {c["id"]: _source(read_blob, c) for c in checks}
-        drift = [key for key, anchors in self.report["source"].items() if any(not a["line"] for a in anchors)]
+        source, drift, inventory = _source_coverage(self.repo, self.revision, contract)
+        self.report["source"] = source
         self.report["source_drift"] = drift
-        inventory = project_surface.scan(contract, read_blob)
         if inventory["scope_count"]:
             self.report["entrypoints"] = inventory
         image_id = self.attester(self.repo, self.image, min(180, self.remaining()), commit=self.revision)

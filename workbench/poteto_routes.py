@@ -27,7 +27,10 @@ def start(kind):
 
 PLAYBOOKS = {
     'authoring-a-skill': Playbook('Write or revise a skill and check the candidate before delivery.', 'author-skill',
-        stages('skill_authoring', draft='local', check='local', attach='local', publish='inherited-delivery')),
+        {**stages('skill_authoring', draft='local', check='local', attach='local', publish='inherited-delivery'),
+         'maintenance-check': Action('project_verify_delivery', ('check',)),
+         'maintenance-attach': Action('project_verify_delivery', ('attach',)),
+         'maintenance-publish': Action('project_verify_delivery', ('publish',), effect='inherited-delivery')}),
     'autonomous-run': Playbook('Drive one explicitly approved task until its measurable condition is satisfied.',
         'autonomous-run', stages('autonomous_run', freeze='local', run='inherited-delivery')),
     'autopilot-full': Playbook('Supervise several already approved tasks through their original delivery policies.',

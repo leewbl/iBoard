@@ -1104,9 +1104,18 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         raise DeliveryError('evidence changed before merge: ' + '; '.join(issues))
     verify_remote()
 
-    def recheck_phase():
+    def recheck_task_bindings():
+        latest = cli.read(Path(task_path))
+        maintenance = 'project_verification_maintenance'
+        if latest.get(maintenance) != data.get(maintenance):
+            raise DeliveryError('verification maintenance proof changed before merge')
+        if maintenance in latest:
+            from workbench import project_verify_delivery
+            try:
+                project_verify_delivery.require(latest, head)
+            except cli.WorkbenchError as error:
+                raise DeliveryError(str(error)) from error
         if data.get('phase_binding'):
-            latest = cli.read(Path(task_path))
             if latest.get('phase_binding') != data['phase_binding']:
                 raise DeliveryError('approved phase changed before merge')
             _independent_verification(latest, head, destination=repo)
@@ -1118,7 +1127,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         run_control.admit(task_path, DeliveryError)
         if revalidate:
             revalidate()
-        recheck_phase()
+        recheck_task_bindings()
         recheck_visual_write(task_path, data, head, repo)
         recheck_refactor_write(task_path, data, head, repo, review)
         require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)
@@ -1138,7 +1147,7 @@ def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, reval
         run_control.admit(task_path, DeliveryError)
         if revalidate:
             revalidate()
-        recheck_phase()
+        recheck_task_bindings()
         recheck_visual_write(task_path, data, head, repo)
         recheck_refactor_write(task_path, data, head, repo, review)
         require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)

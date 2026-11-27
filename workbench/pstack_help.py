@@ -340,6 +340,11 @@ SCENARIOS = {
         'Check project verification against a new revision', 'skills/maintain-verification-skill/SKILL.md',
         'skills/maintain-verification-skill/SKILL.md', 'project_verify maintain',
         'Source-drift findings, rerun receipts and skipped or blocked journeys'),
+    'ship-maintained-verify': Scenario(
+        'Publish a verified correction limited to a project verification skill', 'skills/maintain-verification-skill/SKILL.md',
+        'skills/maintain-verification-skill/SKILL.md#ship-a-verified-correction', 'project_verify_delivery check',
+        'Committed skill diff, all offline journey receipts and the existing independent task review',
+        'Publish only with an authorized iBoard task for the same baseline and candidate.'),
     'create-formal-verify': Scenario(
         'Verify a named property and generate its local skill', 'skills/create-formal-verification-skill/SKILL.md',
         'skills/create-formal-verification-skill/SKILL.md', 'formal_verify create',
