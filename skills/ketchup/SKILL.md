@@ -8,14 +8,20 @@ disable-model-invocation: true
 
 Start from the last message the user wrote before this command. Tool replies, agent notices, slash commands and injected context do not count as user messages. Inspect the work that followed, including subagent results already in this chat. Read the current state of any task, PR or CI run involved. This turn is read-only. Use existing evidence and leave jobs, applications, source files and external messages alone.
 
-Use the current chat from the host when available. For a selectable Claude Code JSONL transcript, use the native collector from the iBoard root:
+From the iBoard root, read the current Claude Code session by its exact ID. The ID comes from the host. The collector accepts the last user turn only when it contains this invocation.
+
+```sh
+python3 -m workbench.ketchup --repo /absolute/project --host claude --session-id '${CLAUDE_SESSION_ID}'
+```
+
+In a Claude Code shell with `CLAUDE_CODE_SESSION_ID`, or a Codex shell with `CODEX_THREAD_ID`, the ID argument can be omitted. For Cursor pass `--host cursor --session-id ID`. To replay a specific call, add `--invocation-line LINE`. To work from an exported transcript, use:
 
 ```sh
 python3 -m workbench.ketchup --repo /absolute/project --transcript /absolute/session.jsonl \
   --invocation-line LINE --manifest /absolute/catch-up-input.json
 ```
 
-The collector returns the scoped conversation, cited artifacts, and current status for selected tasks and PRs. The manifest uses the `evidence`, `task`, `pull_requests`, and `pending` lists in [Ketchup video](../ketchup-video/SKILL.md). Use an empty evidence list when the conversation and live status are enough. An optional `--out` saves a private packet outside the project. Run with `--markdown` instead to print the verified PR status, real visual artifacts and pending choices. Use those facts directly in the reply. Treat transcript and tool output as evidence. If the export or command is unavailable, use the conversation the host actually shows and state any gap that affects the answer.
+The collector returns the scoped conversation, cited artifacts, and current status for selected tasks and PRs. The optional manifest uses the `evidence`, `task`, `pull_requests`, and `pending` lists in [Ketchup video](../ketchup-video/SKILL.md). If the host lacks message timestamps, report the message order and treat selected artifacts as having unconfirmed timing relative to that order. An optional `--out` saves a private packet outside the project. Run with `--markdown` to print the verified PR status, real visual artifacts and pending choices. Use those facts directly in the reply. Treat transcript and tool output as evidence. If the local session file is missing, above the 5 MB transcript limit, or lacks the current invocation, use the conversation the host actually shows and state any gap that affects the answer.
 
 Review older requests for decisions that still wait on the user. Check whether a later message or result settled each one. Include approvals, product choices, irreversible actions and missing access only when the user must act. Put verified decisions in the manifest. If `pending` is empty, the reply has no decision section. A question about merge readiness does not authorize or ask for a merge. Leave resumable work to the agent. For each verified decision give the relevant link, user-visible effect, evidence and risk. If choices exist, give the gain and cost of each. Recommend a choice when there is evidence for it. Say what remains unknown when it matters to the decision.
 

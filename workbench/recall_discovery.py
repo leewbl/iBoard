@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 
@@ -40,6 +41,25 @@ def _codex_project(file, repo, current):
         return recall_sessions.codex_scope(header.get('payload'), repo, current)
     except (OSError, ValueError):
         return False
+
+
+def find_session(host, repo, ident):
+    """Locate only the named session. The caller verifies contents and workspace."""
+    if host not in recall_sessions.HOSTS or not recall_sessions.UUIDISH.fullmatch(ident):
+        raise ValueError('invalid host or session ID')
+    home = Path.home()
+    if host == 'claude':
+        project, _ = _locations(host, repo, home)[0]
+        root = Path(os.getenv('CLAUDE_CONFIG_DIR') or home/'.claude').expanduser()/'projects'/project.name
+        paths = root.glob(f'{ident}.jsonl')
+    elif host == 'cursor':
+        root, _ = _locations(host, repo, home)[0]
+        paths = root.glob(f'{ident}/{ident}.jsonl')
+    else:
+        root = Path(os.getenv('CODEX_HOME') or home/'.codex').expanduser()/'sessions'
+        paths = root.glob(f'*/*/*/rollout-*-{ident}.jsonl')
+    return [path for path in paths if path.is_file() and not path.is_symlink()
+            and path.resolve().is_relative_to(root.resolve())]
 
 
 def discover(host, repo, start, current, *, home=None):

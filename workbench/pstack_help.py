@@ -320,12 +320,12 @@ SCENARIOS = {
     'catch-up': Scenario(
         'Catch up from the last human message', 'skills/ketchup/SKILL.md',
         'skills/ketchup/SKILL.md', 'ketchup', 'Exact chat window, selected task and PR state, visuals and waiting decisions',
-        'Select the Claude Code command line and existing evidence. The skill writes the reply in the current chat.'),
+        'Use an exact local Claude Code, Codex, or Cursor session, or select a recorded invocation.'),
     'ketchup-video': Scenario(
         'Make a verified silent briefing from existing evidence', 'skills/ketchup-video/SKILL.md',
         'skills/ketchup-video/SKILL.md', 'ketchup_video collect',
         'Exact transcript window, approved visual evidence, subtitled MP4 and per-slide frame measurements',
-        'Select the invocation line and existing task artifacts. Render outside the target repository.'),
+        'Use an exact local session or recorded invocation, and select existing task artifacts. Render outside the target repository.'),
     'make-bot-ui': Scenario(
         'Trigger named iBoard routines from a local or tailnet page', 'skills/make-bot-ui/SKILL.md',
         'skills/make-bot-ui/SKILL.md', 'bot_ui create',

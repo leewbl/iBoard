@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from urllib.parse import quote
 
-from workbench import cli, ketchup_video
+from workbench import cli, ketchup_session, ketchup_video
 from workbench.automate_me import _keep, _require
 from workbench.prompt_profiles import PSTACK_COMMIT
 
@@ -15,11 +15,12 @@ SOURCE = 'skills/ketchup/SKILL.md'
 PR_STATES = {'OPEN': 'open', 'CLOSED': 'closed', 'MERGED': 'merged', 'unknown': 'unconfirmed'}
 
 
-def collect(*, repo, transcript, invocation_line, manifest, out=None, reader=None):
+def collect(*, repo, manifest=None, transcript=None, invocation_line=None, host=None, session_id=None, out=None, reader=None):
     repo = Path(repo).expanduser().resolve(strict=True)
     if out is not None:
         _require(not Path(out).expanduser().resolve().is_relative_to(repo), 'write catch-up evidence outside the project')
-    window = ketchup_video._anchor(repo, transcript, invocation_line, command='ketchup', context_limit=None)
+    window = ketchup_session.anchor(repo, transcript=transcript, invocation_line=invocation_line, host=host,
+                                   session_id=session_id)
     sources, pending = ketchup_video._collect_sources(window=window, manifest=manifest, reader=reader,
                                                      include_task_events=True)
     packet = {'schema': cli.SCHEMA, 'kind': 'text-catch-up', 'source': SOURCE, 'pstack_commit': PSTACK_COMMIT,
@@ -35,6 +36,8 @@ def render(packet):
     """Render verified state and selected decisions without inferring next actions."""
     pending = packet['pending']
     lines = ['Decisions still waiting on you.' if pending else 'No decisions were identified for you.']
+    if packet['window'].get('time_basis') == 'message-order':
+        lines.append('The host recorded message order. Artifact timing relative to those messages is unconfirmed.')
     sources = packet['evidence']
     for item in sources.values():
         if item.get('decision_only') or item['kind'] not in ('screenshot', 'recording'):
@@ -66,9 +69,9 @@ def render(packet):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ('repo', 'transcript', 'manifest'):
-        parser.add_argument('--' + key, required=True)
-    parser.add_argument('--invocation-line', required=True, type=int)
+    parser.add_argument('--repo', required=True)
+    parser.add_argument('--manifest', help='Select artifacts, tasks, PRs and waiting decisions')
+    ketchup_session.add_arguments(parser)
     parser.add_argument('--out', help='Save to a new private file outside the target project')
     parser.add_argument('--markdown', action='store_true', help='Print verified PR state, visuals and waiting decisions')
     options = vars(parser.parse_args(argv))

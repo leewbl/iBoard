@@ -22,6 +22,9 @@ CREDENTIAL = re.compile(r'(?i)\b(?:gh[pousr]_|github_pat_|xox[baprs]-|sk-)[A-Za-
 BEARER = re.compile(r'(?i)\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}={0,2}')
 VOICE_INPUT = re.compile(r'<realtime_delegation>\s*<input>(.*?)</input>\s*'
                          r'<transcript_delta>.*?</transcript_delta>\s*</realtime_delegation>', re.S)
+SLASH_COMMAND = re.compile(r'^(/[\w-]+(?::[\w-]+)?)(?:\s|$)')
+COMMAND_ENVELOPE = re.compile(r'^(?:<command-message>[^<>]*</command-message>\s*)?'
+                              r'<command-name>(/[\w-]+(?::[\w-]+)?)</command-name>(?:\s|$)')
 
 
 def _workspace(value, repo):
@@ -45,7 +48,7 @@ def _blocks(content, text_type):
             and isinstance(block.get('text'), str)]
 
 
-def _conversation_text(message, role):
+def _conversation_text(message, role, *, include_commands=False):
     if (not isinstance(message, dict) or message.get('role', role) != role):
         return ''
     content = message.get('content')
@@ -53,6 +56,8 @@ def _conversation_text(message, role):
             and any(isinstance(block, dict) and block.get('type') == 'tool_result' for block in content)):
         return ''
     text = '\n'.join(_blocks(content, 'text'))
+    if include_commands and role == 'user' and (command := COMMAND_ENVELOPE.match(text.lstrip())):
+        return command[1]
     return '' if text.lstrip().startswith(GENERATED) else text
 
 
@@ -64,7 +69,7 @@ def _turn(line, role, stamp, uid, text, *, inferred=False):
     return uid, stamp, fields
 
 
-def _claude(raw, repo):
+def _claude(raw, repo, *, include_commands=False):
     ident, turns = None, []
     for line, row in _rows(raw):
         role = row.get('type')
@@ -77,7 +82,7 @@ def _claude(raw, repo):
         message = row.get('message')
         if not isinstance(message, dict) or message.get('role') != role:
             continue
-        text = _conversation_text(message, role)
+        text = _conversation_text(message, role, include_commands=include_commands)
         if text:
             turns.append(_turn(line, role, _date(row['timestamp']), row.get('uuid', line), text))
     return ident, turns
@@ -116,7 +121,7 @@ def cursor_identity(path, repo):
     return path.stem
 
 
-def _cursor(raw, ident, repo, mtime):
+def _cursor(raw, ident, repo, mtime, *, include_commands=False):
     turns = []
     for line, row in _rows(raw):
         role = row.get('role')
@@ -127,7 +132,7 @@ def _cursor(raw, ident, repo, mtime):
             continue
         session = row.get('sessionId')
         _require(session in (None, ident), 'Cursor transcript session does not match its filename')
-        text = _conversation_text(message, role)
+        text = _conversation_text(message, role, include_commands=include_commands)
         if text:
             stamp = row.get('timestamp')
             turns.append(_turn(line, role, _date(stamp) if stamp is not None else mtime,
@@ -227,7 +232,7 @@ def _codex(raw, repo):
     return ident, turns
 
 
-def transcript(path, repo, start, end, current, *, host='claude'):
+def transcript(path, repo, start, end, current, *, host='claude', include_commands=False):
     """Return the session ID, scoped visible turns, excerpt count trimmed, and raw digest."""
     _require(host in HOSTS, 'choose a supported transcript host')
     path, repo = _file(path), Path(repo).resolve(strict=True)
@@ -236,10 +241,10 @@ def transcript(path, repo, start, end, current, *, host='claude'):
     before = path.stat()
     raw = _read(path, MAX_BYTES)
     if host == 'claude':
-        ident, candidates = _claude(raw, repo)
+        ident, candidates = _claude(raw, repo, include_commands=include_commands)
     elif host == 'cursor':
         mtime = datetime.fromtimestamp(before.st_mtime, timezone.utc)
-        candidates = _cursor(raw, ident, repo, mtime) if ident is not None else []
+        candidates = _cursor(raw, ident, repo, mtime, include_commands=include_commands) if ident is not None else []
         after = path.stat()
         _require((before.st_size, before.st_mtime_ns, before.st_ino) == (after.st_size, after.st_mtime_ns, after.st_ino),
                  'Cursor transcript changed while reading its time evidence')
@@ -248,7 +253,7 @@ def transcript(path, repo, start, end, current, *, host='claude'):
     seen, turns, shortened = set(), [], 0
     if ident is not None and ident != current:
         for uid, stamp, row in candidates:
-            if (start and stamp < start) or stamp > end or uid in seen:
+            if (start and stamp < start) or (end and stamp > end) or uid in seen:
                 continue
             clean = BEARER.sub(r'\1[omitted]', CREDENTIAL.sub('[omitted]', _scrub(row['text'])))
             seen.add(uid)
