@@ -22,6 +22,7 @@ JOURNEYS = {
     "skills-library-help": ("skills-library-help.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS"),
     "skills-library-lifecycle": ("skills-library-lifecycle.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS"),
     "skills-library-import": ("skills-library-lifecycle.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS"),
+    "skills-library-team": ("skills-library-team.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS"),
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
 SESSION_RENAME = 'control-ui-session-rename'
@@ -51,6 +52,8 @@ def _timeout(journey):
     if journey == 'skills-library-lifecycle':
         return 600
     if journey == 'skills-library-import':
+        return 480
+    if journey == 'skills-library-team':
         return 480
     if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR, SESSION_ARCHIVE_RUNNING):
         return 600
@@ -319,6 +322,63 @@ def _library_import_evidence(report):
         return False
 
 
+def _library_team_evidence(report):
+    try:
+        lines = report['stdout'].splitlines()
+        if (report.get('stdout_truncated') or len(lines) != 4
+                or lines[-1] != JOURNEYS['skills-library-team'][1]):
+            return False
+        doctor, team, cleanup = map(json.loads, lines[:-1])
+        if not (doctor.get('phase') == 'doctor' and doctor.get('ready') is True and doctor.get('live') is True
+                and type(doctor.get('gatewayPid')) is int and doctor['gatewayPid'] > 1
+                and team.get('phase') == 'team'
+                and cleanup == {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True}
+                and cleanup['scratchRemoved'] is True and type(cleanup['exit']['code']) is int):
+            return False
+        profiles, skill, sessions = team['profiles'], team['skill'], team['sessions']
+        if not (isinstance(profiles, dict) and set(profiles) == {'owner', 'member', 'admin'}
+                and all(isinstance(value, str) and value.strip() for value in profiles.values())
+                and len(set(profiles.values())) == 3 and isinstance(skill, dict)
+                and set(skill) == {'skillId', 'revision', 'contentSha', 'supportSha'}
+                and isinstance(skill['skillId'], str) and skill['skillId'].strip()
+                and isinstance(skill['revision'], str) and re.fullmatch(r'[0-9a-f]{64}', skill['revision'])
+                and skill['contentSha'] == hashlib.sha256(b'---\nname: iboard-team-fixture\ndescription: Offline team library fixture\n---\n\nCheck the shared checklist.\n').hexdigest()
+                and skill['supportSha'] == hashlib.sha256(b'Team checklist attachment.\n').hexdigest()
+                and type(team['unauthenticatedStatus']) is int and team['unauthenticatedStatus'] == 401
+                and isinstance(sessions, dict) and set(sessions) == {'shared', 'unshared', 'team'}):
+            return False
+        pin = {'skillId': skill['skillId'], 'revision': skill['revision']}
+        session_ids = set()
+        for name, label, selections in (('shared', 'shared', [pin]), ('unshared', 'unshared', []),
+                                         ('team', 'transferred', [pin])):
+            session = sessions[name]
+            if not (isinstance(session, dict) and set(session) == {'key', 'id', 'selections'}
+                    and session['key'] == f'agent:main:iboard-team-{label}'
+                    and isinstance(session['id'], str) and session['id'].strip()
+                    and session['id'] not in session_ids and session['selections'] == selections):
+                return False
+            session_ids.add(session['id'])
+        expected = {
+            'private': {'visibleCount': 0, 'directReadCode': 'SKILL_LIBRARY_NOT_FOUND'},
+            'shared': {'ownerId': profiles['owner'], 'memberVisibleId': skill['skillId'], 'memberCanEdit': False,
+                       'memberMutationCode': 'SKILL_LIBRARY_FORBIDDEN', 'ownerTransferCode': 'SKILL_LIBRARY_FORBIDDEN'},
+            'unshared': {'ownerId': profiles['owner'], 'visibleCount': 0, 'directReadCode': 'SKILL_LIBRARY_NOT_FOUND',
+                         'contentSha': skill['contentSha'], 'supportSha': skill['supportSha']},
+            'transferred': {'ownerProfileId': None, 'ownerLabel': 'Team', 'authorProfileId': profiles['owner'],
+                            'ownerMineCount': 0, 'adminCanEdit': True, 'formerOwnerMutationCode': 'SKILL_LIBRARY_FORBIDDEN',
+                            'adminUnshareCode': 'SKILL_LIBRARY_FORBIDDEN', 'contentSha': skill['contentSha'],
+                            'supportSha': skill['supportSha']},
+        }
+        def matches(actual, wanted):
+            if isinstance(wanted, dict):
+                return (isinstance(actual, dict) and set(actual) == set(wanted)
+                        and all(matches(actual[key], value) for key, value in wanted.items()))
+            return type(actual) is type(wanted) and actual == wanted
+        return matches(team['steps'], expected)
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def _archive_batch_evidence(mutation, readback, pids, *, sidebar=False):
     first = {key: mutation[key] for key in ('key', 'sessionId')}
     second, survivor = mutation['second' if sidebar else 'nested'], mutation['survivor']
@@ -502,6 +562,7 @@ def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None, recordi
         and (not browser or _browser_evidence(report, Path(screenshot)))
         and (journey != 'skills-library-lifecycle' or _library_evidence(report))
         and (journey != 'skills-library-import' or _library_import_evidence(report))
+        and (journey != 'skills-library-team' or _library_team_evidence(report))
         and (recording is None or browser_recording.receipt(
             report, recording, report.get('commit'), expected_journey=journey.removeprefix('control-ui-')))
     )
@@ -600,6 +661,17 @@ def required_journeys(data, head):
         'src/skills/security/clawhub-verdicts.ts', 'src/infra/install-flow.ts',
     ) for path in paths):
         selected.append('skills-library-import')
+    if any(path.startswith('src/skills/library/') or path in (
+        'src/cli/skills-cli.ts', 'src/cli/skills-library-cli.ts',
+        'src/gateway/server-methods/skills-library.ts', 'packages/gateway-protocol/src/schema/skill-library.ts',
+        'src/gateway/auth.ts', 'src/gateway/role-policy.ts', 'src/gateway/role-policy.types.ts',
+        'src/gateway/operator-role-policy.ts', 'src/gateway/server-methods/users.ts',
+        'src/gateway/server-methods/sessions-create.ts', 'src/gateway/skill-library-session.ts',
+        'src/gateway/server/ws-connection/connect-auth.ts',
+        'src/gateway/server/ws-connection/connect-admission.ts', 'src/gateway/server/ws-connection/connect-session.ts',
+        'src/gateway/server/ws-connection/authenticated-request-dispatch.ts',
+    ) for path in paths):
+        selected.append('skills-library-team')
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
         selected.append('config-validate')
     sessions_ui = any(path == 'ui/src/styles/sessions.css'
@@ -736,6 +808,8 @@ def require(data, head, destination, *, review_item=None):
                 if journey == 'skills-library-lifecycle' and not _library_evidence(run):
                     continue
                 if journey == 'skills-library-import' and not _library_import_evidence(run):
+                    continue
+                if journey == 'skills-library-team' and not _library_team_evidence(run):
                     continue
                 if (run.get('commit') == head
                         and run.get('helper_sha256') == helpers[journey] and run.get('passed') is True

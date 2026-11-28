@@ -28,7 +28,8 @@ class GatewayGateTests(unittest.TestCase):
                 browser_receipt=True, same_container=False, restart=None, deletion=None, list_scope='all',
                 filter_fault=None, rename_fields=None, archive=False, archive_fault=None, archive_tree=False,
                 tree_fault=None, archive_sidebar=False, sidebar_fault=None, archive_running=False, running_fault=None,
-                library_image=None, lifecycle_image=None, lifecycle_fault=None, import_image=None, import_fault=None):
+                library_image=None, lifecycle_image=None, lifecycle_fault=None, import_image=None, import_fault=None,
+                team_image=None, team_fault=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -47,6 +48,8 @@ class GatewayGateTests(unittest.TestCase):
             journeys['skills-library-lifecycle'] = lifecycle_image
         if import_image is not None:
             journeys['skills-library-import'] = import_image
+        if team_image is not None:
+            journeys['skills-library-team'] = team_image
         if rename:
             journeys[verify_openclaw.SESSION_RENAME] = gateway_image
         if delete:
@@ -72,6 +75,8 @@ class GatewayGateTests(unittest.TestCase):
                     extra['stdout'] = self.lifecycle_stdout(lifecycle_fault)
                 if journey == 'skills-library-import':
                     extra['stdout'] = self.import_stdout(import_fault)
+                if journey == 'skills-library-team':
+                    extra['stdout'] = self.team_stdout(team_fault)
                 if journey in verify_openclaw.BROWSER_JOURNEYS:
                     png = path.with_suffix('.png')
                     png.write_bytes(name.encode())
@@ -101,6 +106,34 @@ class GatewayGateTests(unittest.TestCase):
             'kind': 'independent-review', 'actor': 'independent-verifier', 'commit': self.head,
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
         })
+
+    def team_stdout(self, fault=None):
+        content = hashlib.sha256(b'---\nname: iboard-team-fixture\ndescription: Offline team library fixture\n---\n\nCheck the shared checklist.\n').hexdigest()
+        support = hashlib.sha256(b'Team checklist attachment.\n').hexdigest()
+        pin = {'skillId': 'skill-1', 'revision': 'a' * 64}
+        profiles = {'owner': 'owner-id', 'member': 'member-id', 'admin': 'admin-id'}
+        events = [
+            {'phase': 'doctor', 'gatewayPid': 19, 'ready': True, 'live': True},
+            {'phase': 'team', 'profiles': profiles, 'skill': {**pin, 'contentSha': content, 'supportSha': support},
+             'unauthenticatedStatus': 401, 'sessions': {
+                 'shared': {'key': 'agent:main:iboard-team-shared', 'id': 's1', 'selections': [pin]},
+                 'unshared': {'key': 'agent:main:iboard-team-unshared', 'id': 's2', 'selections': []},
+                 'team': {'key': 'agent:main:iboard-team-transferred', 'id': 's3', 'selections': [pin]},
+             }, 'steps': {
+                 'private': {'visibleCount': 0, 'directReadCode': 'SKILL_LIBRARY_NOT_FOUND'},
+                 'shared': {'ownerId': 'owner-id', 'memberVisibleId': 'skill-1', 'memberCanEdit': False,
+                            'memberMutationCode': 'SKILL_LIBRARY_FORBIDDEN', 'ownerTransferCode': 'SKILL_LIBRARY_FORBIDDEN'},
+                 'unshared': {'ownerId': 'owner-id', 'visibleCount': 0, 'directReadCode': 'SKILL_LIBRARY_NOT_FOUND',
+                              'contentSha': content, 'supportSha': support},
+                 'transferred': {'ownerProfileId': None, 'ownerLabel': 'Team', 'authorProfileId': 'owner-id',
+                                 'ownerMineCount': 0, 'adminCanEdit': True, 'formerOwnerMutationCode': 'SKILL_LIBRARY_FORBIDDEN',
+                                 'adminUnshareCode': 'SKILL_LIBRARY_FORBIDDEN', 'contentSha': content, 'supportSha': support},
+             }},
+            {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True},
+        ]
+        if fault:
+            fault(events)
+        return ''.join(json.dumps(row) + '\n' for row in events) + 'VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS\n'
 
     def import_stdout(self, fault=None):
         content_hashes = (
@@ -383,7 +416,7 @@ class GatewayGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'workshop-roundtrip'):
                     verify_openclaw.require(self.data, self.head, self.destination)
                 self.reports(skills_image=image, skills_inspect_image=image, workshop_image=image,
-                             library_image=image, lifecycle_image=image, import_image=image)
+                             library_image=image, lifecycle_image=image, import_image=image, team_image=image)
                 receipts = verify_openclaw.require(self.data, self.head, self.destination)
                 self.assertEqual(len(receipts['workshop-roundtrip']), 2)
 
@@ -403,9 +436,11 @@ class GatewayGateTests(unittest.TestCase):
                 self.assertIn(journey, selected)
                 if path == 'src/cli/skills-cli.ts':
                     self.assertEqual(selected, ['gateway-health', 'skills-check', 'skills-inspect',
-                                                'workshop-roundtrip', journey, 'skills-library-lifecycle', 'skills-library-import'])
+                                                'workshop-roundtrip', journey, 'skills-library-lifecycle', 'skills-library-import',
+                                                'skills-library-team'])
                 elif path == 'src/cli/skills-library-cli.ts':
-                    self.assertEqual(selected, ['gateway-health', journey, 'skills-library-lifecycle', 'skills-library-import'])
+                    self.assertEqual(selected, ['gateway-health', journey, 'skills-library-lifecycle', 'skills-library-import',
+                                                'skills-library-team'])
                 else:
                     self.assertEqual(selected, ['gateway-health', journey])
                 options = {'skills_image': image, 'skills_inspect_image': image, 'workshop_image': image}
@@ -423,7 +458,7 @@ class GatewayGateTests(unittest.TestCase):
                 self.reports(**options, library_image='sha256:' + 'e' * 64)
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
                     verify_openclaw.require(self.data, self.head, self.destination)
-                self.reports(**options, library_image=image, lifecycle_image=image, import_image=image)
+                self.reports(**options, library_image=image, lifecycle_image=image, import_image=image, team_image=image)
                 self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
                 (self.root / f'{journey}-independent-verifier.json').write_text('{}')
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
@@ -510,7 +545,7 @@ class GatewayGateTests(unittest.TestCase):
                 self.reports(lifecycle_image=image, lifecycle_fault=fault)
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
                     verify_openclaw.require(self.data, self.head, self.destination)
-        self.reports(lifecycle_image=image, import_image=image)
+        self.reports(lifecycle_image=image, import_image=image, team_image=image)
         self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
 
         run = {'exit_code': 0, 'cleanup_confirmed': True, 'container_created': True,
@@ -586,6 +621,69 @@ class GatewayGateTests(unittest.TestCase):
             run['stdout'] = self.import_stdout(lambda e: e[1]['rejected'].update(blockedRegistryExit=0))
             self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
             run['stdout'] = 'VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS\n'
+            self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+
+    def test_team_library_gate_proves_private_shared_retained_and_transferred_authority(self):
+        journey = 'skills-library-team'
+        image = 'sha256:' + 'f' * 64
+        self.assertEqual(verify_openclaw._journey(journey), ('skills-library-team.mjs',
+            'VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS', ['node', '/workspace/skills-library-team.mjs']))
+        self.assertEqual(verify_openclaw._timeout(journey), 480)
+        for path in ('src/cli/skills-cli.ts', 'src/cli/skills-library-cli.ts', 'src/skills/library/store.ts',
+                     'src/skills/library/selection.ts', 'src/gateway/server-methods/skills-library.ts',
+                     'src/gateway/auth.ts', 'src/gateway/role-policy.ts', 'src/gateway/server-methods/users.ts',
+                     'src/gateway/operator-role-policy.ts', 'src/gateway/server-methods/sessions-create.ts',
+                     'src/gateway/skill-library-session.ts', 'src/gateway/server/ws-connection/connect-auth.ts',
+                     'src/gateway/server/ws-connection/connect-admission.ts',
+                     'packages/gateway-protocol/src/schema/skill-library.ts'):
+            self.changed_paths.return_value = path + '\0'
+            self.assertIn(journey, verify_openclaw.required_journeys(self.data, self.head))
+        self.changed_paths.return_value = 'src/gateway/auth.ts\0'
+        faults = (
+            lambda e: e[0].update(ready=False),
+            lambda e: e[0].update(gatewayPid=True),
+            lambda e: e[1].update(unauthenticatedStatus=200),
+            lambda e: e[1]['profiles'].update(member=e[1]['profiles']['owner']),
+            lambda e: e[1]['profiles'].update(admin=''),
+            lambda e: e[1]['skill'].update(revision='bad'),
+            lambda e: e[1]['skill'].update(contentSha='0' * 64),
+            lambda e: e[1]['skill'].update(supportSha='0' * 64),
+            lambda e: e[1]['sessions']['shared'].update(key='other'),
+            lambda e: e[1]['sessions']['team'].update(id=e[1]['sessions']['shared']['id']),
+            lambda e: e[1]['sessions']['shared']['selections'][0].update(revision='b' * 64),
+            lambda e: e[1]['sessions']['unshared'].update(selections=[e[1]['skill']]),
+            lambda e: e[1]['steps']['private'].update(visibleCount=False),
+            lambda e: e[1]['steps']['private'].update(directReadCode='OK'),
+            lambda e: e[1]['steps']['shared'].update(ownerId=e[1]['profiles']['member']),
+            lambda e: e[1]['steps']['shared'].update(memberVisibleId='other'),
+            lambda e: e[1]['steps']['shared'].update(memberCanEdit=0),
+            lambda e: e[1]['steps']['shared'].update(memberMutationCode='OK'),
+            lambda e: e[1]['steps']['shared'].update(ownerTransferCode='OK'),
+            lambda e: e[1]['steps']['unshared'].update(visibleCount=1),
+            lambda e: e[1]['steps']['unshared'].update(supportSha='0' * 64),
+            lambda e: e[1]['steps']['transferred'].update(ownerProfileId=e[1]['profiles']['owner']),
+            lambda e: e[1]['steps']['transferred'].update(authorProfileId=e[1]['profiles']['admin']),
+            lambda e: e[1]['steps']['transferred'].update(adminCanEdit=False),
+            lambda e: e[1]['steps']['transferred'].update(formerOwnerMutationCode='OK'),
+            lambda e: e[1]['steps']['transferred'].update(adminUnshareCode='OK'),
+            lambda e: e[2].update(scratchRemoved=1),
+        )
+        for fault in faults:
+            with self.subTest(fault=fault):
+                self.reports(team_image=image, team_fault=fault)
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+        self.reports(team_image=image)
+        self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
+        run = {'exit_code': 0, 'cleanup_confirmed': True, 'container_created': True,
+               'workspace_read_only': True, 'stdout': self.team_stdout()}
+        with patch.object(cli, 'sha', return_value=self.head), \
+                patch.object(verify_openclaw.workflow, '_verified_image', return_value=image), \
+                patch.object(verify_openclaw, 'run_sandbox', return_value=run):
+            self.assertTrue(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+            run['stdout'] = self.team_stdout(lambda e: e[1]['steps']['shared'].update(memberCanEdit=True))
+            self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+            run['stdout'] = 'VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS\n'
             self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
 
     def test_connected_ui_requires_a_bound_screenshot_in_its_own_output(self):

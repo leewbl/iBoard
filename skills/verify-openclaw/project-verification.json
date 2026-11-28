@@ -53,11 +53,7 @@
           "receiver_calls": ["applyParentDefaultHelpAction"]
         }
       ],
-      "excluded": {
-        "share": "Needs isolated personal and team visibility checks.",
-        "unshare": "Needs isolated personal and team visibility checks.",
-        "transfer": "Needs an isolated team and administrator profile."
-      }
+      "excluded": {}
     },
     {
       "namespace": "openclaw control-ui session-status",
@@ -139,6 +135,24 @@
         {"path": "src/gateway/server-methods/skills-library.ts", "contains": "(authority, params) => importSkillLibrary(authority, params)"},
         {"path": "src/infra/clawhub-install-trust.ts", "contains": "ClawHub blocked this release;"},
         {"path": "src/gateway/server-methods/sessions-create.ts", "contains": "await prepareSkillLibrarySessionCreation("}
+      ]
+    },
+    {
+      "id": "skills-library-team",
+      "entrypoints": ["openclaw skills library share", "openclaw skills library unshare", "openclaw skills library transfer"],
+      "helper": "skills-library-team.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS",
+      "reach": "Connect three disposable operator accounts through a loopback authentication proxy to a fresh Gateway.",
+      "drive": "Save a private skill as its owner. Share and unshare it, compare member visibility and exact session pins, and transfer to the team as the administrator. Check refused writes as the member and former owner.",
+      "observe": "Verify three durable profiles, immutable content, private and shared scope, retained and new session selections, author attribution and the administrator-only transfer.",
+      "gotchas": "Exercises the authenticated Gateway methods behind the CLI command names. The proxy authenticates test accounts only. External identity providers and the CLI interactive authentication path require separate evidence.",
+      "source": [
+        {"path": "src/cli/skills-library-cli.ts", "contains": "Transfer ownership to the team (administrator only)"},
+        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "(authority, params) => mutateSkillLibrary(authority, params)"},
+        {"path": "src/gateway/auth.ts", "contains": "remoteIsLoopback && trustedProxyConfig.allowLoopback !== true"},
+        {"path": "src/gateway/server/ws-connection/connect-session.ts", "contains": "identityScopes: context.configSnapshot.gateway?.auth?.identityScopes"},
+        {"path": "src/skills/library/service.kernel.ts", "contains": "Transfer to team ownership requires a Gateway administrator."},
+        {"path": "src/skills/library/store.ts", "contains": "Only the skill's owner or a Gateway administrator can change it."}
       ]
     },
     {

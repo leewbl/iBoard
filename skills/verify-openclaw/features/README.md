@@ -6,10 +6,11 @@
 | [skills-library-help](skills-library-help.md) | Find library commands and the options for reading a revision | Exact names from bare and explicit parent help, read help, unchanged configuration, Docker cleanup |
 | [skills-library-lifecycle](skills-library-lifecycle.md) | Manage personal library revisions and use exact pins on the next turn | Authenticated CLI receipts, six Gateway chat turns, instruction and support hashes, stale-write rejection and restart |
 | [skills-library-import](skills-library-import.md) | Privately import a directory, ZIP or selected registry release | File hashes, registry request sequence, old and new session readback, three refused imports |
+| [skills-library-team](skills-library-team.md) | Share, unshare and transfer a skill across three real Gateway profiles | Authenticated requests, permissions, retained session pins, unchanged content and ownership transfer |
 | [workshop-roundtrip](workshop-roundtrip.md) | Archive a learned skill and restore its original content | CLI list before and after archive and restore, archive version, restored content, Docker cleanup |
 | [config-validate](config-validate.md) | Check the validity of a local configuration | Exit codes and JSON for valid and invalid port types, unchanged fixture inputs, Docker cleanup |
 
-`audit` runs the eight CLI journeys above and the eight browser journeys below. Use a compiled Control UI image with Chromium.
+`audit` runs the nine headless journeys above. Use a compiled Control UI image with Chromium for the eight browser journeys below.
 
 - [`control-ui-connected`](../SKILL.md#drive) checks the login form, the authenticated Gateway session-list response and the empty Sessions page.
 - [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and an authenticated read of the same updated session after the Gateway restarts.
