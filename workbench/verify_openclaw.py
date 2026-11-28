@@ -20,6 +20,7 @@ JOURNEYS = {
     "skills-inspect": ("skills-inspect.mjs", "VERIFY_OPENCLAW_SKILLS_INSPECT_PASS"),
     "workshop-roundtrip": ("workshop-roundtrip.mjs", "VERIFY_OPENCLAW_WORKSHOP_ROUNDTRIP_PASS"),
     "skills-library-help": ("skills-library-help.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS"),
+    "skills-library-lifecycle": ("skills-library-lifecycle.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS"),
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
 SESSION_RENAME = 'control-ui-session-rename'
@@ -46,6 +47,8 @@ SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
 def _timeout(journey):
+    if journey == 'skills-library-lifecycle':
+        return 600
     if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR, SESSION_ARCHIVE_RUNNING):
         return 600
     return 480 if journey in SESSION_JOURNEYS else 320
@@ -164,6 +167,65 @@ def _archive_running_evidence(mutation, readback, pids):
                     or row['archived'] is not archived):
                 return False
     return True
+
+
+def _library_evidence(report):
+    """Bind each lifecycle observation to the same profile, sessions, revisions and bytes."""
+    try:
+        lines = report['stdout'].splitlines()
+        if (report.get('stdout_truncated') or len(lines) != 5
+                or lines[-1] != JOURNEYS['skills-library-lifecycle'][1]):
+            return False
+        doctor, restart, library, cleanup = map(json.loads, lines[:-1])
+        initial_pid, restarted_pid = doctor['gatewayPid'], restart['gatewayPid']
+        clean_exit = {'code': 0, 'signal': None}
+        if not (doctor.get('phase') == 'doctor' and doctor.get('ready') is True and doctor.get('live') is True
+                and type(initial_pid) is int and initial_pid > 1 and restart.get('phase') == 'restart'
+                and restart.get('ready') is True and restart.get('live') is True and restart.get('portClosed') is True
+                and type(restart.get('previousPid')) is int and restart.get('previousPid') == initial_pid
+                and restart.get('previousExit') == clean_exit and type(restart['previousExit']['code']) is int
+                and type(restarted_pid) is int and restarted_pid > 1 and restarted_pid != initial_pid
+                and cleanup == {'phase': 'cleanup', 'exit': clean_exit, 'scratchRemoved': True}
+                and cleanup.get('scratchRemoved') is True and type(cleanup['exit']['code']) is int
+                and library.get('phase') == 'library'):
+            return False
+        profile, skill = library['profileId'], library['skillId']
+        revisions, hashes, sessions, steps = library['revisions'], library['hashes'], library['sessions'], library['steps']
+        if not (all(isinstance(value, str) and value.strip() for value in (profile, skill))
+                and all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
+                        for value in (revisions['original'], revisions['updated'],
+                                      hashes['original'], hashes['updated'], hashes['support']))
+                and revisions['original'] != revisions['updated'] and hashes['original'] != hashes['updated']
+                and sessions['targetKey'] == 'agent:main:iboard-library-session'
+                and sessions['controlKey'] == 'agent:main:iboard-library-control'
+                and all(isinstance(sessions[key], str) and sessions[key].strip() for key in ('targetId', 'controlId'))
+                and sessions['targetId'] != sessions['controlId']):
+            return False
+        a, b, support = revisions['original'], revisions['updated'], hashes['support']
+        expected = {
+            'initial': {'libraryCount': 0, 'targetSelections': 0, 'controlSelections': 0},
+            'created': {'revision': a, 'ownerProfileId': profile, 'enabled': True, 'shared': False, 'supportSha': support},
+            'attached': {'pin': a, 'activation': 'next-turn'},
+            'updated': {'revision': b, 'pin': a, 'supportSha': support},
+            'stale': {'exitCode': 1, 'preservedRevision': b, 'conflict': True},
+            'refreshed': {'pin': b, 'oldPinRejected': True, 'controlUnselected': True, 'controlReadRejected': True},
+            'toggled': {'disabled': False, 'enabled': True, 'revision': b},
+            'rollback': {'revision': a, 'pin': b, 'supportSha': support},
+            'restarted': {'profileId': profile, 'revision': a, 'pin': b, 'targetId': sessions['targetId'],
+                          'controlId': sessions['controlId'], 'pinContentSha': hashes['updated'], 'supportSha': support},
+            'removed': {'listedCount': 0, 'directReadMarkedRemoved': True, 'directRevision': a,
+                        'directContentSha': hashes['original'], 'editRejected': True, 'reattachRejected': True,
+                        'pin': b, 'pinContentSha': hashes['updated']},
+            'detached': {'activation': 'next-turn', 'remaining': 0, 'pinReadRejected': True},
+        }
+        def matches(actual, wanted):
+            if isinstance(wanted, dict):
+                return (isinstance(actual, dict) and set(actual) == set(wanted)
+                        and all(matches(actual[key], value) for key, value in wanted.items()))
+            return type(actual) is type(wanted) and actual == wanted
+        return matches(steps, expected)
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def _archive_batch_evidence(mutation, readback, pids, *, sidebar=False):
@@ -347,6 +409,7 @@ def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None, recordi
         and report.get("cleanup_confirmed") is True
         and marker in report.get("stdout", "").splitlines()
         and (not browser or _browser_evidence(report, Path(screenshot)))
+        and (journey != 'skills-library-lifecycle' or _library_evidence(report))
         and (recording is None or browser_recording.receipt(
             report, recording, report.get('commit'), expected_journey=journey.removeprefix('control-ui-')))
     )
@@ -421,6 +484,11 @@ def required_journeys(data, head):
     if any(path in ('src/cli/skills-library-cli.ts', 'src/cli/skills-cli.ts',
                     'src/cli/program/parent-default-help.ts') for path in paths):
         selected.append('skills-library-help')
+    if any(path.startswith('src/skills/library/') or path in (
+        'src/cli/skills-cli.ts', 'src/cli/skills-library-cli.ts', 'src/gateway/server-methods/skills-library.ts',
+        'src/gateway/gateway-owner-profile.ts', 'packages/gateway-protocol/src/schema/skill-library.ts',
+    ) for path in paths):
+        selected.append('skills-library-lifecycle')
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
         selected.append('config-validate')
     sessions_ui = any(path == 'ui/src/styles/sessions.css'
@@ -554,6 +622,8 @@ def require(data, head, destination, *, review_item=None):
                             run, Path(entry['path']).with_suffix('.jsonl'), head,
                             expected_journey=journey.removeprefix('control-ui-')):
                         continue
+                if journey == 'skills-library-lifecycle' and not _library_evidence(run):
+                    continue
                 if (run.get('commit') == head
                         and run.get('helper_sha256') == helpers[journey] and run.get('passed') is True
                         and run.get('exit_code') == 0 and run.get('cleanup_confirmed') is True

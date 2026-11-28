@@ -25,7 +25,6 @@
         "update": "A version-changing ClawHub fixture must be set up before testing updates.",
         "verify": "Requires a controlled ClawHub response and package provenance fixture.",
         "workshop": "The parent opens help; the Workshop operations use their own scope.",
-        "library": "Needs an authenticated test account and an isolated library or service fixture.",
         "search": "Needs a controlled search backend and test catalogue."
       }
     },
@@ -55,21 +54,10 @@
         }
       ],
       "excluded": {
-        "list": "Needs an authenticated Gateway fixture to verify personal and team list scopes.",
-        "read": "Needs a fixture with retained revisions and session pins.",
-        "create": "Needs a disposable writable profile and a saved bundle.",
-        "update": "Needs exact revision and stale-write behavior checks on a disposable skill.",
         "import": "Needs real local bundle and ClawHub import fixtures.",
-        "remove": "Needs disposable data and removal readback.",
         "share": "Needs isolated personal and team visibility checks.",
         "unshare": "Needs isolated personal and team visibility checks.",
-        "transfer": "Needs an isolated team and administrator profile.",
-        "enable": "Needs a disposable skill and actual eligibility readback.",
-        "disable": "Needs a disposable skill and actual eligibility readback.",
-        "rollback": "Needs an isolated library with multiple retained revisions.",
-        "attach": "Needs a disposable session and next-turn selection readback.",
-        "detach": "Needs a disposable session and next-turn selection readback.",
-        "refresh": "Needs an updated library skill and next-turn selection readback."
+        "transfer": "Needs an isolated team and administrator profile."
       }
     },
     {
@@ -98,17 +86,41 @@
   "features": [
     {
       "id": "skills-library-help",
+      "entrypoints": ["openclaw skills library"],
       "helper": "skills-library-help.mjs",
       "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS",
       "reach": "Open the library command from a local OpenClaw terminal.",
       "drive": "Run library with and without --help and run library read --help in an isolated home.",
       "observe": "Both parent invocations show the exact 15 registered subcommands. Read help shows the skill ID, revision and session arguments. The isolated configuration is unchanged.",
-      "gotchas": "This checks user-visible registration and help. Each authenticated library operation has its own inventory exclusion until a behavioral fixture exercises it.",
+      "gotchas": "This checks user-visible registration and help. The separate lifecycle checks personal operations. The inventory records remaining authenticated prerequisites.",
       "source": [
         {"path": "src/cli/skills-cli.ts", "contains": "registerSkillsLibraryCli(skills);"},
         {"path": "src/cli/skills-library-cli.ts", "contains": "addGatewayClientOptions(library.command(name).description(description))"},
         {"path": "src/cli/skills-library-cli.ts", "contains": "applyParentDefaultHelpAction(library);"},
         {"path": "src/cli/program/parent-default-help.ts", "contains": "parent.outputHelp();"}
+      ]
+    },
+    {
+      "id": "skills-library-lifecycle",
+      "entrypoints": [
+        "openclaw skills library list", "openclaw skills library read", "openclaw skills library create",
+        "openclaw skills library update", "openclaw skills library remove", "openclaw skills library enable",
+        "openclaw skills library disable", "openclaw skills library rollback", "openclaw skills library attach",
+        "openclaw skills library detach", "openclaw skills library refresh"
+      ],
+      "helper": "skills-library-lifecycle.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS",
+      "reach": "Start a disposable single-user Gateway and ask the real OpenClaw CLI for the signed-in owner's library.",
+      "drive": "Create a private bundle with a supporting file, pin a revision on an existing session, update and reject a stale write, refresh the pin, disable and enable, roll back and restart. Remove the skill and detach the retained pin.",
+      "observe": "Compare profile, skill and session IDs, revision and content hashes, access errors and the unselected control. Removal hides the skill from listings and rejects edits and new pins. The owner can read the marked-removed current revision by ID, while the existing session remains able to read its exact pinned revision until detach.",
+      "gotchas": "This exercises one durable owner, personal listing and explicit selection receipts. It needs a fresh token, no network and no existing Gateway. Team visibility, multi-profile authority, import and actual next-turn execution require their own fixtures.",
+      "source": [
+        {"path": "src/gateway/gateway-owner-profile.ts", "contains": "export function shouldUseGatewayOwnerProfile"},
+        {"path": "src/cli/skills-library-cli.ts", "contains": "leaf(\"create\", \"Save a private skill from SKILL.md or a complete local directory\")"},
+        {"path": "src/skills/library/store.ts", "contains": "Skill changed. Read the current revision and review your edit before saving again."},
+        {"path": "src/skills/library/store.ts", "contains": "Removed skills cannot be edited or selected again; pinned revisions remain available to their sessions."},
+        {"path": "src/skills/library/service.kernel.ts", "contains": "changes.current_revision = revision;"},
+        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "Session reads require an exact selected skillId and revision."}
       ]
     },
     {

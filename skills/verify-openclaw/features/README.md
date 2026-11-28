@@ -4,10 +4,11 @@
 | [skills-check](skills-check.md) | Discover workspace skills and see which prerequisites are missing | CLI JSON with and without an environment prerequisite, unchanged fixture files, Docker cleanup |
 | [skills-inspect](skills-inspect.md) | List local skills and view the details of a named skill | CLI JSON for list, detail and an absent name, unchanged fixture files, Docker cleanup |
 | [skills-library-help](skills-library-help.md) | Find library commands and the options for reading a revision | Exact names from bare and explicit parent help, read help, unchanged configuration, Docker cleanup |
+| [skills-library-lifecycle](skills-library-lifecycle.md) | Manage personal library revisions and existing session selections | Authenticated CLI receipts, content hashes, stale-write rejection, restart and control-session readback |
 | [workshop-roundtrip](workshop-roundtrip.md) | Archive a learned skill and restore its original content | CLI list before and after archive and restore, archive version, restored content, Docker cleanup |
 | [config-validate](config-validate.md) | Check the validity of a local configuration | Exit codes and JSON for valid and invalid port types, unchanged fixture inputs, Docker cleanup |
 
-The core `audit` runs the six journeys above. A compiled Control UI image with Chromium supports eight more journeys.
+The core `audit` runs the seven journeys above. A compiled Control UI image with Chromium supports eight more journeys.
 
 - [`control-ui-connected`](../SKILL.md#drive) checks the login form, the authenticated Gateway session-list response and the empty Sessions page.
 - [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and an authenticated read of the same updated session after the Gateway restarts.
