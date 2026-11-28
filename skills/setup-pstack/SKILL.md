@@ -10,17 +10,22 @@ Follow the [pinned pstack model setup](https://github.com/cursor/plugins/blob/41
 
 ## Confirm and approve
 
-1. Supply a local probe manifest with `schema: 1`, `seconds`, and `engines`. Each engine has a `provider` (`glm` or `openai`), an exact `model`, and an `efforts` list drawn from `low`, `medium`, `high`, and `xhigh`. Obtain the model IDs from the current host configuration or the operator. Confirm each selected pair with a small tool-free request. A model identity mismatch, failed request, or timeout leaves later pairs for that provider unverified.
+1. Use `discover` to list candidate models and reasoning levels from the local Codex catalog. The catalog can be cached. For GLM, use the configured model IDs or obtain them from the operator. Supply a probe manifest with `schema: 1`, `seconds`, and `engines`. Each engine has a `provider` (`glm` or `openai`), an exact `model`, and an `efforts` list drawn from `low`, `medium`, `high`, and `xhigh`. Confirm each selected pair with a small tool-free request. Drafting requires the resulting probe inventory.
 2. Write the choices JSON with `schema: 1`, `budget` (`large`, `medium`, or `small`), `parent` (a provider/model pair), and `roles`. Use `inherit-parent` or `auto` to resolve to that explicit parent route, or provide an explicit provider/model pair. `arena-runners`, `arena-cross-judge-pool`, and `interrogate-reviewers` accept ordered lists. Cross-judge selection skips aliases and candidates from the same vendor as the parent.
 3. Draft the complete table and show each role's approved model, effort ceiling and available effort. Preserve the requested provider and model while selecting the strongest confirmed effort at or below that role's budget. Resolve missing configurations before installation. Choose and approve the resulting digest.
 
 ```sh
+python3 -m workbench.model_profiles discover --out "$CATALOG"
 python3 -m workbench.model_profiles probe --manifest "$PROBE_SPEC" --out "$INVENTORY"
 python3 -m workbench.model_profiles draft --inventory "$INVENTORY" --inventory-sha256 "$INVENTORY_SHA" \
   --choices "$CHOICES" --out "$DRAFT"
 python3 -m workbench.model_profiles install --profile "$DRAFT" --sha256 "$DRAFT_SHA" --out "$PROFILE"
 python3 -m workbench.model_profiles show --profile "$PROFILE" --sha256 "$PROFILE_SHA"
 ```
+
+A Codex `model_not_found` rejection marks the exact model unavailable for this inventory. It also removes any earlier confirmation of that model from approval eligibility. The probe can continue through other specified models within the original deadline. Identity mismatch, quota, authentication, timeout and other failures stop further calls to the affected provider.
+
+The [Codex catalog semantics](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) distinguish the model listing from a successful inference request.
 
 Use `draft --previous "$PROFILE" --previous-sha256 "$PROFILE_SHA"` to keep role selections that the new choices omit. To replace the installed file, provide its expected digest with `install --previous-sha256`. Changes affect tasks that select the new profile. Existing tasks stay bound to the original snapshot.
 

@@ -4,11 +4,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from model import codex_review
 from workbench import autopilot, cli, model_profiles, task_replay
 
 
 GLM = {'provider': 'glm', 'model': 'glm-profile'}
 OPENAI = {'provider': 'openai', 'model': 'gpt-review'}
+RETIRED = {'provider': 'openai', 'model': 'gpt-retired'}
 
 
 class ModelProfileTests(unittest.TestCase):
@@ -72,6 +74,66 @@ class ModelProfileTests(unittest.TestCase):
         result = self.inventory(wrong)
         self.assertEqual([r['status'] for r in result['probes']], ['unverified', 'unverified', 'confirmed'])
         self.assertEqual([key for key, _, _ in self.calls], ['glm', 'openai'])
+
+    def test_catalog_route_requires_inference_before_profile_approval(self):
+        dest = self.root/'catalog.json'
+        catalog = model_profiles.discover(dest,
+            list_models=lambda *, timeout: [{'model': OPENAI['model'], 'efforts': ['low'], 'default': True}])
+        self.assertEqual(cli.digest(dest), catalog['sha256'])
+        self.assertEqual(cli.read(dest)['kind'], 'catalog')
+        choices = self.root/'choices.json'
+        cli.write(choices, self.choices)
+        with self.assertRaisesRegex(ValueError, 'complete role inventory'):
+            model_profiles.draft(dest, catalog['sha256'], choices, self.root/'draft.json')
+
+    def test_rejected_model_does_not_stop_remaining_models(self):
+        cli.write(self.probes, {'schema': 1, 'seconds': 75, 'engines': [
+            {**RETIRED, 'efforts': ['low', 'high']}, {**OPENAI, 'efforts': ['low']},
+            {**GLM, 'efforts': ['low', 'medium']}]})
+
+        def judge(prompt, model, timeout, *, effort):
+            reply = self.reviewer(prompt, model, timeout, effort=effort)
+            if model == RETIRED['model']:
+                raise codex_review.ModelUnavailable('model_not_found')
+            return reply
+
+        result = model_profiles.probe(self.probes, self.root/'inventory.json', editor=self.editor, reviewer=judge)
+        self.assertEqual([row['status'] for row in result['probes']],
+                         ['unavailable', 'unverified', 'confirmed', 'confirmed', 'confirmed'])
+        self.assertEqual([entry[1] for entry in self.calls], [RETIRED['model'], OPENAI['model'], GLM['model'], GLM['model']])
+        self.assertEqual(result['probes'][0]['reason'], 'model_not_found')
+        choices = self.root/'choices.json'
+        cli.write(choices, self.choices)
+        profile = model_profiles.draft(result['path'], result['sha256'], choices, self.root/'draft.json')
+        self.assertEqual(profile['routes']['arena-cross-judge-pool'][-1]['model'], OPENAI['model'])
+
+    def test_model_retired_mid_probe_cannot_use_earlier_confirmed_effort(self):
+        cli.write(self.probes, {'schema': 1, 'seconds': 75, 'engines': [
+            {**OPENAI, 'efforts': ['low', 'medium']}, {**GLM, 'efforts': ['low', 'medium']}]})
+
+        def judge(prompt, model, timeout, *, effort):
+            if effort == 'medium':
+                raise codex_review.ModelUnavailable('model_not_found')
+            return self.reviewer(prompt, model, timeout, effort=effort)
+
+        inventory = model_profiles.probe(self.probes, self.root/'inventory.json', editor=self.editor, reviewer=judge)
+        self.assertEqual([item['status'] for item in inventory['probes'][:2]], ['confirmed', 'unavailable'])
+        choices = self.root/'choices.json'
+        cli.write(choices, self.choices)
+        with self.assertRaisesRegex(ValueError, 'needs a confirmed openai/gpt-review'):
+            model_profiles.draft(inventory['path'], inventory['sha256'], choices, self.root/'draft.json')
+
+    def test_openai_quota_stops_other_openai_probes(self):
+        cli.write(self.probes, {'schema': 1, 'seconds': 75, 'engines': [
+            {**RETIRED, 'efforts': ['low']}, {**OPENAI, 'efforts': ['low']}, {**GLM, 'efforts': ['low']}]})
+
+        def judge(prompt, model, timeout, *, effort):
+            self.reviewer(prompt, model, timeout, effort=effort)
+            raise codex_review.ReviewError('HTTP 429')
+
+        result = model_profiles.probe(self.probes, self.root/'inventory.json', editor=self.editor, reviewer=judge)
+        self.assertEqual([item['status'] for item in result['probes']], ['unverified', 'unverified', 'confirmed'])
+        self.assertEqual([item[1] for item in self.calls], [RETIRED['model'], GLM['model']])
 
     def test_context_window_suffix_preserves_exact_model_identity(self):
         route = {**GLM, 'effort': 'low'}

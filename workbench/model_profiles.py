@@ -9,7 +9,7 @@ import re
 from tempfile import TemporaryDirectory
 import time
 
-from model import claude_glm, codex_review
+from model import claude_glm, codex_catalog, codex_review
 from workbench import cli
 from workbench.task_lock import task_lock
 
@@ -84,6 +84,18 @@ def _save(path, value, *, reuse=False):
     return {'path': str(target.resolve()), 'sha256': cli.digest(target)}
 
 
+def discover(out, *, seconds=20, list_models=codex_catalog.list_models):
+    """List candidate routes advertised by the local Codex catalog."""
+    target = Path(out).expanduser()
+    _require(not target.exists() and not target.is_symlink(), 'use a fresh model catalog output')
+    _require(type(seconds) is int and 1 <= seconds <= 60, 'model catalog timeout must be between 1 and 60 seconds')
+    models = list_models(timeout=seconds)
+    _require(models, 'Codex did not advertise a supported model; provide explicit probe routes')
+    record = {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': 'catalog', 'provider': 'openai',
+              'method': 'codex-app-server:model/list', 'observed_at': cli.now(), 'models': models}
+    return {**_save(target, record), 'models': models}
+
+
 def _probe(choice, effort, seconds, editor, reviewer):
     model = choice['model']
     if choice['provider'] == 'glm':
@@ -121,19 +133,26 @@ def probe(manifest, out, *, editor=claude_glm.execute, reviewer=codex_review.rev
     target = Path(out).expanduser()
     _require(not target.exists() and not target.is_symlink(), 'use a fresh model probe output')
     deadline = time.monotonic() + spec['seconds']
-    closed, results = set(), []
+    closed, unavailable, results = set(), set(), []
     for item, effort in choices:
         row = {**item, 'effort': effort, 'status': 'unverified', 'observed_model': None}
+        vendor, model = item['provider'], item['model']
         remaining = min(60, int(deadline - time.monotonic()))
-        if item['provider'] in closed or remaining <= 0:
+        if vendor in closed or remaining <= 0:
             row['reason'] = 'provider stopped or probe budget exhausted'
+        elif (vendor, model) in unavailable:
+            row['reason'] = 'model unavailable in this probe'
         else:
             try:
                 row.update(observed_model=_probe(item, effort, remaining, editor, reviewer),
                            status='confirmed', accepted_at=cli.now())
             except ERRORS as error:
-                closed.add(item['provider'])
-                row['reason'] = type(error).__name__
+                if vendor == 'openai' and isinstance(error, codex_review.ModelUnavailable):
+                    unavailable.add((vendor, model))
+                    row.update(status='unavailable', reason='model_not_found')
+                else:
+                    closed.add(vendor)
+                    row['reason'] = type(error).__name__
         results.append(row)
     return {**_save(target, {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': 'inventory',
                              'probes': results, 'observed_at': cli.now()}), 'probes': results}
@@ -144,10 +163,15 @@ def _available(record):
              and isinstance(record.get('probes'), list) and 1 <= len(record['probes']) <= 20,
              'use a complete role inventory')
     result = set()
+    unavailable = set()
     for row in record['probes']:
         item = _model({name: row[name] for name in ('provider', 'model')})
         effort = row['effort']
-        _require(effort in EFFORTS and row['status'] in ('confirmed', 'unverified'), 'invalid probe receipt')
+        _require(effort in EFFORTS and row['status'] in ('confirmed', 'unverified', 'unavailable'), 'invalid probe receipt')
+        if row['status'] == 'unavailable':
+            _require(item['provider'] == 'openai' and row.get('reason') == 'model_not_found'
+                     and row['observed_model'] is None, 'invalid model unavailability receipt')
+            unavailable.add((item['provider'], item['model']))
         if row['status'] != 'confirmed':
             continue
         observed = row['observed_model']
@@ -157,7 +181,7 @@ def _available(record):
         key = (item['provider'], item['model'], effort)
         _require(key not in result, 'duplicate model capability')
         result.add(key)
-    return result
+    return {route for route in result if route[:2] not in unavailable}
 
 
 def _routes(spec, available):
@@ -333,12 +357,15 @@ def read_only(route, prompt, seconds, *, editor=claude_glm.execute, reviewer=cod
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for action, fields in [('probe', ('manifest', 'out')), ('draft', ('inventory', 'inventory-sha256', 'choices', 'out')),
+    for action, fields in [('discover', ('out',)), ('probe', ('manifest', 'out')),
+                           ('draft', ('inventory', 'inventory-sha256', 'choices', 'out')),
                            ('install', ('profile', 'sha256', 'out')), ('show', ('profile', 'sha256'))]:
         child = sub.add_parser(action)
         for field in fields:
             child.add_argument('--' + field, required=True)
-        if action == 'show':
+        if action == 'discover':
+            child.add_argument('--seconds', type=int, default=20)
+        elif action == 'show':
             child.add_argument('--role', choices=ROLES)
             child.add_argument('--other-than', choices=MODELS)
         elif action == 'draft':
@@ -356,7 +383,7 @@ def main(argv=None):
             result = {'budget': data['choices']['budget'], 'routes': data['routes']} if role is None else {
                 'role': role, 'route': select(data, role, other_than=other)}
         else:
-            result = {'probe': probe, 'draft': draft, 'install': install}[action](**args)
+            result = {'discover': discover, 'probe': probe, 'draft': draft, 'install': install}[action](**args)
     except ERRORS as error:
         parser.error(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))
