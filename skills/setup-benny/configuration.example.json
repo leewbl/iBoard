@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "workspace": "T123WORKSPACE",
+  "channel": "C123REPORT",
+  "triage_identity": "U123TRIAGE",
+  "repository": "example-org/example-repo",
+  "verdict_wait_seconds": 2700,
+  "poll_seconds": 45,
+  "verification_seconds": 900,
+  "markers": {
+    "bug": "[benny:bug]",
+    "performance": "[benny:performance]",
+    "other": "[benny:other]"
+  }
+}

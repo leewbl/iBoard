@@ -7,7 +7,6 @@ the delivery guard must still evaluate the actual issue and raw test output.
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import io
 import hashlib
@@ -24,13 +23,18 @@ import threading
 import time
 import uuid
 
-from workbench import cli
+from workbench import cli, run_control, tdd
 from workbench.task_lock import locked_task
 from runner.sandbox import SandboxError, run_sandbox
 
 
 class WorkflowError(Exception):
     pass
+
+
+def docker_oom(report):
+    evidence = report.get('runtime_diagnostics')
+    return isinstance(evidence, dict) and evidence.get('classification') == 'docker-oom'
 
 
 def _workspace_command(command):
@@ -163,12 +167,12 @@ def _verified_image(repo, image, timeout, *, commit=None):
     return image_id
 
 
-def build_source_image(repo, base_commit, base_image, timeout):
+def build_source_image(repo, base_commit, base_image, timeout, *, revision=None, rebuild_ui=None):
     """Overlay a clean committed tree on a verified local baseline image.
 
     Only changed tracked paths are overlaid on the fully verified baseline.
-    This does not install dependencies or compile the project. Actual checks
-    still decide whether the resulting image is usable.
+    A workbench-owned UI recipe can rebuild generated assets after the overlay.
+    Dependencies must already be available in the local image.
     """
     repo = Path(repo).resolve(strict=True)
     deadline = time.monotonic() + timeout
@@ -179,7 +183,8 @@ def build_source_image(repo, base_commit, base_image, timeout):
         return left
     if _git(repo, 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError('image build requires a clean worktree')
-    head = cli.sha(repo, 'HEAD')
+    checkout = cli.sha(repo, 'HEAD')
+    head = cli.sha(repo, revision) if revision is not None else checkout
     base = _git(repo, 'rev-parse', '--verify', f'{base_commit}^{{commit}}')
     if subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', base, head]).returncode:
         raise WorkflowError('candidate must descend from the verified baseline')
@@ -203,6 +208,11 @@ def build_source_image(repo, base_commit, base_image, timeout):
             recipe += 'RUN rm -f -- ' + ' '.join(shlex.quote('/app/' + p) for p in paths) + '\n'
         if overlays:
             recipe += 'COPY source/ /app/\n'
+        if rebuild_ui is not None:
+            recipe += ('COPY visual-build.mjs /tmp/iboard-visual-build.mjs\n'
+                       'RUN cd /app && rm -rf -- /app/dist/control-ui '
+                       f'&& GIT_COMMIT={head} node --import /app/scripts/tsx.mjs /tmp/iboard-visual-build.mjs '
+                       '&& test -s /app/dist/control-ui/index.html && rm /tmp/iboard-visual-build.mjs\n')
         tag = 'workbench-candidate:' + uuid.uuid4().hex
         with tempfile.TemporaryFile() as archive_file, tempfile.NamedTemporaryFile(
                 prefix='iboard-image-build-', suffix='.log', delete=False) as log:
@@ -218,6 +228,10 @@ def build_source_image(repo, base_commit, base_image, timeout):
                     pass
             archive_file.seek(0)
             with tarfile.open(fileobj=archive_file, mode='a') as archive:
+                if rebuild_ui is not None:
+                    info = tarfile.TarInfo('visual-build.mjs')
+                    info.size = len(rebuild_ui)
+                    archive.addfile(info, io.BytesIO(rebuild_ui))
                 content = recipe.encode()
                 info = tarfile.TarInfo('Dockerfile')
                 info.size = len(content)
@@ -228,9 +242,9 @@ def build_source_image(repo, base_commit, base_image, timeout):
             env.pop('BUILDKIT_HOST', None)
             subprocess.run(['docker', 'build', '--network=none', '--pull=false', '--tag', tag, '-'],
                            stdin=archive_file, stdout=log, stderr=log, timeout=remaining(), check=True, env=env)
-        if cli.sha(repo, 'HEAD') != head or _git(repo, 'status', '--porcelain', '--untracked-files=all'):
+        if cli.sha(repo, 'HEAD') != checkout or _git(repo, 'status', '--porcelain', '--untracked-files=all'):
             raise WorkflowError('candidate changed during image build')
-        result = _verified_image(repo, tag, min(remaining(), 300))
+        result = _verified_image(repo, tag, min(remaining(), 300), commit=head)
         log_path.unlink()
         return result
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, tarfile.TarError, ValueError) as error:
@@ -280,7 +294,7 @@ def prepare(*, task_id, repo, tasks_root, workspaces_root, source, kind, surface
     """
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', task_id):
         raise WorkflowError('invalid task ID')
-    if kind not in ('bug', 'feature') or surface not in ('ui', 'non-ui'):
+    if kind not in cli.TASK_KINDS or surface not in ('ui', 'non-ui'):
         raise WorkflowError('invalid task kind or surface')
     if (not source.strip() or not implementer.strip() or
             (iterations is not None and (type(iterations) is not int or iterations < 1)) or
@@ -327,8 +341,7 @@ def prepare(*, task_id, repo, tasks_root, workspaces_root, source, kind, surface
                                   implementer=implementer, surface=surface,
                                   iterations=iterations, seconds=seconds, started_at=began.isoformat())
         remaining()
-        with redirect_stdout(io.StringIO()):
-            cli.init(args)
+        cli.init(args, quiet=True)
         if required_ci_workflows is not None:
             data = cli.read(task_dir / 'task.json')
             data['required_ci_workflows'] = required_ci_workflows
@@ -345,9 +358,16 @@ def prepare(*, task_id, repo, tasks_root, workspaces_root, source, kind, surface
             'branch': branch, 'base_commit': base}
 
 
+def matching_observation(options, report):
+    output = str(report.get('stdout', '')) + '\n' + str(report.get('stderr', ''))
+    matches = [name for name, spec in options.items()
+               if report.get('exit_code') == spec['exit_code'] and spec['marker'] in output]
+    return matches[0] if len(matches) == 1 else None
+
+
 @locked_task('task')
 def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor,
-              description, runner=run_sandbox, memory_mb=2048, source_mode='workspace'):
+              description, runner=run_sandbox, memory_mb=2048, source_mode='workspace', observations=None):
     """Run and archive a real test result; success does not establish semantics.
 
     Reproduction must run on the baseline and assert an explicit observable
@@ -355,18 +375,34 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     """
     task = Path(task).expanduser().resolve(strict=True)
     data = cli.read(task)
+    run_control.admit(task, WorkflowError)
     if data['status'] != 'running' or cli.enforce_budget(data):
         raise WorkflowError('task is stopped or its budget is exhausted')
     if not data['criteria']:
         raise WorkflowError('record acceptance criteria before running checks')
-    if kind not in ('reproduction', 'resolution', 'test-result', 'runtime-log', 'feature-doc', 'screenshot'):
+    if kind not in ('reproduction', 'resolution', 'test-result', 'runtime-log', 'feature-doc', 'screenshot', *tdd.KINDS):
         raise WorkflowError('unsupported check evidence kind')
     if not command or timeout <= 0 or not description.strip() or not actor.strip():
         raise WorkflowError('command, actor, description and positive timeout are required')
     head = cli.sha(data['repo'], 'HEAD')
+    if observations is not None and (kind != 'runtime-log' or data['kind'] != 'bug' or not data.get('root_cause')
+                                     or head != data['base_commit'] or expect_exit is not None or marker is not None):
+        raise WorkflowError('multiple observations require a causal baseline runtime check')
     if cli.git(data['repo'], 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError('source worktree must be clean before the check')
-    if source_mode == 'workspace' or kind == 'screenshot':
+    regression = None
+    native = False
+    if kind in tdd.KINDS:
+        regression = tdd.contract(data.get('regression_test'))
+        if (data['kind'] != 'bug' or command != tdd.command(regression)
+                or (expect_exit, marker) != tdd.expected(regression, kind)
+                or (head == data['base_commit']) != (kind == 'tdd-red')):
+            raise WorkflowError('focused regression command, outcome, or revision changed')
+        native = regression.get('adapter') == tdd.VITEST
+        tdd.require_native_context(data, regression, source_mode, head, kind)
+        if kind == 'tdd-green':
+            tdd.verify_test(data['repo'], regression, head)
+    elif source_mode == 'workspace' or kind == 'screenshot':
         _verify_workspace_entry(data['repo'], command)
     if source_mode == 'workspace':
         selected_image = image
@@ -375,10 +411,13 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     else:
         raise WorkflowError('unknown source mode')
     if kind == 'reproduction':
-        if data['kind'] != 'bug' or head != data['base_commit']:
-            raise WorkflowError('reproduction must run on the bug baseline commit')
+        target = data.get('verification_target')
+        feature_comparison = (data['kind'] == 'feature' and isinstance(target, dict)
+                              and target.get('base') == data['base_commit'])
+        if head != data['base_commit'] or (data['kind'] != 'bug' and not feature_comparison):
+            raise WorkflowError('reproduction must run on a bug or existing PR baseline commit')
         if not marker:
-            raise WorkflowError('reproduction needs an observable failure marker')
+            raise WorkflowError('reproduction needs an observable baseline marker')
     remaining = timeout if data['limits']['seconds'] is None else data['limits']['seconds'] - (
         datetime.now(timezone.utc) - datetime.fromisoformat(data['started_at'])).total_seconds()
     if remaining <= 0:
@@ -386,25 +425,49 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     report_path = task.parent / f'{kind}-{uuid.uuid4().hex}.json'
     screenshot_path = task.parent / f'screenshot-{uuid.uuid4().hex}.png' if kind == 'screenshot' else None
     runner_options = {'source_root': '/app'} if source_mode == 'image' else {}
+    if runner is run_sandbox:
+        runner_options['pin_image'] = True
+    if regression is not None:
+        runner_options['workspace_read_only'] = True
+        if native:
+            runner_options['regression_file'] = regression['path']
+        if not native or kind == 'tdd-red':
+            runner_options['regression_source'] = regression['source'].encode()
+    if data.get('phase_binding') or data.get('kind') == 'refactor' or data.get('root_cause'):
+        runner_options['workspace_read_only'] = True
     if screenshot_path is not None:
         runner_options.update(memory_mb=memory_mb, screenshot_output=screenshot_path)
     elif memory_mb != 2048:
         runner_options['memory_mb'] = memory_mb
+    run_control.admit(task, WorkflowError)
     try:
         report = runner(data['repo'], selected_image, command, min(timeout, remaining), **runner_options)
     except (SandboxError, OSError, ValueError) as exc:
         report = {'error': str(exc), 'exit_code': None, 'cleanup_confirmed': False}
+    if native and kind == 'tdd-green' and report.get('regression_input') == 'verified-image':
+        report['regression_sha256'] = tdd.digest(regression)
+    observation = None
+    if observations is not None:
+        observation = matching_observation(observations, report)
+        report['observed_outcome'] = observation
+        if observation is not None:
+            expect_exit, marker = observations[observation]['exit_code'], observations[observation]['marker']
     # Always save actual result, including failures, before enforcing any gate.
-    report.update({'kind': kind, 'commit': head, 'actor': actor, 'description': description,
+    report.update({'schema': cli.SCHEMA, 'kind': kind, 'commit': head, 'actor': actor, 'description': description,
                    'expected_exit': expect_exit, 'expected_marker': marker, 'source_mode': source_mode,
                    'verified_image_id': selected_image if source_mode == 'image' else None,
                    'source_verified_commit': head,
                    'source_limit': 'Image /app matched every tracked Git blob before execution' if source_mode == 'image'
                      else 'Entry script is in /workspace; downstream execution still requires semantic review'})
     cli.write(report_path, report)
+    if observations is not None and (observation is None or report.get('stdout_truncated') or report.get('stderr_truncated')):
+        raise WorkflowError(f'causal observation was missing or ambiguous; raw report saved at {report_path}')
     output = str(report.get('stdout', '')) + '\n' + str(report.get('stderr', ''))
     if (report.get('error') or report.get('timed_out') or not report.get('cleanup_confirmed')
+            or docker_oom(report)
             or report.get('exit_code') != expect_exit or (marker and marker not in output)
+            or (regression is not None and (report.get('container_created') is not True
+                                          or not tdd.matches(report, regression, kind)))
             or (screenshot_path is not None and (not screenshot_path.is_file()
                 or report.get('screenshot_sha256') != cli.digest(screenshot_path)))):
         raise WorkflowError(f'check failed; raw report saved at {report_path}')
@@ -420,6 +483,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         data['evidence'][-1]['execution_report_sha256'] = cli.digest(report_path)
     cli.write(task, data)
     result = {'report': str(report_path), 'commit': head, 'kind': kind}
+    if observations is not None:
+        result['observed_outcome'] = observation
     if screenshot_path is not None:
         result['screenshot'] = str(screenshot_path)
     return result
@@ -431,7 +496,7 @@ def main(argv=None):
     create = commands.add_parser('prepare')
     for name in ('id', 'repo', 'tasks-root', 'workspaces-root', 'source', 'implementer'):
         create.add_argument(f'--{name}', required=True)
-    create.add_argument('--kind', choices=('bug', 'feature'), required=True)
+    create.add_argument('--kind', choices=cli.TASK_KINDS, required=True)
     create.add_argument('--surface', choices=('ui', 'non-ui'), required=True)
     create.add_argument('--iterations', type=int, required=True)
     create.add_argument('--seconds', type=int, required=True)

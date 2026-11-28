@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -14,14 +15,78 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(), file_tools_only=False):
+def reported_model_id(name):
+    """Strip Claude Code's known context-window suffix from the reported name."""
+    if isinstance(name, str) and name.endswith(('[1M]', '[1m]')):
+        return name[:-4]
+    return name
+
+
+def _trace(stdout, workspace=None):
+    events, final, model, truncated = [], None, None, False
+    for line in stdout.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        if item.get('type') == 'system' and item.get('subtype') == 'init':
+            model = item.get('model')
+        if item.get('type') == 'result':
+            final = item
+        message = item.get('message')
+        if item.get('type') not in {'assistant', 'user'} or not isinstance(message, dict):
+            continue
+        content = message.get('content')
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            kind = block.get('type')
+            if kind == 'text' and item['type'] == 'assistant' and isinstance(block.get('text'), str):
+                event = {'type':'assistant', 'text':block['text'][:4000]}
+                truncated |= len(block['text']) > 4000
+            elif kind == 'tool_use':
+                event = {'type':'tool_use', 'tool':block.get('name'), 'id':block.get('id')}
+                args = block.get('input')
+                if workspace is not None and event['tool'] == 'Read' and isinstance(args, dict):
+                    name = args.get('file_path')
+                    if isinstance(name, str) and len(name) <= 512 and name.isprintable():
+                        target = (workspace / name).resolve()
+                        if target.is_relative_to(workspace):
+                            event['path'] = str(target.relative_to(workspace))
+            elif kind == 'tool_result':
+                event = {'type':'tool_result', 'id':block.get('tool_use_id'), 'error':block.get('is_error') is True}
+            else:
+                continue
+            if len(events) < 80:
+                events.append(event)
+            else:
+                truncated = True
+    return {'provider':'zhipu', 'model':model, 'trace':events, 'trace_truncated':truncated,
+            'stdout':final['result'] if isinstance(final, dict) and isinstance(final.get('result'), str) else '',
+            'trace_completed':bool(final and final.get('subtype') == 'success' and not final.get('is_error'))}
+
+
+def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = False, evidence_paths=(),
+            file_tools_only=False, capture_trace=False, requested_model=None, requested_effort=None,
+            private_workspace=False):
     workspace = workspace.expanduser().resolve(strict=True)
     if not workspace.is_dir() or not prompt.strip() or not 1 <= timeout <= 86400:
         raise ValueError("a workspace, nonempty prompt and valid timeout are required")
+    if requested_model is not None and (not isinstance(requested_model, str)
+                                        or not re.fullmatch(r'glm-[a-z0-9][a-z0-9.-]{0,64}', requested_model)):
+        raise ValueError('invalid explicit GLM model')
+    if requested_effort is not None and requested_effort not in ('low', 'medium', 'high', 'xhigh'):
+        raise ValueError('invalid explicit reasoning effort')
     if not isinstance(evidence_paths, (list, tuple)) or len(evidence_paths) > 4:
         raise ValueError("bounded explicit evidence directories are required")
     if evidence_paths and not read_only:
         raise ValueError("evidence access is restricted to read-only model calls")
+    if private_workspace and (not file_tools_only or not capture_trace or evidence_paths):
+        raise ValueError("private workspaces require traced file tools and no additional directories")
     evidence_dirs = []
     home = Path.home().resolve()
     credential_root = ROOT.resolve()
@@ -68,6 +133,9 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
     }
     if read_only:
         settings["sandbox"]["filesystem"]["denyWrite"] = [str(workspace), *evidence_dirs]
+    if private_workspace:
+        settings["sandbox"]["filesystem"].update(denyRead=["/"], allowRead=[str(workspace)],
+                                                allowWrite=[str(workspace)])
     with tempfile.TemporaryDirectory(prefix="workbench-claude-") as tmp:
         path = Path(tmp) / "settings.json"
         path.write_text(json.dumps(settings), encoding="utf-8")
@@ -78,10 +146,25 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
         cmd = ["claude", "--bare", "--restricted", "--tools", tools, "--allowedTools", tools,
                "--permission-mode", "acceptEdits", "--settings", str(path), "--strict-mcp-config",
                "--no-session-persistence", "--print"]
-        if file_tools_only:
-            cmd.extend(["--effort", "low"])
+        if requested_effort is not None or file_tools_only:
+            cmd.extend(["--effort", requested_effort or "low"])
+        if capture_trace:
+            cmd.extend(["--output-format", "stream-json", "--verbose"])
+        if requested_model is not None:
+            cmd.extend(['--model', requested_model])
+        if evidence_dirs:
+            cmd.extend(["--add-dir", *evidence_dirs])
         process = subprocess.Popen(cmd, cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+        def result(exit_code, timed_out, stdout, stderr):
+            stdout, stderr = stdout.replace(key, "[REDACTED]"), stderr.replace(key, "[REDACTED]")
+            values = _trace(stdout, workspace if private_workspace else None) if capture_trace else {'stdout':stdout}
+            if requested_effort is not None:
+                values['requested_effort'] = requested_effort
+            if capture_trace and exit_code == 0 and not values['trace_completed']:
+                exit_code = 1
+            return {'exit_code':exit_code, 'timed_out':timed_out, 'stderr':stderr, **values}
+
         try:
             stdout, stderr = process.communicate(input=prompt, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -90,8 +173,7 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
             except ProcessLookupError:
                 pass
             stdout, stderr = process.communicate()
-            return {"exit_code": None, "timed_out": True, "stdout": stdout.replace(key, "[REDACTED]"),
-                    "stderr": stderr.replace(key, "[REDACTED]")}
+            return result(None, True, stdout, stderr)
         except BaseException:
             # Claude runs in a separate session, so interrupting this process
             # alone would otherwise leave the model and its children alive.
@@ -101,8 +183,7 @@ def execute(workspace: Path, prompt: str, timeout: int, *, read_only: bool = Fal
                 pass
             process.communicate()
             raise
-        return {"exit_code": process.returncode, "timed_out": False, "stdout": stdout.replace(key, "[REDACTED]"),
-                "stderr": stderr.replace(key, "[REDACTED]")}
+        return result(process.returncode, False, stdout, stderr)
 
 
 def main():

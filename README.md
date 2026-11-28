@@ -73,7 +73,29 @@ CLI 工作流已接入预算、受限恢复和 GitHub 交付；完整插件交�
 
 ### OpenClaw 可复用验证
 
-[verify-openclaw](skills/verify-openclaw/SKILL.md) 提供断网 Docker 验证入口：从空状态启动 Gateway，检查就绪，通过实际 CLI 查询健康状态，保留日志与清理报告，再由独立验证者复跑。OpenClaw 任务创建或更新 PR 前必须有同一候选镜像的两份通过报告，并通过独立审查；失败时不会推送候选或创建 PR。启动交付任务时使用 `--source-mode image --build-source-image`。仅需要提交 PR 时加 `--publish-only`；自动合并仍走原有交付门禁。
+功能对标范围与验收条件见 [iBoard 与 pstack 的功能对标](docs/pstack-parity.md)。
+
+在 Claude Code 中使用 [`/agent-workbench:poteto-help`](skills/poteto-help/SKILL.md) 查询适合当前任务的入口。也可运行 `python3 -m workbench.pstack_help scenario pr-status` 查看入口、前置条件和应保留的证据，或用 `show` 查询指定 pstack 技能的接入状态。
+
+[创建和维护形式化验证技能](skills/create-formal-verification-skill/SKILL.md) 支持按源码定义一项属性，并在断网容器中检验指定范围与反例。可从 [OpenClaw 命令队列示例](examples/formal/openclaw-command-lane/README.md) 开始。
+
+[verify-openclaw](skills/verify-openclaw/SKILL.md) 在断网 Docker 中验证 Gateway 启动和健康检查。技能与配置改动触发对应的 CLI 场景。会话界面相关改动触发浏览器验收，核对取消改名时无写入，以及保存后重启 Gateway 仍能读回同一会话的新名称。交付前，必跑场景需要同一候选镜像的两份通过报告和一次独立审查。使用 `--source-mode image --build-source-image` 启动交付任务，涉及浏览器验收时需在本地基线镜像预装 Chromium。仅提交 PR 时加 `--publish-only`。
+
+[生成项目验证技能](skills/create-verification-skill/SKILL.md)可把已有的源码锚点和真实场景封装为项目自己的功能地图。[维护验证技能](skills/maintain-verification-skill/SKILL.md)对照选定的 Git 版本逐条重跑，所有场景通过后才导出地图修订。
+
+[TDD 回归验证](skills/tdd/SKILL.md)支持独立 Node 测试和 OpenClaw 原生 Vitest。选用后，同一份测试先在干净基线触发指定断言，再在候选上通过。原生 Vitest 在基线只读挂入新用例，在候选直接运行已提交文件。工作台保留四份证据，交付前核对报告、独立复验和测试源码。
+
+[重构行为对照](skills/refactor/SKILL.md)在改代码前冻结用户可见的行为和允许改动的路径。断网 Docker 用同一份只读验证脚本逐个检查提交，对照退出码及 stdout、stderr 的原始字节。用 `workbench.start --kind refactor` 执行时，独立终审必须引用对照报告，PR 写入前还会重核原始证据。中间提交改变行为时，即使最终提交改回去，检查也会在该步拦下。
+
+[运行时诊断](skills/runtime-forensics/SKILL.md)在断网 Docker 中采集 Node CPU profile 和堆快照，保留原始文件、源码版本、热点或引用链。失败的沙箱运行会记录对应容器的状态和 OOM 事件。确认是 Docker OOM 时暂停验证并保留候选和证据。
+
+[离线轨迹分析](skills/trace-forensics/SKILL.md)可导入已有的 CPU profile、V8 堆快照、Chrome 轨迹和支持的 macOS 采样文本，生成带原始文件校验值的 SQLite 数据库。可以查询热点、引用链或线程调用栈，再对照同一格式的前后两份记录。
+
+[视觉一致性验收](skills/visual-parity/SKILL.md)可在改动前冻结组件的浏览器交互状态，再对候选逐像素比较。[多阶段派发](skills/multi-phase-plan/SKILL.md)会从同一主线提前采集各组件状态，之后的依赖阶段和重放候选沿用原始基线。可在批准的计划中启用独立组件并发实现。同一轮派发逐项安排 Docker 验证，避免相互干扰性能测量。提交 PR 前，每个状态都需要两次独立抓取且像素差为零。
+
+[OpenClaw Control UI 实例](examples/openclaw-control-ui-parity/README.md)从指定提交离线构建真实界面，验证未连接 Gateway 时错误详情的折叠和展开状态。样式整理后两种状态均为零像素差异。故意改色后，两次展开截图各出现 2,519 个差异像素，验收拒绝候选。
+
+[Control UI 连接验证](skills/verify-openclaw/SKILL.md)在同一个断网容器里启动临时 Gateway 和 Chromium，通过原生表单认证，并用实际的会话列表响应和截图核对页面。
 
 ### 工作台插件原型
 
@@ -156,7 +178,7 @@ claude plugin validate .
 
 指定的 CI 工作流失败时，工作台仅在运行、提交、PR 和基线可核对，且每个失败作业都有完整、大小受限的失败注释时，使用这些不可信数据尝试修复。修复占用一次迭代，并重新执行原有验证和独立审查；通过后才以旧提交为条件更新同一个 PR。失败信息不足、作业被取消、预算耗尽或远程状态变化时会暂停。镜像模式需要 `--build-source-image` 才能自动验证修复后的新提交。此 CI 修复路径目前仅经模拟测试，尚未完成真实端到端验证。
 
-也可用 `--build-source-image` 自动将每次候选提交的源码叠加到已核对的本地基线镜像；它不安装依赖，也不编译程序。项目需要重新安装依赖或重新编译时，应提供按该提交构建的候选镜像，不能认为源码文件一致就代表构建产物正确。新镜像会占用磁盘空间；自动生成的镜像暂不自动删除。真实 Docker 集成检查可通过 `WORKBENCH_DOCKER_TEST=1 python3 -m unittest discover -s tests -p test_source_image_integration.py -v` 运行，需要本地已有 `node:24-slim`。
+也可用 `--build-source-image` 将候选源码叠加到已核对的本地基线镜像。默认只更新源码。声明 [OpenClaw Control UI 重建配置](examples/openclaw-control-ui-parity/README.md)后，iBoard 会在断网环境用已有依赖生成每个提交的界面产物，再执行验收。其他需要构建的项目可提供按指定提交生成的候选镜像。真实 Docker 集成检查可用 `WORKBENCH_DOCKER_TEST=1 python3 -m unittest discover -s tests -p test_source_image_integration.py -v` 运行，需要本地已有 `node:24-slim`。
 
 ## 交付规则
 

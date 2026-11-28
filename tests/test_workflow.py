@@ -1,13 +1,14 @@
 import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, workflow
+from workbench import bug_cause, cli, tdd, workflow
 from test_runner import tiny_png
 
 
@@ -96,6 +97,38 @@ class WorkflowTests(unittest.TestCase):
         finally:
             log.unlink()
 
+    def test_visual_recipe_discards_inherited_assets_and_receives_exact_revision(self):
+        import json
+        import tarfile
+
+        base = cli.sha(self.repo, 'HEAD')
+        recipe = b'console.log("trusted recipe");\n'
+        image = 'sha256:' + 'a' * 64
+        real_run = subprocess.run
+
+        def run(command, **kwargs):
+            if command[:3] == ['docker', 'image', 'inspect']:
+                return subprocess.CompletedProcess(command, 0, json.dumps([{'Config': {}}]), '')
+            if command[:2] == ['docker', 'build']:
+                self.assertIn('--network=none', command)
+                self.assertIn('--pull=false', command)
+                with tarfile.open(fileobj=kwargs['stdin'], mode='r:') as archive:
+                    self.assertEqual(archive.extractfile('visual-build.mjs').read(), recipe)
+                    dockerfile = archive.extractfile('Dockerfile').read().decode()
+                    clear, compile_at, verify = [dockerfile.index(part) for part in (
+                        'rm -rf -- /app/dist/control-ui', f'GIT_COMMIT={base} node',
+                        'test -s /app/dist/control-ui/index.html')]
+                    self.assertLess(clear, compile_at)
+                    self.assertLess(compile_at, verify)
+                return subprocess.CompletedProcess(command, 0)
+            return real_run(command, **kwargs)
+
+        with patch.object(workflow, '_verified_image', return_value=image) as attest, \
+                patch.object(workflow.subprocess, 'run', side_effect=run):
+            self.assertEqual(workflow.build_source_image(self.repo, base, image, 30, revision=base,
+                                                        rebuild_ui=recipe), image)
+        self.assertEqual([call.kwargs['commit'] for call in attest.call_args_list], [base, base])
+
     def git(self, *args):
         subprocess.run(['git', '-C', str(self.repo), *args], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -111,6 +144,29 @@ class WorkflowTests(unittest.TestCase):
         cli.criterion_add(argparse.Namespace(id='a', text='repair behavior', reason='issue'), record)
         cli.write(Path(task), record)
 
+    def test_causal_workflow_retains_ambiguous_output_without_registering_evidence(self):
+        task = Path(self.prepare()['task'])
+        self.criterion(task)
+        record = cli.read(task)
+        record['root_cause'] = bug_cause.MODE
+        cli.write(task, record)
+        outcomes = {'first': {'marker': 'FIRST STATE', 'exit_code': 0},
+                    'second': {'marker': 'SECOND STATE', 'exit_code': 0}}
+        output = 'FIRST STATE\nSECOND STATE\n'
+
+        def runner(*_args, **_kwargs):
+            return {'exit_code': 0, 'stdout': output, 'cleanup_confirmed': True}
+
+        with self.assertRaisesRegex(workflow.WorkflowError, 'causal observation was missing or ambiguous'):
+            workflow.run_check(task=task, kind='runtime-log', image='image', command=['/workspace/test'],
+                               timeout=30, expect_exit=None, marker=None, actor='implementer', description='Observe',
+                               runner=runner, observations=outcomes)
+        raw, = task.parent.glob('runtime-log-*.json')
+        report = json.loads(raw.read_bytes())
+        self.assertEqual(report['stdout'], output)
+        self.assertIsNone(report['observed_outcome'])
+        self.assertEqual(cli.read(task)['evidence'], [])
+
     def test_prepare_creates_independent_worktree_without_touching_original(self):
         result = self.prepare()
         self.assertEqual(Path(result['workspace'], 'app.txt').read_text(), 'before\n')
@@ -118,6 +174,64 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(subprocess.check_output(['git', '-C', str(self.repo), 'status', '--porcelain']), b'')
         with self.assertRaises(workflow.WorkflowError):
             self.prepare()
+
+    def test_native_regression_runs_from_the_committed_candidate_and_freezes_test_config(self):
+        config = 'test/vitest/vitest.unit-fast.config.ts'
+        (self.repo / 'test').unlink()
+        for relative, body in [('package.json', '{"name":"openclaw"}'),
+                               ('src/behavior.ts', 'export const works = false;'),
+                               (config, 'export default {};')]:
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        self.git('add', '.')
+        self.git('commit', '-qm', 'OpenClaw fixture')
+        result = self.prepare()
+        task = Path(result['task'])
+        workspace = Path(result['workspace'])
+        self.criterion(task)
+        spec = {'adapter': tdd.VITEST, 'project': 'unit-fast', 'path': 'src/behavior.regression.test.ts',
+                'source': "it('preserves behavior', () => expect(works, 'BEHAVIOR_BROKE').toBe(true));\n",
+                'test_name': 'preserves behavior', 'red': 'BEHAVIOR_BROKE'}
+        data = cli.read(task)
+        data['regression_test'] = spec
+        cli.write(task, data)
+        runs = []
+
+        def runner(repo, image, command, timeout, **options):
+            runs.append(options)
+            red = 'regression_source' in options
+            return {'exit_code': 1 if red else 0, 'container_created': True, 'cleanup_confirmed': True,
+                    'stdout': spec['red'] if red else spec['test_name'], 'stderr': '',
+                    'regression_input': 'isolated-input' if red else 'verified-image'}
+
+        def check(kind, source_mode='image'):
+            code, marker = tdd.expected(spec, kind)
+            return workflow.run_check(task=task, kind=kind, image='image', command=tdd.command(spec), timeout=20,
+                                      expect_exit=code, marker=marker, actor='verifier', description='observed test',
+                                      runner=runner, source_mode=source_mode)
+
+        with patch.object(workflow, '_verified_image', return_value='sha256:' + 'a' * 64), \
+                patch.object(tdd, 'matches', return_value=True):
+            with self.assertRaisesRegex(tdd.RegressionError, 'source-verified OpenClaw image'):
+                check('tdd-red', source_mode='workspace')
+            check('tdd-red')
+            self.assertFalse((workspace / spec['path']).exists())
+            self.assertEqual(runs[0]['regression_source'], spec['source'].encode())
+            tdd.add_test(workspace, spec)
+            (workspace / 'src/behavior.ts').write_text('export const works = true;')
+            cli.git(workspace, 'add', '.')
+            cli.git(workspace, 'commit', '-qm', 'correct behavior')
+            green = check('tdd-green')
+            self.assertEqual(runs[1], {'source_root': '/app', 'regression_file': spec['path'],
+                                       'workspace_read_only': True})
+            self.assertEqual(cli.read(Path(green['report']))['regression_sha256'], tdd.digest(spec))
+            (workspace / config).write_text('export default {test: {exclude: []}};')
+            cli.git(workspace, 'add', config)
+            cli.git(workspace, 'commit', '-qm', 'change runner config')
+            with self.assertRaisesRegex(tdd.RegressionError, 'unchanged Vitest configuration'):
+                check('tdd-green')
+            self.assertEqual(len(runs), 2)
 
     def test_prepare_records_explicit_skip_policy_and_reason(self):
         result = workflow.prepare(task_id='policy', repo=self.repo,
@@ -202,6 +316,26 @@ class WorkflowTests(unittest.TestCase):
                                description='bad reproduction', runner=failing_runner)
         self.assertEqual(len(cli.read(task)['evidence']), 1)
         self.assertEqual(len(list(Path(task).parent.glob('reproduction-*.json'))), 2)
+
+    def test_feature_parent_check_requires_a_bound_existing_pr(self):
+        task = Path(self.prepare()['task'])
+        self.criterion(task)
+        data = cli.read(task)
+        data['kind'] = 'feature'
+        cli.write(task, data)
+        arguments = dict(task=task, kind='reproduction', image='local-image', command=['/workspace/test-command'],
+                         timeout=10, expect_exit=0, marker='PRIOR', actor='independent-verifier',
+                         description='observe prior feature behavior')
+        with self.assertRaisesRegex(workflow.WorkflowError, 'baseline commit'):
+            workflow.run_check(**arguments, runner=lambda *_:self.fail('unbound run reached the sandbox'))
+        data['verification_target'] = {'base':data['base_commit']}
+        cli.write(task, data)
+        result = workflow.run_check(**arguments, runner=lambda *_:{
+            'exit_code':0, 'stdout':'PRIOR', 'cleanup_confirmed':True, 'timed_out':False,
+        })
+        self.assertEqual(result['commit'], data['base_commit'])
+        proof = cli.read(task)['evidence'][0]
+        self.assertEqual((proof['actor'], proof['kind']), ('independent-verifier', 'reproduction'))
 
     def test_nonisolated_or_unexpected_results_cannot_be_recorded(self):
         task = self.prepare()['task']

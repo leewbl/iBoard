@@ -7,6 +7,88 @@ import unittest
 from workbench import local_vitest, local_gate
 
 
+class VitestRegressionTests(unittest.TestCase):
+    path = 'src/agents/prompt.regression.test.ts'
+    name = 'keeps the chosen runtime identity'
+    marker = 'RUNTIME_IDENTITY_CHANGED'
+
+    def _report(self, *, red=False):
+        status = 'failed' if red else 'passed'
+        return {
+            'success': not red,
+            'numTotalTestSuites': 1, 'numPassedTestSuites': int(not red),
+            'numFailedTestSuites': int(red), 'numPendingTestSuites': 0,
+            'numTotalTests': 1, 'numPassedTests': int(not red), 'numFailedTests': int(red),
+            'numPendingTests': 0, 'numTodoTests': 0,
+            'testResults': [{
+                'name': '/app/' + self.path, 'status': status, 'message': '',
+                'assertionResults': [{
+                    'ancestorTitles': [], 'fullName': self.name, 'status': status,
+                    'failureMessages': [f'AssertionError: {self.marker}: expected true to be false\n'
+                                        '    at src/agents/prompt.regression.test.ts:8:5'] if red else [],
+                }],
+            }],
+        }
+
+    def _validate(self, report, *, red=False, stderr=''):
+        output = json.dumps(report) + 'JSON report written to /dev/stdout\n'
+        local_vitest.validate_regression_json(
+            output, self.path, self.name, red=self.marker if red else None, stderr=stderr)
+
+    def test_pins_native_shard_to_a_single_safe_file(self):
+        for project in ('unit', 'unit-fast', 'gateway', 'agents-core'):
+            with self.subTest(project=project):
+                self.assertEqual(local_vitest.regression_command(self.path, project), [
+                    'node', '/app/node_modules/vitest/vitest.mjs', 'run', '--reporter=json',
+                    '--outputFile=/dev/stdout', '--config', f'/app/test/vitest/vitest.{project}.config.ts',
+                    '--maxWorkers=1', self.path])
+        for path, project in (('src/../wrong.regression.test.ts', 'unit'), ('/tmp/x.regression.test.ts', 'unit'),
+                              ('src/x.test.ts', 'unit'), (self.path, '--config'), (self.path, [])):
+            with self.subTest(path=path, project=project), self.assertRaises(local_vitest.GuardError):
+                local_vitest.regression_command(path, project)
+
+    def test_requires_one_actual_pass_or_intended_assertion(self):
+        self._validate(self._report())
+        self._validate(self._report(red=True), red=True)
+        report = self._report(red=True)
+        report['testResults'][0]['assertionResults'][0]['failureMessages'] = [
+            f'AssertionError [ERR_ASSERTION]: {self.marker}\n    at src/agents/prompt.regression.test.ts:8:5']
+        self._validate(report, red=True)
+
+    def test_rejects_wrong_suite_test_counts_skips_and_setup_errors(self):
+        for update in (
+            {'success': False}, {'numTotalTests': 0}, {'numTotalTests': 2}, {'numPassedTests': True},
+            {'numTodoTests': 1}, {'numPendingTests': 1}, {'numFailedTestSuites': 1},
+            {'testResults': []},
+        ):
+            with self.subTest(update=update), self.assertRaises(local_vitest.GuardError):
+                self._validate({**self._report(), **update})
+        for update in ({'name': '/app/src/other.regression.test.ts'}, {'message': 'missing import'},
+                       {'assertionResults': []}, {'status': 'skipped'}):
+            report = self._report(red=True)
+            report['testResults'][0].update(update)
+            with self.subTest(update=update), self.assertRaises(local_vitest.GuardError):
+                self._validate(report, red=True)
+        report = self._report()
+        report['testResults'][0]['assertionResults'][0]['fullName'] = 'a nearby passing test'
+        with self.assertRaises(local_vitest.GuardError):
+            self._validate(report)
+
+    def test_rejects_unrelated_failures_and_unhandled_errors(self):
+        for errors in (
+            [f'TypeError: {self.marker}'],
+            [f'AssertionError: something else\n{self.marker}'],
+            [f'AssertionError: {self.marker}_SIMILAR: expected true to be false'],
+            [f'AssertionError: {self.marker}', 'TypeError: unrelated teardown'],
+        ):
+            report = self._report(red=True)
+            report['testResults'][0]['assertionResults'][0]['failureMessages'] = errors
+            with self.subTest(errors=errors), self.assertRaises(local_vitest.GuardError):
+                self._validate(report, red=True)
+        with self.assertRaisesRegex(local_vitest.GuardError, 'unhandled error'):
+            self._validate(self._report(red=True), red=True, stderr='\x1b[31mUnhandled Errors\x1b[0m')
+
+
 class VitestGuardTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

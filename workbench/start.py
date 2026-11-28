@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from workbench import autopilot, cli, workflow
+from workbench import autopilot, cli, feature_context, model_profiles, run_control, workflow
 from workbench.task_lock import task_lock, TaskBusy
 from model import glm_vision
 
@@ -20,8 +20,10 @@ class StartError(Exception):
     pass
 
 
-def _finish_screenshots(task, *, vision):
+def _read_input_stage(task):
     stage_path = task.parent / 'input-stage.json'
+    if stage_path.is_symlink() or not stage_path.is_file():
+        raise StartError('retained input-stage.json is missing or unsafe; original input cannot be verified')
     stage = cli.read(stage_path)
     if autopilot._input_digest(task) != stage['input_digest']:
         raise StartError('input snapshot changed')
@@ -32,9 +34,26 @@ def _finish_screenshots(task, *, vision):
     if stage['phase'] == 'ready':
         if request.is_symlink() or cli.digest(request) != stage['request_digest']:
             raise StartError('prepared task input changed')
-        return stage
-    if stage['phase'] != 'screenshots':
+    elif stage['phase'] != 'screenshots':
         raise StartError('invalid input preparation phase')
+    settings = stage.get('run_settings')
+    if (not isinstance(settings, dict) or
+            not {'image', 'pr_repo', 'source_mode', 'candidate_image', 'build_source_image', 'memory_mb'} <= settings.keys()
+            or not isinstance(settings['image'], str) or not settings['image']
+            or settings['source_mode'] not in ('workspace', 'image')
+            or type(settings['memory_mb']) is not int or not 128 <= settings['memory_mb'] <= 8192):
+        raise StartError('retained execution settings are missing or invalid')
+    return stage
+
+
+def _finish_screenshots(task, *, vision, stage=None):
+    if stage is None:
+        stage = _read_input_stage(task)
+    if stage['phase'] == 'ready':
+        return stage
+    stage_path = task.parent / 'input-stage.json'
+    base_path = task.parent / 'input-base.txt'
+    request = task.parent / 'issue.txt'
     manifest = json.loads((task.parent / 'inputs/manifest.json').read_text(encoding='utf-8'))
     images = manifest['screenshots']
     descriptions = stage['descriptions']
@@ -42,6 +61,7 @@ def _finish_screenshots(task, *, vision):
             or any(not isinstance(item, str) or not item.strip() or len(item) > 15000 for item in descriptions)):
         raise StartError('invalid screenshot preparation state')
     while len(descriptions) < len(images):
+        run_control.admit(task, StartError)
         entry = images[len(descriptions)]
         data = (task.parent / 'inputs' / entry['file']).read_bytes()
         timeout = min(90, autopilot._remaining(cli.read(task)))
@@ -81,19 +101,23 @@ def _resume_locked(task_path, *, run, vision):
     resumed = False
     try:
         data = cli.read(task)
+        run_control.admit(task, StartError)
+        state_path = task.parent / 'autopilot.json'
+        if state_path.is_file() and cli.read(state_path).get('phase') == 'complete':
+            raise StartError('completed task cannot be resumed; use --inspect to look up the outcome')
         if data['status'] != 'paused':
             raise StartError('only paused tasks can be resumed; inspect any active process first')
         if cli.enforce_budget(data):
             raise StartError('task budget exceeded; an explicitly authorized increase is required')
-        stage_path = task.parent / 'input-stage.json'
-        if not stage_path.is_file() or stage_path.is_symlink():
-            raise StartError('retained input-stage.json is missing or unsafe; original input and execution settings cannot be verified automatically; preserve the task and investigate its retained evidence')
+        stage = _read_input_stage(task)
+        model_profiles.intake(task, data, stage)
+        feature_context.read(data)
         data['status'] = 'running'
         data['events'].append({'at': cli.now(), 'type': 'resume', 'reason': 'resume retained task'})
         cli.write(task, data)
         resumed = True
         autopilot._remaining(data)
-        stage = _finish_screenshots(task, vision=vision)
+        stage = _finish_screenshots(task, vision=vision, stage=stage)
         settings = stage['run_settings']
         options = {}
         if cli.read(task).get('local_gate_reverify') is not None:
@@ -145,12 +169,53 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
           iterations, seconds, image, pr_repo=None, tasks_root, workspaces_root,
           source_mode='workspace', candidate_image=None, build_source_image=False, memory_mb=2048,
           log_files=(), screenshot_files=(), required_ci_workflows=None, ci_skip_policy=None, ci_skip_reason=None,
-          publish_only=False, implementer='glm-implementer', prepare=workflow.prepare, run=autopilot.run,
+          publish_only=False, verification_target=None, criteria=(), retained_contract=None,
+          local_verification=None, implementer='glm-implementer', feature_manifest=None, feature_sha256=None,
+          feature_arena_out=None, visual_baseline=None, visual_baseline_sha256=None,
+          refactor_contract=None, refactor_contract_sha256=None,
+          prepare_only=False, require_root_cause=False, swarm_manifest=None, swarm_sha256=None,
+          model_profile=None, model_profile_sha256=None,
+          prepare=workflow.prepare, run=autopilot.run,
           fetch=read_issue_url, vision=glm_vision.describe):
     if bool(issue_file) == bool(issue_url):
         raise StartError('provide exactly one issue file or GitHub issue URL')
-    if kind not in ('bug', 'feature') or surface not in ('ui', 'non-ui') or iterations < 1 or seconds < 1:
+    if prepare_only and feature_arena_out:
+        raise StartError('prepare-only cannot run an Arena comparison')
+    if kind not in cli.TASK_KINDS or surface not in ('ui', 'non-ui') or iterations < 1 or seconds < 1:
         raise StartError('task kind, surface and positive limits are required')
+    if require_root_cause and (kind != 'bug' or verification_target is not None):
+        raise StartError('causal verification requires a new bug task')
+    selected_profile = None
+    if model_profile is not None or model_profile_sha256 is not None:
+        try:
+            selected_profile = model_profiles.load(model_profile, model_profile_sha256)
+        except model_profiles.ERRORS as error:
+            raise StartError(f'invalid approved model profile: {error}') from error
+    coverage = None
+    if swarm_manifest is not None or swarm_sha256 is not None:
+        from workbench import swarm
+        try:
+            coverage = swarm.task_manifest(swarm_manifest, swarm_sha256)
+        except swarm.ERRORS as error:
+            raise StartError(f'invalid required coverage swarm: {error}') from error
+    refactor_input = None
+    if kind == 'refactor':
+        from workbench import refactor, refactor_delivery
+        if (not refactor_contract or not refactor_contract_sha256 or verification_target is not None
+                or source_mode != 'image' or not build_source_image or candidate_image is not None):
+            raise StartError('refactoring needs its frozen contract digest and a source-built image task')
+        try:
+            refactor_input = refactor_delivery.bind(refactor_contract, refactor_contract_sha256)
+            frozen = refactor.load_frozen(refactor_input['path'], refactor_input['sha256'])[0]
+        except refactor.ERRORS as error:
+            raise StartError(str(error)) from error
+        if memory_mb != frozen['memory_mb']:
+            raise StartError('refactoring must use the memory limit in its frozen contract')
+        if any(item.get('id') == cli.REFACTOR_CRITERION for item in criteria):
+            raise StartError('the frozen refactoring behavior criterion is supplied by iBoard')
+        criteria = (*criteria, {'id': cli.REFACTOR_CRITERION, 'text': cli.REFACTOR_CRITERION_TEXT})
+    elif refactor_contract is not None or refactor_contract_sha256 is not None:
+        raise StartError('refactor contracts apply to refactoring tasks')
     began = datetime.now(timezone.utc)
     def remaining():
         value = seconds - (datetime.now(timezone.utc) - began).total_seconds()
@@ -159,8 +224,33 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         return value
     if pr_repo and not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pr_repo):
         raise StartError('invalid personal fork name')
+    if verification_target is not None and (not criteria or not pr_repo or publish_only or screenshot_files):
+        raise StartError('existing PR verification requires frozen criteria, repository, and a completed request')
+    if verification_target is None and (retained_contract or local_verification):
+        raise StartError('retained verification settings require an existing PR target')
+    if bool(feature_manifest) != bool(feature_sha256):
+        raise StartError('feature handoff requires its manifest and expected SHA-256')
+    if feature_arena_out and not feature_manifest:
+        raise StartError('feature Arena requires an approved comparison manifest')
+    if bool(visual_baseline) != bool(visual_baseline_sha256) or (visual_baseline and (
+            surface != 'ui' or source_mode != 'image' or not build_source_image or candidate_image or verification_target)):
+        raise StartError('visual parity requires a frozen baseline digest and a new image-based UI task')
+    handoff = None
+    if feature_manifest:
+        if kind != 'feature' or verification_target is not None or criteria:
+            raise StartError('feature handoff requires a new feature task with its own frozen criteria')
+        if not feature_arena_out:
+            try:
+                handoff = feature_context.load_input(feature_manifest, feature_sha256, repo)
+            except (OSError, ValueError, cli.WorkbenchError) as error:
+                raise StartError(str(error)) from error
+    arena_enabled = feature_arena_out or (handoff and handoff.get('arena'))
+    if arena_enabled:
+        if not issue_file or log_files or screenshot_files:
+            raise StartError('feature Arena requires the exact request file approved for comparison')
     try:
-        required_ci_workflows = workflow.validate_required_ci_workflows(required_ci_workflows, required=bool(pr_repo) and not publish_only)
+        required_ci_workflows = workflow.validate_required_ci_workflows(
+            required_ci_workflows, required=bool(pr_repo) and not publish_only and verification_target is None)
         ci_skip_policy = workflow.validate_ci_skip_policy(ci_skip_policy, ci_skip_reason, required_ci_workflows)
     except workflow.WorkflowError as error:
         raise StartError(str(error)) from error
@@ -177,7 +267,9 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
     else:
         if not source or not source.strip():
             raise StartError('a source description is required for an issue file')
-        issue, origin = Path(issue_file).expanduser().read_text(encoding='utf-8'), source.strip()
+        issue_path = Path(issue_file).expanduser()
+        issue = issue_path.read_bytes().decode('utf-8') if arena_enabled else issue_path.read_text(encoding='utf-8')
+        origin = source.strip()
     if len(log_files) > 8:
         raise StartError('at most eight log files may be supplied')
     if len(screenshot_files) > 4:
@@ -226,22 +318,92 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
         raise StartError('cannot inspect the local Docker image') from error
     if inspected.returncode:
         raise StartError('Docker image must already exist locally')
+    if require_root_cause:
+        try:
+            selected_image, = json.loads(inspected.stdout)
+            image = selected_image['Id']
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
+                raise ValueError('invalid image identity')
+        except (KeyError, TypeError, ValueError) as error:
+            raise StartError('causal verification requires a pinned local image ID') from error
+    if refactor_input:
+        try:
+            selected_image, = json.loads(inspected.stdout)
+            if selected_image.get('Id') != frozen['image']:
+                raise ValueError('different image')
+        except (AttributeError, TypeError, ValueError) as error:
+            raise StartError('refactoring must use the image in its frozen contract') from error
+        image = frozen['image']
+    if feature_arena_out:
+        from workbench import feature_arena
+        try:
+            profile_options = {'expected_model_profile': model_profile_sha256} if selected_profile else {}
+            resolution = feature_arena.resolve(feature_manifest, feature_sha256, repo, issue_file,
+                                               feature_arena_out, seconds_limit=int(remaining()), **profile_options)
+            if resolution['status'] != 'resolved':
+                raise StartError(f'feature Arena comparison blocked; evidence retained at {feature_arena_out}')
+            handoff = feature_context.load_input(resolution['handoff'], resolution['handoff_sha256'], repo)
+        except (OSError, ValueError, cli.WorkbenchError) as error:
+            raise StartError(str(error)) from error
+    baseline = {'base_commit':verification_target['base']} if verification_target is not None else {}
+    if refactor_input:
+        baseline['base_commit'] = frozen['baseline']
+    if handoff is not None:
+        if handoff.get('arena') and hashlib.sha256(issue.encode()).hexdigest() != handoff['arena']['request_sha256']:
+            raise StartError('feature request differs from the Arena comparison')
+        try:
+            feature_context.verify_arena_runtime(handoff.get('arena'), image, source_mode)
+        except feature_context.FeatureContextError as error:
+            raise StartError(str(error)) from error
+        baseline['base_commit'] = handoff['baseline']
+        criteria = handoff['criteria']
     info = prepare(task_id=task_id, repo=repo, tasks_root=tasks_root, workspaces_root=workspaces_root,
                    source=origin, kind=kind, surface=surface, iterations=iterations,
                    seconds=seconds, implementer=implementer, started_at=began.isoformat(),
                    required_ci_workflows=required_ci_workflows,
-                   ci_skip_policy=ci_skip_policy, ci_skip_reason=ci_skip_reason)
+                   ci_skip_policy=ci_skip_policy, ci_skip_reason=ci_skip_reason, **baseline)
     task = Path(info['task'])
     request = task.parent / 'issue.txt'
-    print(json.dumps({'event': 'task-created', **info}, ensure_ascii=False), flush=True)
+    sys.stdout.write(json.dumps({'event': 'task-created', **info}, ensure_ascii=False) + '\n')
+    sys.stdout.flush()
     try:
         with task_lock(task):
             try:
+                data = cli.read(task)
+                data['impact_review'] = 'runtime-v1'
+                model_reference = model_profiles.snapshot(task, data, selected_profile) if selected_profile else None
+                if require_root_cause:
+                    from workbench import bug_cause
+                    data['root_cause'] = bug_cause.MODE
+                if coverage is not None:
+                    path = task.with_name('swarm-contract.json')
+                    cli.write(path, coverage)
+                    data['coverage_swarm'] = {'path': str(path), 'sha256': cli.digest(path)}
                 if publish_only:
-                    data = cli.read(task)
                     data['publish_only'] = True
+                if visual_baseline:
+                    from workbench import visual_parity
+                    data['visual_baseline'] = visual_parity.bind(visual_baseline, visual_baseline_sha256,
+                                                                data['base_commit'])
+                if refactor_input:
+                    data['refactor_contract'] = refactor_input
+                    refactor_delivery.contract(data)
+                cli.write(task, data)
+                if criteria:
+                    autopilot._add_criteria(task, criteria)
+                if handoff is not None:
+                    data = cli.read(task)
+                    feature_context.freeze(task, data, handoff)
                     cli.write(task, data)
-                request.write_text(issue_with_logs, encoding='utf-8')
+                if retained_contract:
+                    data = cli.read(task)
+                    prior = retained_contract['criteria']
+                    if [{key:item[key] for key in ('id', 'text')} for item in prior] != criteria:
+                        raise StartError('retained acceptance criteria changed')
+                    data['criteria'] = prior
+                    data['criterion_changes'] = retained_contract['changes']
+                    cli.write(task, data)
+                request.write_bytes(issue_with_logs.encode('utf-8'))
                 request.chmod(0o600)
                 if logs or screenshots:
                     directory = task.parent / 'inputs'
@@ -273,7 +435,32 @@ def start(*, task_id, repo, issue_file=None, issue_url=None, source=None, kind, 
                 }
                 if not screenshots:
                     stage['request_digest'] = cli.digest(request)
+                if require_root_cause:
+                    stage['root_cause'] = bug_cause.MODE
+                if coverage is not None:
+                    stage['coverage_swarm'] = cli.read(task)['coverage_swarm']
+                if model_reference is not None:
+                    stage['model_profile'] = model_reference
+                if refactor_input:
+                    stage['refactor_contract'] = refactor_input
+                if verification_target is not None:
+                    data = cli.read(task)
+                    if local_verification:
+                        from workbench import local_gate
+                        try:
+                            local_gate._select(data, verification_target['head'], local_verification['files'],
+                                               local_verification['reason'])
+                        except local_gate.LocalGateError as error:
+                            raise StartError(str(error)) from error
+                    data['verification_target'] = {
+                        **verification_target, 'request_digest':stage['request_digest'],
+                        'criterion_digest':cli.criteria_digest(data), 'settings':stage['run_settings'],
+                    }
+                    cli.write(task, data)
                 cli.write(task.parent / 'input-stage.json', stage)
+                if prepare_only:
+                    autopilot._pause(task, 'intake prepared for a separately authorized run')
+                    return {**info, 'phase': 'plan', 'status': 'paused'}
                 if screenshots:
                     _finish_screenshots(task, vision=vision)
                 return run(task, request, image, pr_repo=pr_repo, source_mode=source_mode,
@@ -299,13 +486,21 @@ def main(argv=None):
     parser.add_argument('--source', help='source description when using --issue-file')
     parser.add_argument('--log-file', action='append', default=[], help='UTF-8 log file; may be repeated')
     parser.add_argument('--screenshot', action='append', default=[], help='PNG, JPEG or WebP screenshot; may be repeated')
-    parser.add_argument('--kind', choices=('bug', 'feature'), required=True)
+    parser.add_argument('--kind', choices=cli.TASK_KINDS, required=True)
     parser.add_argument('--surface', choices=('ui', 'non-ui'), required=True)
     parser.add_argument('--iterations', type=int, required=True)
     parser.add_argument('--seconds', type=int, required=True)
     parser.add_argument('--image', required=True)
     parser.add_argument('--pr-repo')
     parser.add_argument('--publish-only', action='store_true', help='create the verified PR without waiting for CI or merging')
+    parser.add_argument('--prepare-only', action='store_true', help='retain a paused intake without running the task')
+    parser.add_argument('--require-root-cause', action='store_true', help='require an independent root-cause comparison for a new bug')
+    parser.add_argument('--swarm-manifest', help='required coverage manifest with baseline and candidate lanes')
+    parser.add_argument('--swarm-sha256', help='approved SHA-256 of the coverage manifest')
+    parser.add_argument('--model-profile', help='explicitly approved local role model profile')
+    parser.add_argument('--model-profile-sha256', help='SHA-256 of the approved model profile')
+    parser.add_argument('--criterion', action='append', default=[], metavar='ID=TEXT',
+                        help='freeze an acceptance criterion at intake; may be repeated')
     parser.add_argument('--required-ci-workflow', action='append', dest='required_ci_workflows',
                         help='GitHub Actions workflow name required for delivery; may be repeated')
     parser.add_argument('--ci-skip-policy', choices=cli.CI_SKIP_POLICIES)
@@ -317,7 +512,20 @@ def main(argv=None):
     parser.add_argument('--candidate-image')
     parser.add_argument('--build-source-image', action='store_true')
     parser.add_argument('--memory-mb', type=int, default=2048)
+    parser.add_argument('--feature-manifest', help='authorized Feature handoff manifest for a new feature task')
+    parser.add_argument('--feature-sha256', help='expected SHA-256 of the authorized Feature handoff manifest')
+    parser.add_argument('--feature-arena-out', help='run an approved two-design comparison before Feature verification')
+    parser.add_argument('--visual-baseline', help='frozen screenshot baseline record for this new UI task')
+    parser.add_argument('--visual-baseline-sha256', help='expected SHA-256 of the screenshot baseline record')
+    parser.add_argument('--refactor-contract', help='completed frozen refactoring contract')
+    parser.add_argument('--refactor-contract-sha256', help='expected SHA-256 of the frozen refactoring contract')
     args = parser.parse_args(argv)
+    criteria = []
+    for item in args.criterion:
+        key, separator, text = item.partition('=')
+        if not separator or not key.strip() or not text.strip():
+            parser.error('--criterion requires ID=TEXT')
+        criteria.append({'id': key, 'text': text})
     result = start(task_id=args.id, repo=args.repo, issue_file=args.issue_file, issue_url=args.issue_url,
                    source=args.source, kind=args.kind, surface=args.surface, iterations=args.iterations,
                    seconds=args.seconds, image=args.image, pr_repo=args.pr_repo, tasks_root=args.tasks_root,
@@ -325,7 +533,14 @@ def main(argv=None):
                    candidate_image=args.candidate_image, build_source_image=args.build_source_image,
                    memory_mb=args.memory_mb, log_files=args.log_file, screenshot_files=args.screenshot,
                    required_ci_workflows=args.required_ci_workflows, publish_only=args.publish_only,
-                   ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason)
+                   ci_skip_policy=args.ci_skip_policy, ci_skip_reason=args.ci_skip_reason,
+                   feature_manifest=args.feature_manifest, feature_sha256=args.feature_sha256,
+                   feature_arena_out=args.feature_arena_out, visual_baseline=args.visual_baseline,
+                   visual_baseline_sha256=args.visual_baseline_sha256, refactor_contract=args.refactor_contract,
+                   refactor_contract_sha256=args.refactor_contract_sha256, prepare_only=args.prepare_only,
+                   criteria=criteria, require_root_cause=args.require_root_cause,
+                   swarm_manifest=args.swarm_manifest, swarm_sha256=args.swarm_sha256,
+                   model_profile=args.model_profile, model_profile_sha256=args.model_profile_sha256)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

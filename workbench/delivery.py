@@ -13,12 +13,20 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from workbench import cli, workflow
+from workbench import cli, run_control, workflow
 from workbench.task_lock import locked_task
 
 
 class DeliveryError(Exception):
     pass
+
+
+class WaitingForWorkflows(DeliveryError):
+    """A stack may poll this exact PR again before attempting a write."""
+
+
+class GitHubWriteNotStarted(DeliveryError):
+    """The local process could not launch and sent no request."""
 
 
 def candidate_diff(repo, base, head):
@@ -123,7 +131,7 @@ class GitHub:
         except subprocess.TimeoutExpired as exc:
             raise DeliveryError('merge outcome is unknown after timeout; inspect the PR before retrying') from exc
         except OSError as exc:
-            raise DeliveryError(f'merge command could not start: {exc}') from exc
+            raise GitHubWriteNotStarted(f'merge command could not start: {exc}') from exc
         if process.returncode:
             raise DeliveryError(f'merge refused: {process.stderr.strip()}')
 
@@ -152,7 +160,7 @@ def require_actions_disabled(github, repo):
         raise DeliveryError('cannot verify destination GitHub Actions is disabled') from error
 
 
-def require_local_write(task_path, expected, head, github, repo):
+def require_local_write(task_path, expected, head, github, repo, *, verified_benny_pause=False):
     """Revalidate local-only evidence and execution settings immediately before a write."""
     if not expected.get('local_gate'):
         return
@@ -161,7 +169,10 @@ def require_local_write(task_path, expected, head, github, repo):
         latest = cli.read(Path(task_path))
         if latest != expected:
             raise DeliveryError('task identity, policy or evidence changed before local-only write')
-        checked_head, errors = cli.gate(latest, head)
+        gate = cli.gate
+        if verified_benny_pause and latest.get('benny_reproduction') and latest.get('status') == 'paused':
+            gate = cli.evidence_gate
+        checked_head, errors = gate(latest, head)
         if errors or checked_head != head:
             raise DeliveryError('local evidence or candidate changed before write')
         _independent_verification(latest, head)
@@ -173,6 +184,15 @@ def require_local_write(task_path, expected, head, github, repo):
     require_actions_disabled(github, repo)
     # Network inspection can take time; re-read the task and all report hashes afterward.
     verify()
+
+
+def require_replay_write(task_path, data, repo, authority, action, *, number=None, previous=None):
+    if 'baseline_replay' not in data and authority is None:
+        return
+    from workbench.task_replay_delivery import ReplayAuthority
+    if 'baseline_replay' not in data or not isinstance(authority, ReplayAuthority):
+        raise DeliveryError('verification-only task requires an approved queue replay for remote writes')
+    authority.check(task_path, repo, action, number, previous)
 
 
 def _fast_forward_push(workspace, remote, base, head, *, timeout=120):
@@ -217,10 +237,15 @@ def own_issue_number(source, repo):
 
 
 @locked_task('task_path')
-def close_verified_issue(task_path, repo, pr_number, github=None):
+def close_verified_issue(task_path, repo, pr_number, github=None, *, replay_authority=None):
     """Close a specified issue only after its exact candidate PR is merged."""
+    run_control.admit(task_path, DeliveryError)
     github = github or GitHub()
     data = cli.read(Path(task_path))
+    require_refactor_intake(task_path, data)
+    if 'verification_target' in data:
+        raise DeliveryError('verification-only task does not authorize issue closure')
+    require_replay_write(task_path, data, repo, replay_authority, 'close', number=pr_number)
     issue = own_issue_number(data.get('source'), repo) if data.get('kind') == 'bug' else None
     if issue is None:
         return {'closed': False, 'reason': 'task does not name an issue in the destination repository'}
@@ -229,7 +254,7 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
     head, errors = cli.gate(data, 'HEAD')
     if errors:
         raise DeliveryError('issue closure blocked by evidence gate: ' + '; '.join(errors))
-    _independent_verification(data, head)
+    review = _independent_verification(data, head)
     if isinstance(github, GitHub):
         github.set_task_deadline(data)
     owner = repo.split('/')[0]
@@ -253,13 +278,16 @@ def close_verified_issue(task_path, repo, pr_number, github=None):
     if errors:
         raise DeliveryError('issue closure blocked before write: ' + '; '.join(errors))
     require_local_write(task_path, data, head, github, repo)
+    run_control.admit(task_path, DeliveryError)
+    recheck_refactor_write(task_path, data, head, repo, review)
+    require_replay_write(task_path, data, repo, replay_authority, 'close', number=pr_number)
     updated = github.close_issue(repo, issue)
     if updated.get('number') != issue or updated.get('state') != 'closed':
         raise DeliveryError('issue close result was not confirmed; inspect before retrying')
     return {'closed': True, 'issue': issue, 'already_closed': False}
 
 
-def _valid_run(evidence, actor, kind, commit, repo):
+def _valid_run(evidence, actor, kind, commit, repo, *, regression=None):
     if evidence['actor'] != actor or evidence['kind'] != kind or evidence['commit'] != commit:
         return False
     try:
@@ -271,8 +299,12 @@ def _valid_run(evidence, actor, kind, commit, repo):
     source_mode = report.get('source_mode')
     if report.get('source_verified_commit') != commit or report.get('workspace') != str(Path(repo).resolve()):
         return False
+    if regression is not None:
+        from workbench import tdd
+        if not tdd.matches(report, regression, kind):
+            return False
     if source_mode == 'workspace':
-        if not workflow._workspace_command(report.get('command')):
+        if regression is None and not workflow._workspace_command(report.get('command')):
             return False
     elif source_mode == 'image':
         image_id = report.get('verified_image_id')
@@ -283,9 +315,45 @@ def _valid_run(evidence, actor, kind, commit, repo):
     return (report.get('actor') == actor and report.get('kind') == kind
             and report.get('commit') == commit and report.get('container_created') is True
             and report.get('cleanup_confirmed') is True and not report.get('timed_out')
+            and not workflow.docker_oom(report)
             and not report.get('error') and report.get('exit_code') == report.get('expected_exit')
             and (not marker or marker in output)
             and (kind != 'reproduction' or bool(marker)))
+
+
+def validate_regression(data, head, reports, assessments, verifier):
+    """Check the unchanged test and both roles' execution records before delivery."""
+    from workbench import tdd
+    spec = data.get('regression_test')
+    try:
+        tdd.verify_test(data['repo'], spec, head)
+        tdd.require_native_context(data, spec, 'image', head, 'tdd-green')
+        tdd.validate_citations(assessments)
+        seen = set()
+        modes = set()
+        images = {}
+        for label, kind in tdd.REPORTS.items():
+            commit = data['base_commit'] if kind == 'tdd-red' else head
+            for key, actor in ((label, verifier), (label + '_OWNER', data['implementer'])):
+                ref = reports.get(key)
+                if not isinstance(ref, dict) or not isinstance(ref.get('path'), str):
+                    raise tdd.RegressionError('focused regression report is missing')
+                path = ref['path']
+                if (path in seen or cli.digest(path) != ref.get('sha256')
+                        or not any(item.get('path') == path and item.get('sha256') == ref['sha256']
+                                   and not item.get('superseded') and _valid_run(
+                                       item, actor, kind, commit, data['repo'], regression=spec)
+                                   for item in data['evidence'])):
+                    raise tdd.RegressionError('focused regression run is invalid or no longer matches its evidence')
+                seen.add(path)
+                run = cli.read(Path(path))
+                modes.add(run['source_mode'])
+                images.setdefault(kind, set()).add(run['image'])
+        if (len(modes) != 1 or any(len(ids) != 1 for ids in images.values())
+                or (modes == {'workspace'} and images['tdd-red'] != images['tdd-green'])):
+            raise tdd.RegressionError('focused regression roles used different execution environments')
+    except (OSError, TypeError, ValueError, cli.WorkbenchError) as error:
+        raise DeliveryError(str(error)) from error
 
 
 def _valid_screenshot(evidence, actor, commit, repo):
@@ -304,8 +372,127 @@ def _valid_screenshot(evidence, actor, commit, repo):
     return _valid_run({**evidence, 'path': report_path}, actor, 'screenshot', commit, repo)
 
 
+def validate_impact_review(data, target, impact, reports, actor):
+    """Bind the reviewer's regression claim to source and independent candidate runs."""
+    if 'impact_review' not in data:
+        return
+    if (data['impact_review'] != 'runtime-v1' or actor == data['implementer']
+            or not isinstance(impact, dict)):
+        raise DeliveryError('independent impact review is required')
+    for key in ('surface', 'invariant', 'observed'):
+        value = impact.get(key)
+        if not isinstance(value, str) or not value.strip() or len(value) > 1000 or '\0' in value:
+            raise DeliveryError(f'impact review needs a bounded {key}')
+    path, line = impact.get('path'), impact.get('line')
+    if (not isinstance(path, str) or len(path) > 500 or
+            any(part in ('', '.', '..') for part in path.split('/')) or
+            any(ord(char) < 32 for char in path) or type(line) is not int or line < 1):
+        raise DeliveryError('impact review needs a candidate source location')
+    try:
+        blob = f'{target}:{path}'
+        if cli.git(data['repo'], 'cat-file', '-t', blob, timeout=10) != 'blob':
+            raise DeliveryError('impact source location is not a committed file')
+        if int(cli.git(data['repo'], 'cat-file', '-s', blob, timeout=10)) > 512_000:
+            raise DeliveryError('impact source location exceeds the review bound')
+        source = subprocess.run(['git', '-C', str(data['repo']), 'cat-file', 'blob', blob],
+                                capture_output=True, timeout=10, check=True).stdout
+        line_count = source.count(b'\n') + bool(source and not source.endswith(b'\n'))
+        if b'\0' in source or line > line_count:
+            raise DeliveryError('impact source line is absent from the candidate text')
+    except (OSError, ValueError, subprocess.SubprocessError, cli.WorkbenchError) as error:
+        raise DeliveryError('impact source location cannot be verified') from error
+
+    refs = impact.get('evidence')
+    if (not isinstance(refs, list) or not 1 <= len(refs) <= 3 or
+            any(not isinstance(ref, str) or ref not in reports for ref in refs)):
+        raise DeliveryError('impact review must cite independent candidate execution reports')
+    for ref in refs:
+        recorded = reports[ref]
+        if not isinstance(recorded, dict) or not isinstance(recorded.get('path'), str):
+            raise DeliveryError('impact evidence must be a sandbox execution report')
+        try:
+            digest = cli.digest(recorded['path'])
+        except cli.WorkbenchError as error:
+            raise DeliveryError('impact evidence is unreadable') from error
+        if digest != recorded.get('sha256'):
+            raise DeliveryError('impact evidence bytes changed after review')
+        if not any(not e.get('superseded') and e.get('path') == recorded['path']
+                   and e.get('sha256') == digest
+                   and e.get('kind') in ('resolution', 'test-result')
+                   and _valid_run(e, actor, e['kind'], target, data['repo'])
+                   for e in data['evidence']):
+            raise DeliveryError('impact evidence is stale or not an independent candidate run')
+
+
+def feature_resolution_labels(data, target, reports, actor):
+    paths = set()
+    for evidence in data['evidence']:
+        if evidence.get('superseded') or not _valid_run(evidence, actor, 'resolution', target, data['repo']):
+            continue
+        path = evidence['path']
+        try:
+            if cli.digest(path) == evidence['sha256']:
+                paths.add((path, evidence['sha256']))
+        except cli.WorkbenchError:
+            continue
+    return {label for label, report in reports.items() if isinstance(report, dict)
+            and isinstance(report.get('path'), str) and isinstance(report.get('sha256'), str)
+            and (report['path'], report['sha256']) in paths}
+
+
+def validate_feature_resolution(ids, assessments, labels):
+    missing = [item['id'] for item in assessments if item['id'] in ids
+               and not labels.intersection(item['evidence'])]
+    if missing:
+        raise DeliveryError('feature runtime criteria lack independent resolution citations: ' + ', '.join(missing))
+
+
+def require_feature_arena_delivery(data, feature, target, destination):
+    if not feature or not feature.get('arena'):
+        return
+    from workbench import feature_context
+    selection = feature['arena']
+    if selection['candidate'] != target:
+        raise DeliveryError('candidate differs from the verified Arena selection')
+    try:
+        feature_context.verify_arena_request(feature, Path(data['feature_context']['path']).parent / 'issue.txt')
+    except (OSError, ValueError, cli.WorkbenchError) as error:
+        raise DeliveryError(str(error)) from error
+    if destination is not None and selection['source_status'] == 'contested' and not selection['interrogation']:
+        raise DeliveryError('contested feature design requires Interrogate evidence before publication')
+
+
+def validate_phase_citations(assessments, reports, required):
+    for name, expected in required.items():
+        assessment = next((item for item in assessments if item['id'] == name), None)
+        if not assessment or not any(reports.get(label) == expected for label in assessment['evidence']):
+            raise DeliveryError(f'phase criterion {name} lacks its approved independent run citation')
+
+
 def _independent_verification(data, target, *, destination=None):
     """Require a structured PASS and independent container reruns, not a name alone."""
+    from workbench import bug_cause, feature_context, phase_contract, swarm, tdd, visual_parity
+    is_refactor = data.get('kind') == 'refactor'
+    if not is_refactor and ('refactor_contract' in data or 'refactor_result' in data):
+        raise DeliveryError('refactoring evidence requires a refactor task')
+    if is_refactor and {'id': cli.REFACTOR_CRITERION, 'text': cli.REFACTOR_CRITERION_TEXT,
+                        'revision': 1} not in data['criteria']:
+        raise DeliveryError('refactoring requires its approved behavior criterion')
+    refactor_proof = None
+    performance = None
+    try:
+        feature = feature_context.read(data)
+        phase_contract.require_delivery(data, target, destination=destination)
+        parity = visual_parity.require(data, target)
+        if is_refactor:
+            from workbench import refactor_delivery
+            refactor_proof = refactor_delivery.require(data, target)
+        if 'performance_contract' in data:
+            from workbench import perf_issue
+            performance = perf_issue.require(data, target)
+    except (OSError, ValueError, cli.WorkbenchError) as error:
+        raise DeliveryError(str(error)) from error
+    require_feature_arena_delivery(data, feature, target, destination)
     desired_ids = {criterion['id'] for criterion in data['criteria']}
     for item in data['evidence']:
         if (item.get('superseded') or item['kind'] != 'independent-review' or item['commit'] != target
@@ -313,13 +500,19 @@ def _independent_verification(data, target, *, destination=None):
                 or item['criteria_digest'] != cli.criteria_digest(data)):
             continue
         try:
+            if (feature or parity or refactor_proof or performance) and cli.digest(item['path']) != item['sha256']:
+                continue
             report = json.loads(Path(item['path']).read_text())
-        except (OSError, ValueError):
+        except (OSError, ValueError, cli.WorkbenchError):
             continue
         if (report.get('verdict') != 'PASS' or report.get('candidate_commit') != target
                 or report.get('baseline_commit') != data['base_commit']
                 or set(report.get('criteria', [])) != desired_ids
                 or report.get('criterion_digest') != cli.criteria_digest(data)):
+            continue
+        if report.get('visual_parity_sha256') != (parity['sha256'] if parity else None):
+            continue
+        if report.get('performance_result_sha256') != (performance['artifact']['sha256'] if performance else None):
             continue
         assessments, reports = report.get('assessments'), report.get('reports')
         if not isinstance(assessments, list) or len(assessments) != len(desired_ids) or not isinstance(reports, dict):
@@ -365,9 +558,47 @@ def _independent_verification(data, target, *, destination=None):
         if not valid_assessments or seen != desired_ids or not any(ref != 'DIFF' for ref in cited):
             continue
         actor = item['actor']
+        if refactor_proof:
+            assessment = next((entry for entry in assessments if entry['id'] == cli.REFACTOR_CRITERION), None)
+            if (report.get('refactor_report_sha256') != refactor_proof['sha256']
+                    or reports.get('REFAC') != refactor_proof
+                    or not assessment or 'REFAC' not in assessment['evidence']
+                    or not any(not evidence.get('superseded') and evidence.get('kind') == 'runtime-log'
+                               and evidence.get('commit') == target and evidence.get('actor') == actor
+                               and evidence.get('path') == refactor_proof['path']
+                               and evidence.get('sha256') == refactor_proof['sha256']
+                               for evidence in data['evidence'])):
+                continue
+        try:
+            validate_impact_review(data, target, report.get('impact'), reports, actor)
+            if (data.get('root_cause') is not None or data.get('coverage_swarm') is not None) and cli.digest(item['path']) != item['sha256']:
+                continue
+            bug_cause.validate(data, target, report.get('causal_verification'), actor)
+            swarm.require_task(data, target, report.get('coverage_swarm'))
+            if data.get('regression_test') is not None:
+                if (report.get('regression_sha256') != tdd.digest(data['regression_test'])
+                        or cli.digest(item['path']) != item['sha256']):
+                    continue
+                validate_regression(data, target, reports, assessments, actor)
+            elif 'regression_sha256' in report:
+                continue
+            if data.get('phase_result'):
+                result = cli.read(Path(data['phase_result']['path']))['record']
+                validate_phase_citations(assessments, reports, {name: result[name] for name in ('unit', 'live')})
+        except (DeliveryError, cli.WorkbenchError, KeyError, TypeError, ValueError, OSError):
+            continue
         required = [('test-result', target)]
-        if data['kind'] == 'bug':
+        if data['kind'] == 'bug' or 'verification_target' in data:
             required += [('reproduction', data['base_commit']), ('resolution', target)]
+        elif feature:
+            required.append(('resolution', target))
+        if feature:
+            try:
+                feature_context.verify_review(data, target, report.get('architecture'))
+                labels = feature_resolution_labels(data, target, reports, actor)
+                validate_feature_resolution(feature_context.runtime_criteria(feature), assessments, labels)
+            except (OSError, ValueError, cli.WorkbenchError, DeliveryError):
+                continue
         if all(any(_valid_run(evidence, actor, kind, commit, data['repo']) for evidence in data['evidence'])
                for kind, commit in required):
             if data.get('surface') == 'ui':
@@ -383,8 +614,67 @@ def _independent_verification(data, target, *, destination=None):
                     verify_openclaw.require(data, target, destination, review_item=item)
                 except verify_openclaw.GatewayGateError:
                     continue
-            return
+            return item
     raise DeliveryError('independent PASS and independent sandbox reruns are not proven')
+
+
+def recheck_refactor_write(task_path, expected, head, destination, review):
+    """Keep the same approved contract and independent review before remote mutations."""
+    require_refactor_intake(task_path, expected)
+    if expected.get('root_cause') or expected.get('coverage_swarm'):
+        latest = cli.read(Path(task_path))
+        require_refactor_intake(task_path, latest)
+        if any(latest.get(key) != expected.get(key) for key in ('root_cause', 'coverage_swarm')) or _independent_verification(
+                latest, head, destination=destination) != review:
+            raise DeliveryError('independent runtime evidence changed before GitHub write')
+    if expected.get('kind') != 'refactor':
+        return
+    latest = cli.read(Path(task_path))
+    if (latest.get('kind') != 'refactor'
+            or any(latest.get(key) != expected.get(key) for key in ('refactor_contract', 'refactor_result'))):
+        raise DeliveryError('refactoring contract or result changed before GitHub write')
+    if _independent_verification(latest, head, destination=destination) != review:
+        raise DeliveryError('refactoring independent review changed before GitHub write')
+
+
+def require_refactor_intake(task_path, data):
+    """Keep approved task-level verification modes bound to the recorded intake."""
+    path = Path(task_path).parent / 'input-stage.json'
+    if path.is_symlink():
+        raise DeliveryError('task intake path changed before GitHub operation')
+    if not path.exists():
+        if data.get('kind') == 'refactor':
+            raise DeliveryError('frozen refactoring intake is missing before GitHub operation')
+        if data.get('root_cause'):
+            raise DeliveryError('frozen causal verification intake is missing before GitHub operation')
+        if data.get('coverage_swarm'):
+            raise DeliveryError('frozen coverage swarm intake is missing before GitHub operation')
+        return
+    try:
+        stage = cli.read(path)
+    except (AttributeError, OSError, TypeError, cli.WorkbenchError) as error:
+        raise DeliveryError('task intake could not be verified before GitHub operation') from error
+    from workbench import bug_cause, swarm
+    try:
+        bug_cause.require_intake(data, stage)
+        swarm.intake(data, stage)
+    except (bug_cause.CauseError, *swarm.ERRORS) as error:
+        raise DeliveryError(str(error)) from error
+    if 'refactor_contract' in stage or data.get('kind') == 'refactor':
+        if (data.get('kind') != 'refactor' or not stage.get('refactor_contract')
+                or data.get('refactor_contract') != stage['refactor_contract']):
+            raise DeliveryError('task does not match its frozen refactoring intake')
+
+
+def recheck_visual_write(task_path, expected, head, destination):
+    """Keep a frozen visual binding through the last preflight before a remote mutation."""
+    if not expected.get('visual_baseline'):
+        return
+    latest = cli.read(Path(task_path))
+    if (latest.get('visual_baseline') != expected['visual_baseline']
+            or latest.get('visual_parity_result') != expected.get('visual_parity_result')):
+        raise DeliveryError('visual parity binding changed before GitHub write')
+    _independent_verification(latest, head, destination=destination)
 
 
 def _checks_pass(pull, *, required=True):
@@ -660,38 +950,56 @@ def _openclaw_checks_pass(github, repo, number, pull, data, head, required):
                              for job in jobs if job.get('conclusion') == 'skipped'}
 
 
-def _required_workflows_pass(github, repo, number, pull, data, head, required):
+def _required_workflows_pass(github, repo, number, pull, data, head, required, *,
+                             base_branch='main', report_pending=False):
     """Verify the latest named PR runs directly; other successful checks do not imply CI ran."""
+    pending = []
+    active = ('queued', 'in_progress', 'waiting', 'requested', 'pending')
     for name in required:
         runs = github._call('run', 'list', '--repo', repo, '--workflow', name,
                             '--commit', head, '--event', 'pull_request',
                             '--json', 'databaseId,workflowName,headSha,headBranch,status,conclusion,event',
                             '--limit', '2')
+        if report_pending and runs == []:
+            pending.append(name)
+            continue
         if not isinstance(runs, list) or not runs or not isinstance(runs[0], dict):
             return False
         run = runs[0]
         run_id = run.get('databaseId')
+        unfinished = (report_pending and run.get('status') in active
+                      and run.get('conclusion') in (None, ''))
         if (type(run_id) is not int or run_id < 1 or run.get('workflowName') != name or
                 run.get('headSha') != head or run.get('headBranch') != pull.get('headRefName') or
-                run.get('event') != 'pull_request' or run.get('status') != 'completed' or
-                run.get('conclusion') != 'success'):
+                run.get('event') != 'pull_request' or (not unfinished and
+                (run.get('status'), run.get('conclusion')) != ('completed', 'success'))):
             return False
         details = github._call('api', f'repos/{repo}/actions/runs/{run_id}')
         if (not isinstance(details, dict) or details.get('id') != run_id or
                 type(details.get('run_attempt')) is not int or details['run_attempt'] != 1 or
                 details.get('name') != name or details.get('head_sha') != head or
                 details.get('head_branch') != pull.get('headRefName') or
-                details.get('event') != 'pull_request' or details.get('status') != 'completed' or
-                details.get('conclusion') != 'success'):
+                details.get('event') != 'pull_request'):
             return False
         prs = details.get('pull_requests')
-        if not isinstance(prs, list) or not any(
+        bound = isinstance(prs, list) and any(
                 isinstance(pr, dict) and pr.get('number') == int(number) and
-                isinstance(pr.get('base'), dict) and pr['base'].get('ref') == 'main' and
+                isinstance(pr.get('base'), dict) and pr['base'].get('ref') == base_branch and
                 pr['base'].get('sha') == data['base_commit'] and
                 isinstance(pr.get('head'), dict) and pr['head'].get('ref') == pull.get('headRefName') and
-                pr['head'].get('sha') == head for pr in prs):
+                pr['head'].get('sha') == head for pr in prs)
+        if unfinished and details.get('status') in active and details.get('conclusion') in (None, ''):
+            if not bound and prs != []:
+                return False
+            pending.append(name)
+            continue
+        if not bound or (details.get('status'), details.get('conclusion')) != ('completed', 'success'):
             return False
+        if unfinished:
+            # The run finished between listing and inspecting it. Freshly list it
+            # before trusting its jobs or authorizing a write.
+            pending.append(name)
+            continue
         # A successful workflow conclusion can conceal failures (for example,
         # a workflow-specific known-main-red exception). Check every actual job
         # from this exact attempt, with strict pagination and no unknown states.
@@ -706,24 +1014,54 @@ def _required_workflows_pass(github, repo, number, pull, data, head, required):
                   'conclusion', 'pull_requests')
         if not isinstance(latest, dict) or any(latest.get(key) != details.get(key) for key in stable):
             return False
+    if pending:
+        raise WaitingForWorkflows('required CI workflow pending: ' + ', '.join(pending))
     return True
 
 
 @locked_task('task_path')
-def guarded_merge(task_path, repo, number, github=None):
+def guarded_merge(task_path, repo, number, github=None, *, replay_authority=None):
+    return _guarded_merge(task_path, repo, number, github, replay_authority=replay_authority)
+
+
+def _merge_workflows(data, selected):
+    stored = data.get('required_ci_workflows')
+    if stored and selected and stored != selected:
+        raise DeliveryError('stack CI policy cannot replace the task policy')
+    try:
+        return workflow.validate_required_ci_workflows(
+            selected if stored is None else stored, required=not data.get('local_gate'))
+    except workflow.WorkflowError as error:
+        raise DeliveryError(str(error)) from error
+
+
+def _guarded_merge(task_path, repo, number, github, *, stack_binding=None, revalidate=None, deadline=None,
+                   replay_authority=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or int(number) < 1:
         raise DeliveryError('invalid repository or pull request number')
     github = github or GitHub()
     data = cli.read(Path(task_path))
+    require_refactor_intake(task_path, data)
+    run_control.admit(task_path, DeliveryError)
+    if 'benny_reproduction' in data:
+        raise DeliveryError('Benny repair tasks do not authorize merging')
+    if 'verification_target' in data and stack_binding is None:
+        raise DeliveryError('verification-only task does not authorize merging')
+    require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)
+    if stack_binding is not None and (not isinstance(stack_binding, dict) or not callable(revalidate)
+                                      or not {'head', 'base', 'head_branch'} <= stack_binding.keys()):
+        raise DeliveryError('a stack write requires a pinned member and an evidence recheck')
+    stored_workflows = data.get('required_ci_workflows')
+    selected_workflows = stack_binding.get('ci_workflows') if stack_binding else None
+    head_branch = stack_binding['head_branch'] if stack_binding else f"workbench/{data['id']}"
     local_policy = data.get('local_gate')
-    try:
-        required_workflows = workflow.validate_required_ci_workflows(data.get('required_ci_workflows'), required=not local_policy)
-    except workflow.WorkflowError as error:
-        raise DeliveryError(str(error)) from error
+    required_workflows = _merge_workflows(data, selected_workflows)
     head, issues = cli.gate(data, 'HEAD')
     if issues:
         raise DeliveryError('local evidence gate failed: ' + '; '.join(issues))
-    _independent_verification(data, head, destination=repo)
+    if stack_binding and (stack_binding['head'] != head or stack_binding['base'] != data['base_commit']):
+        raise DeliveryError('task does not match the exact stack revision')
+    review = _independent_verification(data, head, destination=repo)
     from workbench import verify_openclaw
     try:
         verify_openclaw.require(data, head, repo)
@@ -737,6 +1075,8 @@ def guarded_merge(task_path, repo, number, github=None):
             raise DeliveryError(str(error)) from error
     if isinstance(github, GitHub):
         github.set_task_deadline(data)
+        if deadline is not None:
+            github._deadline = min(github._deadline, deadline) if github._deadline is not None else deadline
     owner = repo.split('/')[0]
     if github.login().lower() != owner.lower():
         raise DeliveryError('only the signed-in personal account fork may be merged')
@@ -767,17 +1107,25 @@ def guarded_merge(task_path, repo, number, github=None):
             require_actions_disabled(github, repo)
         pull = github.pull(repo, number)
         if (pull.get('state') != 'OPEN' or pull.get('isDraft') or pull.get('isCrossRepository')
-                or pull.get('headRefName') != f"workbench/{data['id']}"
+                or pull.get('headRefName') != head_branch
                 or pull.get('headRefOid') != head or pull.get('baseRefName') != branch
                 or pull.get('baseRefOid') != data['base_commit']
                 or github.branch(repo, branch) != data['base_commit']
                 or pull.get('mergeStateStatus') not in (('CLEAN', 'UNSTABLE') if local_policy else ('CLEAN',))
-                or cli.read(Path(task_path)).get('required_ci_workflows') != required_workflows
+                or cli.read(Path(task_path)).get('required_ci_workflows') != stored_workflows
                 or cli.read(Path(task_path)).get('ci_skip_policy') != data.get('ci_skip_policy')
-                or cli.read(Path(task_path)).get('local_gate') != local_policy
-                or (not local_policy and not (_checks_pass(pull) or _openclaw_checks_pass(github, repo, number, pull, data, head, required_workflows)))
-                or (not local_policy and not _required_workflows_pass(github, repo, number, pull, data, head, required_workflows))):
+                or cli.read(Path(task_path)).get('local_gate') != local_policy):
             raise DeliveryError('PR head, base, CI or merge state changed or is not ready')
+        if not local_policy:
+            rollup_ready = _checks_pass(pull) or _openclaw_checks_pass(
+                github, repo, number, pull, data, head, required_workflows)
+            expecting_rollup = stack_binding is not None and pull.get('statusCheckRollup') == []
+            if ((not rollup_ready and not expecting_rollup) or
+                    not _required_workflows_pass(github, repo, number, pull, data, head, required_workflows,
+                                                 report_pending=stack_binding is not None)):
+                raise DeliveryError('PR head, base, CI or merge state changed or is not ready')
+            if expecting_rollup:
+                raise WaitingForWorkflows('GitHub has not attached the PR check rollup')
         if local_policy:
             try:
                 local_gate.validate(cli.read(Path(task_path)), head)
@@ -791,10 +1139,34 @@ def guarded_merge(task_path, repo, number, github=None):
     if issues:
         raise DeliveryError('evidence changed before merge: ' + '; '.join(issues))
     verify_remote()
+
+    def recheck_task_bindings():
+        latest = cli.read(Path(task_path))
+        maintenance = 'project_verification_maintenance'
+        if latest.get(maintenance) != data.get(maintenance):
+            raise DeliveryError('verification maintenance proof changed before merge')
+        if maintenance in latest:
+            from workbench import project_verify_delivery
+            try:
+                project_verify_delivery.require(latest, head)
+            except cli.WorkbenchError as error:
+                raise DeliveryError(str(error)) from error
+        if data.get('phase_binding'):
+            if latest.get('phase_binding') != data['phase_binding']:
+                raise DeliveryError('approved phase changed before merge')
+            _independent_verification(latest, head, destination=repo)
+
     if protected:
         _, issues = cli.gate(cli.read(Path(task_path)), head)
         if issues:
             raise DeliveryError('evidence or budget changed before merge: ' + '; '.join(issues))
+        run_control.admit(task_path, DeliveryError)
+        if revalidate:
+            revalidate()
+        recheck_task_bindings()
+        recheck_visual_write(task_path, data, head, repo)
+        recheck_refactor_write(task_path, data, head, repo, review)
+        require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)
         github.merge(repo, number, head)
     else:
         # Do not use an indirect merge if protection appeared while validating.
@@ -808,6 +1180,13 @@ def guarded_merge(task_path, repo, number, github=None):
             raise DeliveryError('evidence or budget changed before push: ' + '; '.join(issues))
         if local_policy:
             require_local_write(task_path, data, head, github, repo)
+        run_control.admit(task_path, DeliveryError)
+        if revalidate:
+            revalidate()
+        recheck_task_bindings()
+        recheck_visual_write(task_path, data, head, repo)
+        recheck_refactor_write(task_path, data, head, repo, review)
+        require_replay_write(task_path, data, repo, replay_authority, 'merge', number=number)
         github.fast_forward(data['repo'], repo, data['base_commit'], head)
     try:
         final = github.pull(repo, number)

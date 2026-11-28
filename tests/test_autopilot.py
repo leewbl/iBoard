@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import patch
 from test_runner import tiny_png
 
-from workbench import autopilot, cli, delivery, workflow
+from workbench import (autopilot, bug_cause, cli, delivery, intent_review, pickup, publish, run_control, stack_verify,
+                       tdd, visual_parity, workflow)
 
 
 class CompletedCI:
@@ -106,6 +107,22 @@ class AutopilotTests(unittest.TestCase):
         autopilot._wait_for_ci(self.task, 'user/fork', 1, 'a' * 40, github=GitHub(), sleep=delays.append)
         self.assertEqual(len(delays), 6)
         self.assertTrue(all(0 < delay <= 30 for delay in delays))
+
+    def test_hold_during_ci_wait_stops_the_next_remote_poll(self):
+        pending = self.ci_pull([{'status': 'QUEUED', 'conclusion': ''}])
+        calls = []
+
+        class GitHub(CompletedCI):
+            def pull(self, repo, number):
+                calls.append((repo, number))
+                return pending
+
+        def held_while_sleeping(_delay):
+            run_control.hold(self.task, 'stop during CI observation')
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'operator hold'):
+            autopilot._wait_for_ci(self.task, 'user/fork', 1, 'a' * 40, github=GitHub(), sleep=held_while_sleeping)
+        self.assertEqual(calls, [('user/fork', 1)])
 
     def test_ci_wait_fails_after_other_checks_finish(self):
         pending = self.ci_pull([{'status': 'QUEUED'}, {'status': 'COMPLETED', 'conclusion': 'FAILURE', 'name': 'test'}])
@@ -393,11 +410,31 @@ class AutopilotTests(unittest.TestCase):
                            'cleanup_confirmed':True, 'timed_out':False, 'exit_code':expect_exit,
                            'expected_exit':expect_exit, 'stdout':marker, 'expected_marker':marker,
                            'workspace':str(self.workspace), 'command':command, 'source_mode':'workspace',
-                           'source_verified_commit':commit})
+                           'source_verified_commit':commit, 'image':image, 'schema':cli.SCHEMA,
+                           'create_stdout': f'{len(self.calls):064x}\n', 'create_stdout_truncated':False,
+                           'workspace_read_only':True})
         cli.evidence_add(argparse.Namespace(file=str(report), kind=kind, commit=commit,
                                             actor=actor, description=description, criterion=[]), data)
         cli.write(task, data)
         return {'report':str(report), 'commit':commit, 'kind':kind}
+
+    def test_hold_during_implementation_preserves_the_candidate_without_starting_checks(self):
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if not read_only:
+                run_control.hold(self.task, 'wait after the admitted edit')
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'operator hold'):
+            autopilot.run(self.task, self.issue, 'local-image', model=model, check=self.check)
+        data = cli.read(self.task)
+        state = cli.read(self.task.with_name('autopilot.json'))
+        self.assertEqual((state['phase'], data['status'], data['iterations']), ('verify', 'paused', 1))
+        self.assertEqual(state['candidate_commit'], cli.sha(self.workspace, 'HEAD'))
+        self.assertEqual(cli.git(self.workspace, 'status', '--porcelain'), '')
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'fixed')
+        self.assertNotIn('final-review', self.calls)
+        self.assertEqual({item['kind'] for item in data['evidence']}, {'reproduction'})
 
     def test_failed_reproduction_stops_before_modification(self):
         def fail(**kwargs):
@@ -407,6 +444,391 @@ class AutopilotTests(unittest.TestCase):
         self.assertNotIn('implement', self.calls)
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
         self.assertEqual(cli.read(self.task)['status'], 'paused')
+
+    def _causal_plan(self):
+        data = cli.read(self.task)
+        data['root_cause'] = bug_cause.MODE
+        cli.write(self.task, data)
+        cli.write(self.task.with_name('input-stage.json'), {'schema': cli.SCHEMA, 'root_cause': bug_cause.MODE,
+                                                            'run_settings': {'source_mode': 'workspace'}})
+        source = {'path': 'code.txt', 'line': 1}
+        trigger = ['node', '/workspace/repro.js', 'trigger']
+        for name in ('reproduction', 'resolution'):
+            self.plan[name]['command'] = trigger
+        self.plan['root_cause'] = {'mechanism': {**source, 'claim': 'Capacity comparison admits one extra job.'},
+                                   'probes': [
+            {'id': name, 'alternative': {**source, 'claim': reason},
+             'control': {'command': [*trigger[:-1], name], 'marker': name.upper(), 'exit_code': 0}}
+            for name, reason in [('lane', 'Commands are counted in the wrong lane.'),
+                                 ('settle', 'Settled tasks never release their slot.')]]}
+        return {'mechanism': 'supported', 'trigger_quote': 'BROKEN', 'probes': {
+            name: {'verdict': 'ruled-out', 'reason': 'The observed control isolates this behavior.',
+                   'quote': name.upper()} for name in ('lane', 'settle')}}
+
+    def _causal_model(self, verdict):
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'actual baseline run' in prompt:
+                for name in ('BASELINE_lane_VERIFIER', 'BASELINE_settle_VERIFIER'):
+                    self.assertIn(name, prompt)
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_verdict': verdict})
+            elif 'Implement this explicitly' in prompt:
+                self.assertIn('independently established mechanism', prompt)
+            elif 'CAUSAL CONTRACT AND VERDICT' in prompt:
+                self.assertIn('CANDIDATE_PROBE_settle', prompt)
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_fixed': True,
+                                               'causal_explanation': 'The change corrects the comparison.'})
+            return result
+        return model
+
+    def test_every_causal_probe_is_reviewed_and_replayed_before_local_handoff(self):
+        verdict = self._causal_plan()
+        calls = []
+        model = self._causal_model(verdict)
+
+        def retry_fixture(workspace, prompt, timeout, *, read_only):
+            result = model(workspace, prompt, timeout, read_only=read_only)
+            if 'actual baseline run' in prompt:
+                calls.append(prompt)
+                if len(calls) == 1:
+                    result['stdout'] += '\nUnexpected commentary.'
+            return result
+
+        result = autopilot.run(self.task, self.issue, 'sha256:' + 'a' * 64, model=retry_fixture,
+                               check=self.check, local_handoff=True)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[1].startswith(calls[0] + '\nThe previous response'))
+        data = cli.read(self.task)
+        item = delivery._independent_verification(data, result['candidate_commit'])
+        record = json.loads(Path(item['path']).read_bytes())['causal_verification']
+        self.assertEqual(set(record['probe_runs']), {'lane', 'settle'})
+        self.assertEqual(record['baseline']['verdict'], verdict)
+        for evidence in (record, record['baseline']):
+            self.assertEqual([len(pair) for pair in evidence['probe_runs'].values()], [2, 2])
+
+    def test_unresolved_causal_probe_blocks_implementation(self):
+        verdict = self._causal_plan()
+        verdict['probes']['settle']['verdict'] = 'inconclusive'
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'did not rule out hypothesis settle'):
+            autopilot.run(self.task, self.issue, 'sha256:' + 'a' * 64, model=self._causal_model(verdict), check=self.check)
+        self.assertNotIn('implement', self.calls)
+        self.assertEqual(cli.read(self.task)['iterations'], 0)
+
+    def _run_cause_search(self, group, *, conflicting=False):
+        self._causal_plan()
+        self.plan['root_cause'] = {
+            'hypotheses': [{'id': name, 'claim': f'Mechanism {name} explains the fault.',
+                            'path': 'code.txt', 'line': 1} for name in ('a', 'b', 'c', 'd')],
+            'investigation': [
+                {'id': name, 'command': ['node', '/workspace/repro.js', name],
+                 'outcomes': {'low': {'marker': f'{name} LOW', 'exit_code': 0},
+                              'high': {'marker': f'{name} HIGH', 'exit_code': 3}},
+                 'predictions': dict(zip(('a', 'b', 'c', 'd'), predictions.split())),
+                 'candidate': {'marker': f'{name} HEALTHY', 'exit_code': 0}}
+                for name, predictions in [('left', 'low high high high'), ('group', 'low low high high'),
+                                          ('right', 'high high low high')]]}
+        expected = ['group', 'left' if group == 'low' else 'right']
+        surviving = 'a' if group == 'low' else 'c'
+        checks = []
+        review_prompts = []
+
+        def check(**kwargs):
+            self.calls.append(f'{kwargs["kind"]}:{kwargs["actor"]}')
+            command = kwargs['command']
+            case = command[-1]
+            evidence_group = group
+            if conflicting and kwargs['actor'] == 'independent-verifier':
+                evidence_group = 'high' if group == 'low' else 'low'
+
+            def runner(repo, image, command, timeout, **_):
+                fixed = (Path(repo) / 'code.txt').read_text() == 'fixed'
+                if 'observations' in kwargs:
+                    checks.append((case, fixed))
+                    observation = evidence_group if case == 'group' else 'low'
+                    selected = kwargs['observations'][observation]
+                    exit_code, stdout = selected['exit_code'], selected['marker']
+                else:
+                    if case in expected and kwargs['kind'] == 'runtime-log':
+                        checks.append((case, fixed))
+                    exit_code, stdout = kwargs['expect_exit'], kwargs['marker']
+                return {'workspace': str(self.workspace), 'image': image, 'command': command, 'exit_code': exit_code,
+                        'stdout': stdout, 'stderr': '', 'container_created': True, 'workspace_read_only': True,
+                        'create_stdout': f'{len(self.calls):064x}', 'create_stdout_truncated': False,
+                        'cleanup_confirmed': True, 'timed_out': False}
+
+            return workflow.run_check(**kwargs, runner=runner)
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'actual baseline run' in prompt:
+                review_prompts.append(prompt)
+                self.assertIn('CAUSAL SEARCH TRACE', prompt)
+                self.assertNotIn('BASELINE_' + ('right' if group == 'low' else 'left'), prompt)
+                excluded = ['c', 'd'] if group == 'low' else ['a', 'b']
+                verdict = {'mechanism': 'supported', 'trigger_quote': 'BROKEN', 'survivor': surviving, 'probes': {
+                    'group': {'verdict': 'ruled-out', 'reason': 'The group observation excludes the opposite branch.',
+                              'quote': f'group {group.upper()}', 'eliminated': excluded},
+                    expected[1]: {'verdict': 'ruled-out', 'reason': 'Only one hypothesis predicts this result.',
+                                  'quote': expected[1] + ' LOW', 'eliminated': ['b' if group == 'low' else 'd']}}}
+                if group == 'low' and len(review_prompts) == 1:
+                    verdict['trigger_quote'] += ' (exit zero)'
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_verdict': verdict})
+            elif 'CAUSAL CONTRACT AND VERDICT' in prompt:
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_fixed': True,
+                                               'causal_explanation': 'The exact trigger and selected controls pass.'})
+            return result
+
+        image = 'sha256:' + 'b' * 64
+        if conflicting:
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'baseline runs disagree on causal observation group'):
+                autopilot.run(self.task, self.issue, image, model=model, check=check, local_handoff=True)
+            self.assertNotIn('implement', self.calls)
+            self.assertEqual(checks, [('group', False), ('group', False)])
+            return
+        result = autopilot.run(self.task, self.issue, image, model=model, check=check, local_handoff=True)
+        self.assertEqual(checks, [(name, fixed) for fixed in (False, True) for name in expected for _ in range(2)])
+        if group == 'low':
+            self.assertEqual(len(review_prompts), 2)
+            self.assertTrue(review_prompts[1].startswith(review_prompts[0] + '\nThe previous response failed'))
+        data = cli.read(self.task)
+        head = result['candidate_commit']
+        receipt = delivery._independent_verification(data, head)
+        causal = json.loads(Path(receipt['path']).read_bytes())['causal_verification']
+        self.assertEqual(causal['baseline']['verdict']['survivor'], surviving)
+        with self.assertRaisesRegex(bug_cause.CauseError, 'strongest available split'):
+            causal['baseline']['search_trace'].reverse()
+            bug_cause.validate(data, head, causal, 'independent-verifier')
+
+    def test_cause_search_follows_the_low_branch_and_skips_unused_probe(self):
+        self._run_cause_search('low')
+
+    def test_cause_search_follows_the_high_branch_and_skips_unused_probe(self):
+        self._run_cause_search('high')
+
+    def test_cause_search_stops_on_disagreement_before_editing(self):
+        self._run_cause_search('low', conflicting=True)
+
+    def _focused_plan(self):
+        source = ("import assert from 'node:assert/strict';\n"
+                  "import { readFileSync } from 'node:fs';\n"
+                  "assert.equal(readFileSync('code.txt', 'utf8'), 'fixed', 'EXPECTED_FIXED_STATE');\n"
+                  "console.log('VERIFIED_FIXED_STATE');\n")
+        self.plan['tdd'] = {'path': 'scripts/code.regression.test.mjs', 'source': source,
+                            'red': 'EXPECTED_FIXED_STATE', 'green': 'VERIFIED_FIXED_STATE'}
+        return self.plan['tdd']
+
+    def _focused_sandbox(self, *, unrelated_failure=False, **kwargs):
+        kind = kwargs['kind']
+        if kind not in tdd.KINDS:
+            return self.check(**kwargs)
+
+        def container(workspace, image, command, timeout, **options):
+            self.calls.append(f"{kind}:{kwargs['actor']}")
+            self.assertEqual(command, tdd.COMMAND)
+            self.assertTrue(options['workspace_read_only'])
+            source = options['regression_source']
+            self.assertEqual(source, self.plan['tdd']['source'].encode())
+            self.assertEqual((Path(workspace) / 'code.txt').read_text(), 'broken' if kind == 'tdd-red' else 'fixed')
+            stdout, stderr = '', ''
+            if kind == 'tdd-red':
+                stderr = ('EXPECTED_FIXED_STATE\nAssertionError: unrelated assertion'
+                          if unrelated_failure else 'AssertionError: EXPECTED_FIXED_STATE')
+            else:
+                stdout = 'VERIFIED_FIXED_STATE'
+            return {'exit_code': 1 if kind == 'tdd-red' else 0, 'workspace': workspace, 'command': command,
+                    'image': 'sha256:' + 'a' * 64, 'container_created': True, 'cleanup_confirmed': True, 'stdout': stdout,
+                    'stderr': stderr, 'workspace_read_only': True, 'regression_sha256': hashlib.sha256(source).hexdigest()}
+
+        return workflow.run_check(**kwargs, runner=container)
+
+    def test_regression_freezes_test_before_implementation_and_binds_review_to_both_outcomes(self):
+        spec = self._focused_plan()
+
+        def model(workspace, prompt, timeout, *, read_only):
+            if 'Implement this explicitly' in prompt:
+                self.assertIn('tdd-red:independent-verifier', self.calls)
+                self.assertEqual((workspace / spec['path']).read_text(), spec['source'])
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'Cite TDD_RED and TDD_GREEN together' in prompt:
+                review = json.loads(result['stdout'])
+                review['assessments'][0]['evidence'] += ['TDD_RED', 'TDD_GREEN']
+                result['stdout'] = json.dumps(review)
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):
+            autopilot.run(self.task, self.issue, 'image', model=model, check=self._focused_sandbox)
+        data = cli.read(self.task)
+        head = cli.sha(self.workspace, 'HEAD')
+        self.assertFalse(cli.evidence_gate(data, head)[1])
+        self.assertEqual(cli.git(self.workspace, 'show', f"{head}:{spec['path']}"), spec['source'].strip())
+        item = delivery._independent_verification(data, head)
+        self.assertIn('Tdd Red', publish._pr_body(data, head))
+        report = cli.read(self.task.parent / 'autopilot.json')
+        self.assertEqual(report['phase'], 'delivery')
+        self.assertEqual(len([kind for kind in self.calls if kind.startswith('tdd-')]), 4)
+
+        path = Path(json.loads(Path(item['path']).read_text())['reports']['TDD_RED']['path'])
+        path.write_text(path.read_text().replace('EXPECTED_FIXED_STATE', 'UNRELATED_FAILURE'))
+        with self.assertRaisesRegex(delivery.DeliveryError, 'independent sandbox reruns'):
+            delivery._independent_verification(data, head)
+
+    def test_unrelated_failure_does_not_allow_focused_regression_to_reach_implementation(self):
+        self._focused_plan()
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'check failed'):
+            autopilot.run(self.task, self.issue, 'image', model=self.model,
+                          check=lambda **kwargs: self._focused_sandbox(unrelated_failure=True, **kwargs))
+        self.assertNotIn('implement', self.calls)
+        self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
+        self.assertEqual(cli.read(self.task)['status'], 'paused')
+
+    def test_implementation_cannot_weaken_the_frozen_regression(self):
+        spec = self._focused_plan()
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'Implement this explicitly' in prompt:
+                (workspace / spec['path']).write_text("console.log('VERIFIED_FIXED_STATE');\n")
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'changed the frozen focused regression'):
+            autopilot.run(self.task, self.issue, 'image', model=model, check=self._focused_sandbox)
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), cli.read(self.task)['base_commit'])
+        self.assertFalse(any(kind.startswith('tdd-green') for kind in self.calls))
+
+    def _pin_existing_pr(self):
+        base = cli.sha(self.workspace, 'HEAD')
+        (self.workspace / 'code.txt').write_text('fixed')
+        cli.git(self.workspace, 'add', 'code.txt')
+        cli.git(self.workspace, 'commit', '-qm', 'existing PR change')
+        head = cli.sha(self.workspace, 'HEAD')
+        cli.git(self.workspace, 'reset', '--hard', base)
+        frozen = self.task.with_name('issue.txt')
+        frozen.write_bytes(self.issue.read_bytes())
+        self.issue = frozen
+        self.task.with_name('input-base.txt').write_bytes(frozen.read_bytes())
+        data = cli.read(self.task)
+        data['source'] = data['original_source'] = 'https://github.com/user/fork/pull/12'
+        data['criteria'] = [{'id':'one', 'text':'correct behavior', 'revision':1}]
+        settings = {'image':'image', 'pr_repo':'user/fork', 'source_mode':'workspace',
+                    'candidate_image':None, 'build_source_image':False, 'memory_mb':2048}
+        request_digest = cli.digest(frozen)
+        cli.write(self.task.with_name('input-stage.json'), {
+            'schema':cli.SCHEMA, 'phase':'ready', 'base_digest':request_digest,
+            'request_digest':request_digest, 'input_digest':None, 'run_settings':settings,
+        })
+        data['verification_target'] = {'repo':'user/fork', 'pr':12, 'head':head, 'base':base,
+                                       'request_digest':request_digest, 'criterion_digest':cli.criteria_digest(data),
+                                       'settings':settings, 'plan':self.plan}
+        cli.write(self.task, data)
+        return head, base
+
+    def test_existing_pr_replays_verification_without_implementing_or_delivering(self):
+        head, base = self._pin_existing_pr()
+        never = lambda *args: self.fail('tried to write to GitHub during verification')
+        result = autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork',
+                               model=self.model, check=self.check, publisher=never, merge=never, closer=never)
+        self.assertEqual(result['phase'], 'complete')
+        self.assertEqual(result['verification']['head'], head)
+        self.assertEqual(result['verification']['base'], base)
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), head)
+        self.assertNotIn('implement', self.calls)
+        self.assertNotIn('plan', self.calls)
+        self.assertEqual(pickup.inspect(self.task)['outcome'], 'verification-recorded')
+        metadata = {'number':12, 'head':head, 'base':base}
+        proof = stack_verify._proof('user/fork', metadata, self.task)
+        self.assertEqual(proof['status'], 'verified')
+        self.assertEqual(proof['review_sha256'], result['verification']['review_sha256'])
+        self.assertEqual(stack_verify._proof('user/fork', {**metadata,'base':'0'*40}, self.task)['status'], 'stale')
+        with self.assertRaisesRegex(publish.PublishError, 'verification-only'):
+            publish.publish(self.task, 'user/fork')
+        with self.assertRaisesRegex(delivery.DeliveryError, 'verification-only'):
+            delivery.guarded_merge(self.task, 'user/fork', 12)
+
+    def test_failed_existing_pr_cannot_repair_or_rebind_the_pair_on_resume(self):
+        head, _ = self._pin_existing_pr()
+
+        def check(**args):
+            if args['kind'] == 'resolution':
+                raise workflow.WorkflowError('candidate behavior did not pass')
+            return self.check(**args)
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'existing PR verification failed'):
+            autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork', model=self.model, check=check)
+        state = cli.read(self.task.with_name('autopilot.json'))
+        self.assertNotIn('verification', state)
+        self.assertEqual(state['phase'], 'verify')
+        self.assertEqual(cli.sha(self.workspace, 'HEAD'), head)
+        data = cli.read(self.task)
+        self.assertEqual(data['status'], 'paused')
+        self.assertEqual(data['iterations'], 0)
+        data['status'] = 'running'
+        data['verification_target']['pr'] = 13
+        data['original_source'] = 'https://github.com/user/fork/pull/13'
+        cli.write(self.task, data)
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'changed after'):
+            autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork', model=self.model, check=check)
+
+    def test_existing_feature_replays_and_reviews_prior_behavior(self):
+        head, _ = self._pin_existing_pr()
+        data = cli.read(self.task)
+        data['kind'] = 'feature'
+        plan = data['verification_target']['plan']
+        plan.update(feature_doc='code.txt', baseline=plan.pop('reproduction'))
+        cli.write(self.task, data)
+        result = autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork',
+                               model=self.model, check=self.check)
+        self.assertEqual(result['verification']['head'], head)
+        self.assertEqual(self.calls[:3], ['reproduction:implementer', 'reproduction:independent-verifier', 'baseline-review'])
+
+    def test_new_task_review_binds_impact_to_candidate_source_and_independent_runtime(self):
+        data = cli.read(self.task)
+        data['impact_review'] = 'runtime-v1'
+        cli.write(self.task, data)
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if self.calls[-1] == 'final-review':
+                self.assertIn('selected from ["R4", "R5"]', prompt)
+                review = json.loads(result['stdout'])
+                review['impact'] = {'surface': 'caller', 'invariant': 'compatible response',
+                                    'path': 'code.txt', 'line': 1, 'observed': 'independent check saw FIXED',
+                                    'evidence': ['R4']}
+                result['stdout'] = json.dumps(review)
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):
+            autopilot.run(self.task, self.issue, 'image', model=model, check=self.check)
+        data = cli.read(self.task)
+        candidate = cli.sha(self.workspace, 'HEAD')
+        item = next(e for e in data['evidence'] if e['kind'] == 'independent-review')
+        record = json.loads(Path(item['path']).read_text())
+        self.assertEqual(record['impact']['evidence'], ['R4'])
+        delivery._independent_verification(data, candidate)
+
+        for label in ('DIFF', 'B2', 'R1'):
+            with self.subTest(evidence=label):
+                record['impact']['evidence'] = [label]
+                with self.assertRaises(delivery.DeliveryError):
+                    delivery.validate_impact_review(data, candidate, record['impact'], record['reports'],
+                                                   'independent-verifier')
+        record['impact']['evidence'] = ['R4']
+        record['impact']['line'] = 2
+        with self.assertRaisesRegex(delivery.DeliveryError, 'source line is absent'):
+            delivery.validate_impact_review(data, candidate, record['impact'], record['reports'],
+                                           'independent-verifier')
+        record['impact']['line'] = 1
+        proof = Path(record['reports']['R4']['path'])
+        original = proof.read_bytes()
+        proof.write_bytes(original + b'\n')
+        with self.assertRaisesRegex(delivery.DeliveryError, 'bytes changed'):
+            delivery.validate_impact_review(data, candidate, record['impact'], record['reports'],
+                                           'independent-verifier')
+        proof.write_bytes(original)
+        record.pop('impact')
+        cli.write(Path(item['path']), record)
+        item['sha256'] = cli.digest(item['path'])
+        with self.assertRaisesRegex(delivery.DeliveryError, 'independent PASS'):
+            delivery._independent_verification(data, candidate)
 
     def prepare_adoption(self):
         base = cli.sha(self.workspace, 'HEAD')
@@ -632,6 +1054,96 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual(builder.call_count, 1)
         self.assertEqual(builder.call_args.args[1], cli.read(self.task)['base_commit'])
 
+    def run_refactor_fixture(self, outcome, *, cite=True):
+        from workbench import refactor, refactor_delivery
+        data = cli.read(self.task)
+        contract = {'path': str(self.task.parent / 'frozen' / 'contract.json'), 'sha256': 'f' * 64}
+        data.update(kind='refactor', refactor_contract=contract)
+        cli.criterion_add(argparse.Namespace(id=cli.REFACTOR_CRITERION, text=cli.REFACTOR_CRITERION_TEXT,
+                                            reason='frozen test contract'), data)
+        cli.write(self.task, data)
+        baseline = 'sha256:' + 'b' * 64
+        candidate = 'sha256:' + 'c' * 64
+        plan = {'spec': {'scope': ['code.txt']}, 'image': baseline, 'memory_mb': 2048, 'helpers': {}, 'runs': {}}
+
+        def verify(**kwargs):
+            self.assertEqual(kwargs['contract_sha256'], contract['sha256'])
+            self.assertEqual(kwargs['candidate'], cli.sha(self.workspace, 'HEAD'))
+            result = {'status': outcome, 'baseline': data['base_commit'], 'steps': [
+                {'commit': kwargs['candidate'], 'image': candidate, 'paths': ['code.txt'], 'observed': {}}]}
+            cli.write(kwargs['out'] / 'report.json', result)
+            return result
+
+        def checked(**kwargs):
+            self.assertEqual(kwargs.pop('source_mode'), 'image')
+            self.assertEqual(kwargs['image'], candidate)
+            return self.check(**kwargs)
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if self.calls[-1] == 'final-review':
+                self.assertIn('Cite REFAC on that criterion.', prompt)
+                if cite:
+                    record = json.loads(result['stdout'])
+                    record['assessments'][0]['evidence'] = ['REFAC']
+                    result['stdout'] = json.dumps(record)
+            return result
+
+        with patch.object(refactor_delivery, 'contract', return_value=plan), \
+                patch.object(refactor_delivery, 'require', side_effect=lambda task, head: task['refactor_result']), \
+                patch.object(refactor, 'verify', side_effect=verify):
+            return autopilot.run(self.task, self.issue, baseline, source_mode='image', build_source_image=True,
+                                model=model, check=checked, publisher=lambda *_: self.fail('unexpected publication'))
+
+    def test_refactor_comparison_becomes_mandatory_review_evidence(self):
+        result = self.run_refactor_fixture('equivalent')
+        data = cli.read(self.task)
+        self.assertEqual(result['phase'], 'delivery')
+        self.assertEqual(data['status'], 'paused')
+        self.assertNotIn('reproduction:implementer', self.calls)
+        report = next(item for item in data['evidence'] if item['kind'] == 'independent-review')
+        review = json.loads(Path(report['path']).read_text())
+        self.assertEqual(review['reports']['REFAC'], data['refactor_result'])
+        self.assertEqual(review['refactor_report_sha256'], data['refactor_result']['sha256'])
+
+    def test_refactor_drift_stops_before_candidate_review_or_publication(self):
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'refactoring comparison failed'):
+            self.run_refactor_fixture('behavior-changed')
+        self.assertEqual(self.calls, ['plan', 'implement'])
+        self.assertNotIn('refactor_result', cli.read(self.task))
+
+    def test_refactor_review_without_comparison_citation_cannot_advance(self):
+        data = cli.read(self.task)
+        data['limits']['iterations'] = 1
+        cli.write(self.task, data)
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'iteration limit reached'):
+            self.run_refactor_fixture('equivalent', cite=False)
+        failure, = self.task.parent.glob('verification-failure-*.json')
+        self.assertIn('must cite the refactoring comparison', json.loads(failure.read_text())['reason'])
+        self.assertNotIn('refactor_result', cli.read(self.task))
+
+    def test_openclaw_session_checks_use_the_offline_rebuilt_ui_image(self):
+        checks = []
+
+        def check(**kwargs):
+            checks.append(kwargs['image'])
+            kwargs.pop('source_mode')
+            return self.check(**kwargs)
+
+        with patch.object(autopilot.verify_openclaw, 'needs_browser', return_value=True), \
+                patch.object(workflow, 'build_source_image', return_value='sha256:rebuilt') as builder, \
+                patch.object(autopilot.verify_openclaw, 'collect',
+                             side_effect=autopilot.AutopilotError('stop after checking candidate image')) as collect:
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'stop after checking candidate image'):
+                autopilot.run(self.task, self.issue, 'baseline', source_mode='image', build_source_image=True,
+                              pr_repo='owner/myopenclaw', model=self.model, check=check,
+                              publisher=lambda *_: self.fail('published before browser verification'))
+        self.assertEqual(builder.call_args.kwargs['rebuild_ui'], visual_parity.OPENCLAW_RECIPE.read_bytes())
+        self.assertEqual(builder.call_args.kwargs['revision'], cli.sha(self.workspace, 'HEAD'))
+        self.assertEqual(collect.call_args.args[3], 'sha256:rebuilt')
+        self.assertEqual(checks[:2], ['baseline'] * 2)
+        self.assertEqual(set(checks[2:]), {'sha256:rebuilt'})
+
     def test_full_local_path_requires_pr_and_preserves_evidence(self):
         with self.assertRaisesRegex(autopilot.AutopilotError, 'PR must exist'):
             autopilot.run(self.task, self.issue, 'image', model=self.model, check=self.check)
@@ -767,6 +1279,40 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual(self.calls, ['plan'])
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
 
+    def test_approved_clarification_supplements_plan_and_implementation_without_changing_criteria(self):
+        request = self.task.with_name('issue.txt')
+        request.write_bytes(self.issue.read_bytes())
+        evidence = intent_review.collect(mode='in-your-own-words', request=request,
+                                         out=self.task.with_name('intent-evidence.json'))
+        claim = {'text': 'Check the same user-facing operation.', 'citations': ['U1']}
+        answer = {'goals': [claim], 'problem': [claim], 'constraints': [], 'unknowns': []}
+        report = intent_review.review(evidence=evidence['path'], sha256=evidence['sha256'],
+                                      model='gpt-test', out=self.task.with_name('intent-report.json'),
+                                      reviewer=lambda *_: answer)
+        intent_review.attach(self.task, report['path'], report['sha256'])
+        data = cli.read(self.task)
+        data['criteria'] = self.plan['criteria']
+        cli.write(self.task, data)
+        prompts = []
+
+        def model(workspace, prompt, timeout, *, read_only):
+            prompts.append(prompt)
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+
+        result = autopilot.run(self.task, request, 'image', model=model, check=self.check, local_handoff=True)
+        self.assertEqual(result['phase'], 'delivery')
+        supplemented = [prompt for prompt in prompts if 'Supplemental clarification data.' in prompt]
+        self.assertEqual(len(supplemented), 2)
+        self.assertTrue(all('real task description' in prompt and claim['text'] in prompt for prompt in supplemented))
+        self.assertEqual(cli.read(self.task)['criteria'], self.plan['criteria'])
+
+        data = cli.read(self.task)
+        del data['intent_review']
+        data['status'] = 'running'
+        cli.write(self.task, data)
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'clarification changed'):
+            autopilot.run(self.task, request, 'image', model=model, check=self.check)
+
     def test_publishes_verified_task_before_guarded_merge(self):
         events = []
         def publisher(task, repo):
@@ -780,6 +1326,40 @@ class AutopilotTests(unittest.TestCase):
         self.assertEqual(result['phase'], 'complete')
         self.assertEqual(events, [('publish', 'user/fork'), ('merge', 'user/fork', 12)])
         self.assertEqual(cli.read(self.task.parent / 'autopilot.json')['published_pr']['pr'], 12)
+        from workbench import decisions
+        journal = decisions.audit(self.task)
+        self.assertEqual([row['phase'] for row in journal['rows']],
+                         ['start', 'plan', 'reproduce', 'implement', 'verify', 'delivery', 'delivery'])
+        self.assertEqual(journal['unresolved_rows'], [])
+        self.assertEqual([row['evidence_status'] for row in journal['rows'][1:5]],
+                         ['hash-matches', 'hash-matches', 'commit-resolves', 'hash-matches'])
+
+    def test_performance_failure_blocks_publication_after_functional_checks(self):
+        from workbench import perf_issue
+
+        data = cli.read(self.task)
+        data['performance_contract'] = {'path': '/frozen/plan.json', 'sha256': 'a' * 64}
+        data['limits']['iterations'] = 1
+        cli.write(self.task, data)
+        prompts = []
+
+        def model(workspace, prompt, timeout, *, read_only):
+            prompts.append(prompt)
+            return self.model(workspace, prompt, timeout, read_only=read_only)
+
+        def publisher(*_):
+            self.fail('published without meeting the frozen performance target')
+
+        with patch.object(perf_issue, 'planning_context', return_value={'baseline_marker': 'HOTSPOT'}), \
+                patch.object(perf_issue, 'compare_candidate', side_effect=ValueError('insufficient measured improvement')):
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'iteration limit'):
+                autopilot.run(self.task, self.issue, 'image', model=model, check=self.check,
+                              pr_repo='user/fork', publisher=publisher)
+        self.assertIn('HOTSPOT', prompts[0])
+        self.assertIn('test-result:independent-verifier', self.calls)
+        self.assertNotIn('final-review', self.calls)
+        failure = next(self.task.parent.glob('verification-failure-*.json'))
+        self.assertIn('insufficient measured improvement', json.loads(failure.read_text())['reason'])
 
     def test_issue_close_failure_can_resume_without_merging_twice(self):
         data = cli.read(self.task)
@@ -904,7 +1484,7 @@ class AutopilotTests(unittest.TestCase):
                 raise workflow.WorkflowError(f'check failed; raw report saved at {report}')
             return self.check(**kwargs)
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 repair_prompts.append(prompt)
                 (workspace / 'code.txt').write_text('repaired after failure')
                 return {'exit_code':0, 'timed_out':False, 'stdout':'repaired', 'stderr':''}
@@ -924,7 +1504,7 @@ class AutopilotTests(unittest.TestCase):
         failure = {'workflow': 'CI', 'run_id': 12, 'attempt': 1, 'head': 'old',
                    'jobs': [{'id': 5, 'name': 'test', 'annotations': [{'message': 'assertion failed'}]}]}
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the verified candidate'):
+            if 'Repair the verified candidate' in prompt:
                 prompts.append(prompt)
                 (workspace / 'code.txt').write_text('fixed after CI')
                 return {'exit_code': 0, 'timed_out': False, 'stdout': 'done', 'stderr': ''}
@@ -1006,7 +1586,7 @@ class AutopilotTests(unittest.TestCase):
                 raise workflow.WorkflowError('assertion failed')
             return self.check(**kwargs)
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 (workspace / 'code.txt').write_text('repaired')
                 return {'exit_code': 0, 'timed_out': False, 'stdout': 'repaired', 'stderr': ''}
             return self.model(workspace, prompt, timeout, read_only=read_only)
@@ -1037,7 +1617,7 @@ class AutopilotTests(unittest.TestCase):
         reviews = []
         events = []
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 self.assertIn('unsafe behavior remains', prompt)
                 (workspace / 'code.txt').write_text('independently repaired')
                 return {'exit_code':0, 'timed_out':False, 'stdout':'repaired', 'stderr':''}
@@ -1065,6 +1645,117 @@ class AutopilotTests(unittest.TestCase):
             autopilot.run(self.task, self.issue, 'image', model=self.model, check=check)
         self.assertEqual(cli.read(self.task)['iterations'], 1)
 
+    def test_frozen_visual_difference_stops_automatic_delivery(self):
+        from workbench import visual_parity
+        data = cli.read(self.task)
+        baseline = {'path': str(self.task.with_name('baseline.json')), 'sha256': '1'*64}
+        data.update(kind='feature', surface='ui', visual_baseline=baseline)
+        data['limits']['iterations'] = 1
+        cli.write(self.task, data)
+        self.plan.update(feature_doc='feature.md',
+                         screenshot={'command': ['node', '/workspace/capture.js'], 'marker': 'SHOT', 'exit_code': 0})
+        evidence = self.task.with_name('parity-result.json')
+        cli.write(evidence, {'schema': 1, 'states': {'open': {'independent-verifier': {'equal': False}}}})
+
+        def check(**kwargs):
+            kwargs.pop('source_mode')
+            return self.check(**kwargs)
+
+        with patch.object(visual_parity, 'read_baseline', return_value=(
+                self.task, {'image': 'sha256:'+'a'*64}, {'states': [{'id': 'open'}]})), \
+                patch.object(visual_parity, 'bind', return_value=baseline), \
+                patch.object(visual_parity, 'compare_candidate', return_value=(
+                    {'path': str(evidence), 'sha256': cli.digest(evidence)}, False)), \
+                patch.object(workflow, 'build_source_image', return_value='sha256:'+'b'*64):
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'iteration limit reached'):
+                autopilot.run(self.task, self.issue, 'image', pr_repo='user/fork', source_mode='image',
+                              build_source_image=True, model=self.model, check=check,
+                              publisher=lambda *_: self.fail('published a differing state'))
+        retained = json.loads(self.task.with_name('verification-failure-1.json').read_text())
+        self.assertIn('frozen visual baseline in open', retained['reason'])
+        self.assertNotIn('final-review', self.calls)
+
+    def test_interrupted_visual_phase_resumes_with_its_accepted_image_and_receipt(self):
+        from workbench import phase_contract, visual_parity
+
+        data = cli.read(self.task)
+        image = 'sha256:' + 'b' * 64
+        path = self.task.with_name('visual-result.json')
+        cli.write(path, {'image': image})
+        proof = {'path': str(path), 'sha256': cli.digest(path)}
+        baseline = {'path': str(self.task.with_name('baseline.json')), 'sha256': 'a' * 64}
+        data.update(kind='feature', surface='ui', visual_baseline=baseline, phase_binding={'frozen': True},
+                    phase_result={'frozen': True}, visual_parity_result=proof, criteria=self.plan['criteria'])
+        cli.write(self.task, data)
+        (self.workspace / 'code.txt').write_text('fixed')
+        cli.git(self.workspace, 'commit', '-qam', 'accepted candidate')
+        candidate = cli.sha(self.workspace, 'HEAD')
+        state_path = self.task.with_name('autopilot.json')
+        cli.write(state_path, {'schema': cli.SCHEMA, 'phase': 'verify', 'plan': self.plan,
+                               'candidate_commit': candidate, 'phase_binding': data['phase_binding'],
+                               'visual_baseline': baseline, 'issue_digest': cli.digest(self.issue), 'input_digest': None})
+        phase = {'step': {'image': 'image'}, 'contract': {'plan': {'baseline': data['base_commit']}, 'memory_mb': 1024},
+                 'request_sha256': cli.digest(self.issue)}
+
+        def check(**options):
+            self.assertEqual(options['image'], image)
+            raise autopilot.AutopilotError('fixture reached the recovered image')
+
+        with patch.object(phase_contract, 'read', return_value=phase), \
+                patch.object(phase_contract, 'task_plan', return_value=self.plan), \
+                patch.object(phase_contract, 'check_scope'), \
+                patch.object(phase_contract, 'verify_completion') as verified, \
+                patch.object(visual_parity, 'read_baseline', return_value=(
+                    self.task, {'image': 'sha256:' + 'a' * 64}, {'states': [{'id': 'open'}]})), \
+                patch.object(visual_parity, 'require', return_value=proof) as rechecked, \
+                patch.object(visual_parity, 'compare_candidate') as recapture, \
+                patch.object(workflow, 'build_source_image') as rebuild:
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'fixture reached the recovered image'):
+                autopilot.run(self.task, self.issue, 'image', source_mode='image', build_source_image=True,
+                              memory_mb=1024, model=self.model, check=check)
+            verified.assert_called_once_with(data, candidate, context=phase)
+            rechecked.assert_called_once_with(data, candidate, phase=phase)
+            recapture.assert_not_called()
+            rebuild.assert_not_called()
+        self.assertEqual(cli.read(self.task)['visual_parity_result'], proof)
+
+    def test_dispatch_interruption_after_checks_stops_before_review_or_repair(self):
+        cancelled = False
+
+        def active():
+            if cancelled:
+                raise ValueError('multi-phase dispatch was interrupted')
+
+        def check(**options):
+            nonlocal cancelled
+            result = self.check(**options)
+            if options['kind'] == 'test-result' and options['actor'] == 'independent-verifier':
+                cancelled = True
+            return result
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'multi-phase dispatch was interrupted'):
+            autopilot.run(self.task, self.issue, 'image', model=self.model, check=check, phase_active=active)
+        data = cli.read(self.task)
+        self.assertEqual((data['status'], data['iterations']), ('paused', 1))
+        self.assertEqual(cli.read(self.task.with_name('autopilot.json'))['phase'], 'verify')
+        self.assertNotIn('final-review', self.calls)
+
+    def test_confirmed_child_oom_pauses_without_spending_a_repair_iteration(self):
+        def check(**kwargs):
+            if kwargs['kind'] == 'resolution':
+                report = self.task.parent / 'oom.json'
+                cli.write(report, {'exit_code': 2, 'cleanup_confirmed': True,
+                                   'runtime_diagnostics': {'classification': 'docker-oom',
+                                                           'oom_events': [{'time_ns': 100}]}})
+                raise workflow.WorkflowError(f'check failed; raw report saved at {report}')
+            return self.check(**kwargs)
+
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'Docker reported an out-of-memory event'):
+            autopilot.run(self.task, self.issue, 'image', model=self.model, check=check)
+        self.assertEqual(cli.read(self.task)['iterations'], 1)
+        failure = json.loads((self.task.parent / 'verification-failure-1.json').read_text())
+        self.assertEqual(failure['runtime_diagnostics']['oom_events'], [{'time_ns': 100}])
+
     def test_credentials_are_not_committed(self):
         def model(workspace, prompt, timeout, *, read_only):
             result = self.model(workspace, prompt, timeout, read_only=read_only)
@@ -1082,7 +1773,7 @@ class AutopilotTests(unittest.TestCase):
                 raise workflow.WorkflowError('candidate assertion failed')
             return self.check(**kwargs)
         def model(workspace, prompt, timeout, *, read_only):
-            if prompt.startswith('Repair the current candidate'):
+            if 'Repair the current candidate' in prompt:
                 (workspace / 'partial.txt').write_text('partial work')
                 return {'exit_code':None, 'timed_out':True, 'stdout':'', 'stderr':'timeout'}
             return self.model(workspace, prompt, timeout, read_only=read_only)

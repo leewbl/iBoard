@@ -1,0 +1,57 @@
+{
+  "id": "openclaw-command-lane-proof",
+  "method": "proof",
+  "tool_version": "Z3 4.13.3",
+  "property": "In a single command lane with fixed positive integer capacity, the number of active callbacks never exceeds that capacity.",
+  "harm": "An extra callback could run while every slot is occupied and modify the same session state concurrently.",
+  "bounds": [
+    "One lane with an arbitrary fixed positive integer capacity and an arbitrary finite sequence of modeled admissions and settlements.",
+    "Three inductive obligations over unbounded mathematical integers: initialization, admission, and settlement."
+  ],
+  "assumptions": [
+    "The lane starts empty. Each admission uses a fresh task ID, records it before invoking its callback, and the live generation releases it once after settlement.",
+    "Capacity and generation remain fixed. The synchronous comparison and insertion are modeled as one transition.",
+    "Other admission conditions can only prevent a start; queued or blocked work leaves the active count unchanged."
+  ],
+  "exclusions": [
+    "Multiple lanes and their shared budgets, resizing, resets, aborts, timeouts, and exhaustion of JavaScript task ID precision.",
+    "The solver proves the extracted transition rules. The independent replay runs the exact reported counterexample against real queue callbacks."
+  ],
+  "checker": "proof.mjs",
+  "replay": "replay.mjs",
+  "minimum_explored": 3,
+  "source": [
+    {
+      "path": "src/process/command-queue.state.ts",
+      "contains": "activeTasks: new Map(),",
+      "meaning": "The new lane has zero active task IDs."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "state.activeTasks.size < state.maxConcurrent &&",
+      "meaning": "The source comparison supplies the admission guard in the proof."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "state.activeTasks.set(taskId, entry.sessionTarget)",
+      "meaning": "A fresh task ID consumes one slot before the callback can run."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "state.activeTasks.delete(taskId)",
+      "meaning": "Settlement releases the associated slot in the same generation."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "export function enqueueCommandInLane<",
+      "meaning": "The independent replay submits callbacks through the real public queue API."
+    }
+  ],
+  "mutation": {
+    "path": "src/process/command-queue.ts",
+    "before": "state.activeTasks.size < state.maxConcurrent &&",
+    "after": "state.activeTasks.size <= state.maxConcurrent &&",
+    "meaning": "Allow another command to start when the lane is already full."
+  },
+  "replay_tool_version": "node v24.22.1"
+}

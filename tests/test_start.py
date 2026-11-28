@@ -44,6 +44,53 @@ class StartTests(unittest.TestCase):
                     start.start(**self.kwargs, memory_mb=memory, prepare=self.prepare, run=self.drive)
                 self.assertEqual(self.called, [])
 
+    def test_refactor_only_prepares_the_frozen_base_and_records_its_binding(self):
+        from workbench import refactor, refactor_delivery
+        base, image = 'b' * 40, 'sha256:' + 'c' * 64
+        contract = {'path': str(self.root / 'contract.json'), 'sha256': 'd' * 64}
+        plan = {'baseline': base, 'image': image, 'memory_mb': 2048}
+
+        def prepare(**kwargs):
+            self.assertEqual(kwargs['base_commit'], base)
+            info = self.prepare(**kwargs)
+            task = Path(info['task'])
+            data = cli.read(task)
+            data.update(kind='refactor', base_commit=base, criteria=[], criterion_changes=[])
+            cli.write(task, data)
+            return info
+
+        options = {**self.kwargs, 'kind': 'refactor', 'source_mode': 'image', 'build_source_image': True}
+        with self.assertRaisesRegex(start.StartError, 'needs its frozen contract'):
+            start.start(**options, prepare=prepare, run=self.drive)
+        self.assertEqual(self.called, [])
+        with patch.object(refactor_delivery, 'bind', return_value=contract), \
+                patch.object(refactor_delivery, 'contract', return_value=plan), \
+                patch.object(refactor, 'load_frozen', return_value=(plan, {}, {}, set())), \
+                patch.object(start.shutil, 'which', return_value='/usr/bin/tool'), \
+                patch.object(start.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                    [], 0, json.dumps([{'Id': image}]).encode())):
+            start.start(**options, prepare=prepare, run=self.drive, refactor_contract=contract['path'],
+                        refactor_contract_sha256=contract['sha256'])
+        task = self.root / 'tasks/case/task.json'
+        self.assertEqual(cli.read(task)['refactor_contract'], contract)
+        self.assertEqual(cli.read(task.parent / 'input-stage.json')['refactor_contract'], contract)
+        self.assertEqual(cli.read(task)['criteria'][0]['id'], cli.REFACTOR_CRITERION)
+        self.assertEqual(self.called[-1][2], image)
+
+    @patch('workbench.feature_arena.resolve', return_value={'status': 'blocked'})
+    @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
+    @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
+    def test_feature_comparison_blocks_before_creating_a_task_and_uses_its_budget(self, process, which, resolve):
+        options = {**self.kwargs, 'kind': 'feature'}
+        with self.assertRaisesRegex(start.StartError, 'Arena comparison blocked'):
+            start.start(**options, feature_manifest='manifest.json', feature_sha256='f' * 64,
+                        feature_arena_out=self.root / 'comparison', prepare=self.prepare, run=self.drive)
+        self.assertEqual(self.called, [])
+        args, kwargs = resolve.call_args
+        self.assertEqual(args, ('manifest.json', 'f' * 64, options['repo'], self.issue, self.root / 'comparison'))
+        self.assertGreater(kwargs['seconds_limit'], 0)
+        self.assertLessEqual(kwargs['seconds_limit'], options['seconds'])
+
     @patch('workbench.start.shutil.which', return_value='/usr/bin/tool')
     @patch('workbench.start.subprocess.run', return_value=subprocess.CompletedProcess([], 0))
     def test_explicit_seven_gib_is_retained_for_resume(self, process, which):
@@ -53,6 +100,7 @@ class StartTests(unittest.TestCase):
             start.start(**self.kwargs, memory_mb=7168, prepare=self.prepare, run=fail)
         task = self.root / 'tasks/case/task.json'
         self.assertEqual(cli.read(task.parent / 'input-stage.json')['run_settings']['memory_mb'], 7168)
+        self.assertEqual(cli.read(task)['impact_review'], 'runtime-v1')
         start.resume_task(task, run=self.drive)
         self.assertEqual(self.called[-1][3]['memory_mb'], 7168)
 

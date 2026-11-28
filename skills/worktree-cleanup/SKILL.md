@@ -1,0 +1,56 @@
+---
+name: worktree-cleanup
+description: Inventory Git worktrees and reclaim only a specifically approved subset that is clean, merged, and unused.
+disable-model-invocation: true
+---
+
+# Worktree cleanup
+
+Use the [pinned pstack cleanup playbook](https://github.com/cursor/plugins/blob/41e400932eca14f289e7db717a70455256b6d388/pstack/skills/poteto-mode/playbooks/worktree-cleanup.md) as the workflow reference. Start with a read-only inventory. Set `REPO` to an absolute path and choose the local tracking ref representing the intended PR base. Include every known iBoard task root with repeated `--tasks-root` options. When checking open PR protection, set `DESTINATION` to the exact GitHub owner and repository.
+
+```sh
+python3 -m workbench.worktree_cleanup inventory --repo "$REPO" \
+  --base-ref refs/remotes/origin/main --tasks-root "$TASKS" \
+  --destination "$DESTINATION" --holds "$HOLDS" --measure-size --inspect-recent-chats
+```
+
+Supply `HOLDS` as an absolute file path. Gather active, pinned, and otherwise retained checkouts from the operator and available host records. Use schema `{"schema":1,"entries":[{"path":"/absolute/worktree","reason":"Active or pinned task"}]}`. An empty list represents a completed check finding no additional holds. Without a usage snapshot the inventory is advisory. The tool reads the selected local ref as-is. Refresh it before planning if the comparison should reflect a newer remote base.
+
+The inventory samples the current user's local processes using `lsof` on macOS or procfs on Linux. It checks working directories, open file descriptors and executables, and resolves active Claude Code workspaces using local session manifests with a matching observed process. It records only the matching PID and access type for each registered worktree. A known failed or partial probe holds candidates. Check pinned chats separately using the host view and keep those paths in `HOLDS`.
+
+When the Codex desktop connector is available, call `list_threads` in recent mode to read the full `pinnedThreads` array. Obtain the current local host ID from the current thread metadata. Save a private JSON export with `schemaVersion`, `observedAt` (the UTC observation time recorded when the tool replies), `pinnedThreads` projected to `id`, `kind`, `hostId` and `cwd`, and the availability arrays `unavailableHosts` and `unavailableSources`. Then use `python3 -m workbench.worktree_pins --repo "$REPO" --host-id "$LOCAL_HOST_ID" --snapshot "$EXPORT" --out "$CODEX_PINS"`. Include `--codex-pins "$CODEX_PINS"` with both `inventory` and `freeze`. The scanner follows local Codex session IDs and their child records, including from other projects and archival dates. Account for pins from other hosts in the manual holds list.
+
+`--inspect-recent-chats` checks the last four days of local Codex, Claude Code and Cursor transcripts for the selected repository's registered workspaces. It includes references to a sibling worktree found in a session started at the primary checkout. The inventory returns the session ID, transcript modification time, how the path matched and an evidence digest. A path reference is a lead for operator review. Use the available host view to check what is in use, including chats started from other projects. Once the referenced worktree is confirmed unused, add `{"path":"/absolute/worktree","sha256":"RECENT_CHAT_SHA256"}` to the optional `reviewed_recent` array in `HOLDS`. This records the exact reviewed evidence. Active and pinned entries still protect the path. Incomplete transcript coverage also keeps candidates out of cleanup.
+
+Report each candidate, its size estimate, and why other paths are retained. Protect task records even after completion when they still point to a worktree. Treat ignored artifacts as potentially valuable. Git-tracked base ancestry is conservative for squash merges. Host sessions that cannot be checked must be reported as unknown, and their potentially occupied checkouts should be retained.
+
+After explicit approval of exact paths, use `freeze --repo "$REPO" --base-ref REF --tasks-root "$TASKS" --destination "$DESTINATION" --holds "$HOLDS" --inspect-recent-chats --select ABSOLUTE_PATH --out ABSOLUTE_PLAN`. Repeat `--select` for each approved path. Keep the plan and receipt outside linked worktrees. When the plan uses transcript evidence, `apply` repeats the scan and holds a worktree if the evidence has changed since approval.
+
+With the approved plan digest and a refreshed usage snapshot, use `apply --plan ABSOLUTE_PLAN --sha256 APPROVED_DIGEST --holds "$HOLDS" --out ABSOLUTE_RECEIPT`. The runner checks the plan, unchanged base, registered identity, task records, open PRs, usage and cleanliness before removal. It samples live usage again immediately before using ordinary `git worktree remove`. The receipt records the observation and any matches for the selected checkout. A previously blocked approval can resume after the process exits if the other checks still pass. The branch is retained. Review unresolved holds before further action.
+
+For an approval made with Codex pin protection, take another desktop observation after approval and supply its artifact with `apply --codex-pins "$FRESH_PINS"`. The gate requires the same host and repository, rejects an observation dated before approval, and holds affected worktrees if the fresh response or its transcript coverage is incomplete. Reimporting the earlier desktop export preserves its original date.
+
+The receipt distinguishes the checkout's `du` estimate from the observed change in free bytes on the repository volume. Other activity or storage accounting can change that delta. Live usage is a point-in-time observation. Continue using the holds list for pinned or dormant chats, remote hosts and sessions the local process probe cannot see.
+
+## Simulator and developer resources
+
+Use `python3 -m workbench.resource_cleanup inventory --measure-size` for the standard Xcode `DerivedData` and `iOS DeviceSupport` directories, Cursor workspace snapshot roots and the known Cursor database backup paths. Simulator inventory uses the selected Xcode's `simctl`. It lists testing devices, default-set devices and runtime images separately. An unavailable native collection remains visible as a coverage gap. [Apple command-line tool reference](https://developer.apple.com/documentation/xcode/xcode-command-line-tool-reference)
+
+After approval for exact IDs, use `python3 -m workbench.resource_cleanup freeze --select RESOURCE_ID --out ABSOLUTE_PLAN`. Use `apply --plan ABSOLUTE_PLAN --sha256 APPROVED_DIGEST --out ABSOLUTE_RECEIPT` on the same module. Repeat `--select` to approve multiple IDs. Cache cleanup checks for live use, compares the directory tree metadata, and confirms path absence under the same cache parent. Simulator deletion addresses the native UUID. Keep devices that are running, default-set devices that are still available, and runtime images with registered devices or without a verified deletable flag. The receipt confirms a path or native ID is gone before recording it as removed. The plan's journal tracks outstanding requests across receipt destinations. Recheck with the same plan to observe an outstanding result.
+
+The `poteto-mode` worktree cleanup playbook also exposes `resource-inventory`, `resource-freeze`, and `resource-apply`.
+
+## Package caches
+
+Use `python3 -m workbench.package_cache inventory --manager MANAGER` with `uv`, `pnpm`, `brew`, or `yarn`. Read the resolved paths and review holds before approving an exact scope. If any path in a scope must be kept, leave that scope out.
+
+| Manager | Scope and operation |
+| --- | --- |
+| uv | The cache resolved by `uv cache dir` or an explicit `--cache-dir`. Requires a uv cache tag and uses native offline pruning. |
+| pnpm | The versioned store and the metadata cache. Pass `--cache-dir` when native configuration omits it. To select a store on another volume, pass its parent directory with `--store-dir`. Native store pruning uses both approved paths. |
+| Homebrew | One completed file listed under the download cache. Pass its exact path with `--select`. Installed formulae and casks are outside this action's scope. |
+| Yarn | For Classic, pass the entire versioned cache root with `--cache-dir`. For modern Yarn, use the native global folder or pass it with `--cache-dir`. The latter scopes the action to the global `cache` child. |
+
+Run `freeze --manager MANAGER --out ABSOLUTE_PLAN` with the same scope options after approval, then `apply --plan ABSOLUTE_PLAN --sha256 APPROVED_DIGEST --out ABSOLUTE_RECEIPT`. Keep both artifacts outside the cleanup scope. The runner checks the native tool and the approved cache contents again. The receipt records allocated cache bytes and free volume bytes before and after. Volume figures also reflect concurrent disk activity. If native execution cannot be confirmed, the receipt stays pending and reapplying that digest only returns the existing record.
+
+`poteto-mode` exposes the three stages as `package-cache-inventory`, `package-cache-freeze`, and `package-cache-apply`. [uv](https://docs.astral.sh/uv/concepts/cache/) · [pnpm](https://pnpm.io/cli/store) · [Homebrew](https://docs.brew.sh/Tips-and-Tricks#pre-download-a-file-for-a-formula) · [Yarn Classic](https://classic.yarnpkg.com/en/docs/cli/cache/) · [Yarn](https://yarnpkg.com/cli/cache/clean)

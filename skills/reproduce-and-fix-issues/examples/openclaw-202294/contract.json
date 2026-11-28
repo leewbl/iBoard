@@ -1,0 +1,29 @@
+{
+  "project": "openclaw",
+  "surface": "OpenClaw CLI skills check",
+  "launch": "Run the CLI from the attested app image using a new temporary home.",
+  "cleanup": "The probes remove the temporary home and the runner removes the container.",
+  "doctor": {
+    "id": "doctor",
+    "helper": "doctor.mjs",
+    "marker": "VERIFY_OPENCLAW_DOCTOR_PASS",
+    "reach": "Open a local OpenClaw terminal.",
+    "drive": "Run openclaw --version in an isolated home.",
+    "observe": "The CLI version matches package.json in the attested image.",
+    "gotchas": "Startup alone does not verify the report.",
+    "source": [{"path": "package.json", "contains": "\"name\": \"openclaw\""}]
+  },
+  "features": [
+    {
+      "id": "legacy-skills-metadata",
+      "helper": "observe-json.mjs",
+      "marker": "OPENCLAW_LEGACY_JSON_PASS",
+      "failure_marker": "OPENCLAW_LEGACY_JSON_FAIL",
+      "reach": "Ask the CLI to check the skills in the local workspace.",
+      "drive": "Run skills check --json in a disposable home with modern and legacy example skills.",
+      "observe": "The JSON identifies the legacy skill and excludes the modern skill from the warning. Both fixture files are unchanged.",
+      "gotchas": "Synthetic skills contain metadata only. There are no install requests or external services.",
+      "source": [{"path": "src/cli/skills-cli.ts", "contains": ".command(\"check\")"}]
+    }
+  ]
+}

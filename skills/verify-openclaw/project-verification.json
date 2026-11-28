@@ -1,0 +1,475 @@
+{
+  "project": "openclaw",
+  "surface": "OpenClaw CLI, interactive terminal UI and the browser Control UI served by its local Gateway.",
+  "launch": "The launch scripts use the CLI entry at /app/src/entry.ts with the image's tsx loader. The Gateway starts on loopback with an empty temporary state directory and requires both readiness and liveness before use. The terminal journey uses OpenClaw's installed PTY helper. Browser journeys also need the matching compiled Control UI and preinstalled Chromium in the source image.",
+  "cleanup": "Helpers remove their temporary state. Gateway shuts down only the child it launched and checks that its loopback endpoint is closed.",
+  "entrypoint_inventory": [
+    {
+      "namespace": "openclaw",
+      "sources": [{"path": "src/cli/tui-cli.ts", "receiver": "program"}],
+      "excluded": {}
+    },
+    {
+      "namespace": "openclaw skills",
+      "sources": [
+        {
+          "path": "src/cli/skills-cli.ts",
+          "receiver": "skills"
+        },
+        {
+          "path": "src/cli/skills-library-cli.ts",
+          "receiver": "skills"
+        },
+        {
+          "path": "src/cli/skills-search-cli.ts",
+          "receiver": "skills"
+        }
+      ],
+      "excluded": {
+        "install": "Needs a separate writable fixture and install provenance assertions.",
+        "update": "A version-changing ClawHub fixture must be set up before testing updates.",
+        "verify": "Requires a controlled ClawHub response and package provenance fixture.",
+        "workshop": "The parent opens help; the Workshop operations use their own scope.",
+        "search": "Needs a controlled search backend and test catalogue."
+      }
+    },
+    {
+      "namespace": "openclaw skills workshop",
+      "sources": [
+        {
+          "path": "src/cli/skills-cli.ts",
+          "receiver": "workshop"
+        }
+      ],
+      "excluded": {
+        "changes": "Requires a fixture for history ordering and limit behavior."
+      }
+    },
+    {
+      "namespace": "openclaw skills library",
+      "sources": [
+        {
+          "kind": "commander-factory",
+          "path": "src/cli/skills-library-cli.ts",
+          "owner": "registerSkillsLibraryCli",
+          "receiver": "library",
+          "factory": "leaf",
+          "wrapper": "addGatewayClientOptions",
+          "receiver_calls": ["applyParentDefaultHelpAction"]
+        }
+      ],
+      "excluded": {}
+    },
+    {
+      "namespace": "openclaw control-ui session-status",
+      "sources": [
+        {
+          "kind": "jsx-options",
+          "path": "ui/src/pages/sessions/sessions-filters.tsx",
+          "component": "SettingsSegmented",
+          "label_key": "sessionsView.sessionState"
+        }
+      ],
+      "excluded": {}
+    }
+  ],
+  "doctor": {
+    "id": "doctor",
+    "helper": "doctor.mjs",
+    "marker": "VERIFY_OPENCLAW_DOCTOR_PASS",
+    "reach": "Open a local OpenClaw terminal.",
+    "drive": "Run openclaw --version in an isolated home.",
+    "observe": "Require the CLI version to match package.json in the attested image.",
+    "gotchas": "Version checks verify CLI startup. Gateway readiness is checked again after the journey starts its own instance.",
+    "source": [{"path": "package.json", "contains": "\"name\": \"openclaw\""}, {"path": "src/entry.ts", "contains": "process.argv"}]
+  },
+  "features": [
+    {
+      "id": "tui-chat-pty",
+      "entrypoints": ["openclaw tui"],
+      "helper": "tui-chat-pty.mjs",
+      "marker": "VERIFY_OPENCLAW_TUI_CHAT_PTY_PASS",
+      "reach": "Open the canonical TUI in a pseudoterminal connected to a fresh loopback Gateway.",
+      "drive": "Type one message through the terminal, read its reply, exit using /exit and open the same session in a fresh PTY.",
+      "observe": "Require completed terminal frames to show the connected state and both messages. Read exact user and assistant messages from the Gateway, compare session identity after reopening, and confirm a single backend invocation and clean exits.",
+      "gotchas": "The actual terminal and Gateway are active. A deterministic local backend supplies the assistant text, so the journey measures rendering, transport and history, while real model behavior and the embedded local TUI aliases need separate checks.",
+      "source": [
+        {"path": "src/cli/tui-cli.ts", "contains": ".command(\"tui\")"},
+        {"path": "src/tui/tui.ts", "contains": "reconnected ? \"gateway reconnected\" : \"gateway connected\""},
+        {"path": "src/tui/tui-command-handlers.ts", "contains": "exit: () => requestExit()"},
+        {"path": "src/tui/gateway-chat.ts", "contains": "async sendChat("},
+        {"path": "src/tui/tui-pty-test-support.ts", "contains": "const pty = nodePty.spawn(command, args, {"},
+        {"path": "src/tui/tui-pty-terminal-evidence-test-support.ts", "contains": "export async function waitForSynchronizedFrameRows("}
+      ]
+    },
+    {
+      "id": "skills-library-help",
+      "entrypoints": ["openclaw skills library"],
+      "helper": "skills-library-help.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS",
+      "reach": "Open the library command from a local OpenClaw terminal.",
+      "drive": "Run library with and without --help and run library read --help in an isolated home.",
+      "observe": "Both parent invocations show the exact 15 registered subcommands. Read help shows the skill ID, revision and session arguments. The isolated configuration is unchanged.",
+      "gotchas": "This checks user-visible registration and help. The separate lifecycle checks personal operations. The inventory records remaining authenticated prerequisites.",
+      "source": [
+        {"path": "src/cli/skills-cli.ts", "contains": "registerSkillsLibraryCli(skills);"},
+        {"path": "src/cli/skills-library-cli.ts", "contains": "addGatewayClientOptions(library.command(name).description(description))"},
+        {"path": "src/cli/skills-library-cli.ts", "contains": "applyParentDefaultHelpAction(library);"},
+        {"path": "src/cli/program/parent-default-help.ts", "contains": "parent.outputHelp();"}
+      ]
+    },
+    {
+      "id": "skills-library-lifecycle",
+      "entrypoints": [
+        "openclaw skills library list", "openclaw skills library read", "openclaw skills library create",
+        "openclaw skills library update", "openclaw skills library remove", "openclaw skills library enable",
+        "openclaw skills library disable", "openclaw skills library rollback", "openclaw skills library attach",
+        "openclaw skills library detach", "openclaw skills library refresh"
+      ],
+      "helper": "skills-library-lifecycle.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS",
+      "reach": "Start a disposable single-user Gateway and ask the real OpenClaw CLI for the signed-in owner's library.",
+      "drive": "Create a private bundle with a supporting file, pin a revision on an existing session, update and reject a stale write, refresh the pin, disable and enable, roll back and restart. Remove the skill and detach the retained pin.",
+      "observe": "Compare profile, skill and session IDs, revision and content hashes, access errors and the unselected control. Drive six real Gateway chat turns and check the exact skill path and file bytes received by the offline CLI backend after attach, update, refresh, restart and detach, plus the control. Removal hides the skill and rejects edits and new pins; the owner and retained session can still read their allowed revisions.",
+      "gotchas": "This exercises one durable owner and a disposable CLI backend. It needs a fresh token, an offline container and no existing Gateway. The child reads the files named in the actual system prompt. Model adherence, team visibility, multi-profile authority and import require separate fixtures.",
+      "source": [
+        {"path": "src/gateway/gateway-owner-profile.ts", "contains": "export function shouldUseGatewayOwnerProfile"},
+        {"path": "src/skills/library/store.ts", "contains": "Skill changed. Read the current revision and review your edit before saving again."},
+        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "Session reads require an exact selected skillId and revision."},
+        {"path": "src/agents/cli-runner/prepare.ts", "contains": "skillsPrompt: preparedSkills.prompt,"},
+        {"path": "src/agents/cli-runner/skills-prompt.ts", "contains": "return resolveRuntimeSkillsPrompt({"},
+        {"path": "src/skills/library/selection.ts", "contains": "const baseDir = skillLibraryRevisionDir(selection.skillId, selection.revision, env);"}
+      ]
+    },
+    {
+      "id": "skills-library-import",
+      "entrypoints": ["openclaw skills library import"],
+      "helper": "skills-library-lifecycle.mjs",
+      "args": ["import"],
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS",
+      "reach": "Start a fresh single-user Gateway and a loopback-only ClawHub fixture inside the same offline container.",
+      "drive": "Import a local directory named with a .zip suffix, a real ZIP file and a specific version from the loopback registry. Try an invalid ZIP, a duplicate slug and a registry release blocked by its trust verdict.",
+      "observe": "Check private owner receipts, instruction and support file hashes, and the expected order of registry requests. A preexisting session retains its empty selection while a new session can read all three exact revisions. Rejected imports leave the library unchanged.",
+      "gotchas": "The real CLI and Gateway exercise the registry protocol against the supplied local fixture. The public registry, GitHub-backed resolutions and team permissions require separate cases.",
+      "source": [
+        {"path": "src/cli/skills-library-cli.ts", "contains": "leaf(\"import\", \"Privately import a local bundle, ZIP, or ClawHub skill\")"},
+        {"path": "src/skills/library/import.ts", "contains": "Upload is incomplete or its SHA-256 does not match."},
+        {"path": "src/skills/library/import.kernel.ts", "contains": "params.offset !== current.length"},
+        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "(authority, params) => importSkillLibrary(authority, params)"},
+        {"path": "src/infra/clawhub-install-trust.ts", "contains": "ClawHub blocked this release;"},
+        {"path": "src/gateway/server-methods/sessions-create.ts", "contains": "await prepareSkillLibrarySessionCreation("}
+      ]
+    },
+    {
+      "id": "skills-library-team",
+      "entrypoints": ["openclaw skills library share", "openclaw skills library unshare", "openclaw skills library transfer"],
+      "helper": "skills-library-team.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS",
+      "reach": "Connect three disposable operator accounts through a loopback authentication proxy to a fresh Gateway.",
+      "drive": "Save a private skill as its owner. Share and unshare it, compare member visibility and exact session pins, and transfer to the team as the administrator. Check refused writes as the member and former owner.",
+      "observe": "Verify three durable profiles, immutable content, private and shared scope, retained and new session selections, author attribution and the administrator-only transfer.",
+      "gotchas": "Exercises the authenticated Gateway methods behind the CLI command names. The proxy authenticates test accounts only. External identity providers and the CLI interactive authentication path require separate evidence.",
+      "source": [
+        {"path": "src/cli/skills-library-cli.ts", "contains": "Transfer ownership to the team (administrator only)"},
+        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "(authority, params) => mutateSkillLibrary(authority, params)"},
+        {"path": "src/gateway/auth.ts", "contains": "remoteIsLoopback && trustedProxyConfig.allowLoopback !== true"},
+        {"path": "src/gateway/server/ws-connection/connect-session.ts", "contains": "identityScopes: context.configSnapshot.gateway?.auth?.identityScopes"},
+        {"path": "src/skills/library/service.kernel.ts", "contains": "Transfer to team ownership requires a Gateway administrator."},
+        {"path": "src/skills/library/store.ts", "contains": "Only the skill's owner or a Gateway administrator can change it."}
+      ]
+    },
+    {
+      "id": "gateway-health",
+      "helper": "gateway.mjs",
+      "marker": "VERIFY_OPENCLAW_GATEWAY_HEALTH_PASS",
+      "reach": "Start OpenClaw Gateway on loopback and ask the CLI for Gateway health.",
+      "drive": "Start a disposable Gateway, require both /readyz and /healthz and run openclaw gateway health --json.",
+      "observe": "The real CLI receives a successful health RPC from the instance it started. Cleanup stops the child and closes the port.",
+      "gotchas": "The helper disables bundled plugins and uses a synthetic local token. No existing OpenClaw instance is used.",
+      "source": [{"path": "src/gateway/gateway-http-route-contracts.ts", "contains": "\"/readyz\""}, {"path": "src/cli/gateway-cli/register.ts", "contains": ".command(\"health\")"}]
+    },
+    {
+      "id": "skills-check",
+      "entrypoints": ["openclaw skills check"],
+      "helper": "skills-check.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_CHECK_PASS",
+      "reach": "Ask the CLI which skills are available to the main agent.",
+      "drive": "Run openclaw skills check --json in a temporary workspace, first without the configured prerequisite and then with it.",
+      "observe": "The ready skill is discovered. The conditional skill moves from missing its prerequisite to eligible. The fixture inputs are unchanged.",
+      "gotchas": "Bundled skills are disabled so the assertion exercises local discovery in the temporary workspace.",
+      "source": [{"path": "docs/cli/skills.md", "contains": "openclaw skills check --json"}, {"path": "src/cli/skills-cli.ts", "contains": ".command(\"check\")"}]
+    },
+    {
+      "id": "skills-inspect",
+      "helper": "skills-inspect.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_INSPECT_PASS",
+      "failure_marker": "VERIFY_OPENCLAW_SKILLS_INSPECT_FAIL",
+      "reach": "List available skills and inspect one named skill from a local OpenClaw terminal.",
+      "drive": "Run openclaw skills list and openclaw skills info with JSON and the main agent in a disposable workspace.",
+      "observe": "The list includes the eligible workspace skill. Info shows the exact metadata and SKILL.md path. An absent name exits one with a structured not-found error. Inputs are unchanged.",
+      "gotchas": "Bundled skills are disabled and all reads use the temporary config and workspace.",
+      "source": [
+        {
+          "path": "src/cli/skills-cli.ts",
+          "contains": ".description(\"List all available skills\")"
+        },
+        {
+          "path": "src/cli/skills-cli.ts",
+          "contains": ".command(\"info\")"
+        },
+        {
+          "path": "src/cli/skills-cli.format.ts",
+          "contains": "export function formatSkillInfo"
+        }
+      ],
+      "entrypoints": [
+        "openclaw skills list",
+        "openclaw skills info"
+      ]
+    },
+    {
+      "id": "workshop-roundtrip",
+      "helper": "workshop-roundtrip.mjs",
+      "marker": "VERIFY_OPENCLAW_WORKSHOP_ROUNDTRIP_PASS",
+      "reach": "Open a local OpenClaw terminal with a disposable learned Workshop skill.",
+      "drive": "List the skill, archive it, list it as archived, restore it, and inspect the restored content using the CLI.",
+      "observe": "The skill moves from current to archived and back. The CLI reads the original skill content after restoration.",
+      "gotchas": "The exercise uses only temporary state with no live Gateway or provider credentials.",
+      "source": [
+        {"path": "src/cli/skills-cli.ts", "contains": "for (const method of [\"archive\", \"restore\"] as const)"},
+        {"path": "src/skills/workshop/library.ts", "contains": "export async function archiveWorkshopSkill"},
+        {"path": "src/skills/workshop/library.ts", "contains": "export async function restoreWorkshopSkill"}
+      ],
+      "entrypoints": [
+        "openclaw skills workshop list",
+        "openclaw skills workshop show",
+        "openclaw skills workshop archive",
+        "openclaw skills workshop restore"
+      ]
+    },
+    {
+      "id": "config-validate",
+      "helper": "config-validate.mjs",
+      "marker": "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS",
+      "reach": "Ask the CLI to validate the current OpenClaw configuration.",
+      "drive": "Run openclaw config validate --json once with a valid fixture and once with a string in gateway.port.",
+      "observe": "The first invocation exits zero. The second exits one and identifies gateway.port. After each invocation the configuration still matches that run's input bytes.",
+      "gotchas": "Use the isolated state directory. The validation command does not launch a Gateway.",
+      "source": [
+        {"path": "docs/cli/config.md", "contains": "openclaw config validate --json"},
+        {"path": "src/cli/config-cli.ts", "contains": ".command(\"validate\")"},
+        {"path": "src/cli/config-cli.ts", "contains": "formatInvalidConfigRepairHint(snapshot, \"to repair, or fix the keys above manually.\")"},
+        {"path": "src/config/zod-schema.gateway.ts", "contains": "port: z.number().int()"}
+      ]
+    },
+    {
+      "id": "control-ui-connected",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS",
+      "browser": true,
+      "screenshot": true,
+      "reach": "Open the Gateway Control UI and choose Sessions.",
+      "drive": "Open the real Control UI with Chromium, authenticate to a fresh Gateway, and load the Sessions page.",
+      "observe": "The connected browser reads an empty list through the authenticated Gateway socket and captures the rendered empty state.",
+      "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. Only disposable Gateway state and test credentials are used.",
+      "source": [
+        {
+          "path": "ui/src/build-info.ts",
+          "contains": "OPENCLAW_CONTROL_UI_BUILD_INFO"
+        },
+        {
+          "path": "ui/src/pages/sessions/list-query.ts",
+          "contains": "source: \"sessions-page\""
+        },
+        {
+          "path": "ui/src/api/gateway.ts",
+          "contains": "private handleConnectHello(hello: GatewayHelloOk, plan: ConnectPlan)"
+        },
+        {
+          "path": "ui/src/lib/sessions/session-requests.ts",
+          "contains": "const result = await client.request<SessionsListResult | undefined>("
+        },
+        {
+          "path": "ui/src/pages/sessions/view.tsx",
+          "contains": "const emptyStateMessage = () =>"
+        }
+      ]
+    },
+    {
+      "id": "control-ui-session-rename",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_RENAME_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": [
+        "session-rename"
+      ],
+      "reach": "Open the Sessions row menu and choose Rename.",
+      "drive": "Right-click the fixture row and cancel one edit. Open the same menu from the row button, save a second edit, and restart the Gateway with the same temporary state.",
+      "observe": "Cancel sends no mutation. The one accepted rename matches the original session ID. A fresh authenticated browser sees the updated label after restart.",
+      "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. Only disposable Gateway state and test credentials are used.",
+      "source": [
+        {
+          "path": "ui/src/build-info.ts",
+          "contains": "OPENCLAW_CONTROL_UI_BUILD_INFO"
+        },
+        {
+          "path": "ui/src/pages/sessions/list-query.ts",
+          "contains": "source: \"sessions-page\""
+        },
+        {
+          "path": "ui/src/lib/session-rename.ts",
+          "contains": "function resolveSessionRenamePatch"
+        },
+        {
+          "path": "ui/src/pages/sessions/session-row.tsx",
+          "contains": "onContextMenu={openMenuFromEvent}"
+        },
+        {
+          "path": "ui/src/pages/sessions/session-row.tsx",
+          "contains": "chat.sidebar.openSessionMenu"
+        }
+      ]
+    },
+    {
+      "id": "control-ui-session-delete",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_DELETE_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": [
+        "session-delete"
+      ],
+      "reach": "Select one row on the Sessions page and choose Delete.",
+      "drive": "Cancel one deletion, replace the browser while keeping the Gateway running, then confirm deletion of the selected row and restart the Gateway.",
+      "observe": "After browser replacement, the same Gateway lists both original rows. One Gateway-accepted deletion removes only the selected session. After restart an authenticated all-status list contains the unselected session under its original ID.",
+      "gotchas": "Use a Chromium-enabled image whose built Control UI identifies the selected commit. The disposable fixture warms the real authenticated update.status before browser load. The source-based image used a 3712 MiB container on the 4 GiB test VM.",
+      "source": [
+        {
+          "path": "ui/src/build-info.ts",
+          "contains": "OPENCLAW_CONTROL_UI_BUILD_INFO"
+        },
+        {
+          "path": "ui/src/pages/sessions/list-query.ts",
+          "contains": "source: \"sessions-page\""
+        },
+        {
+          "path": "ui/src/pages/sessions/sessions-page-mutations.ts",
+          "contains": "return deleteSessions(rows.filter"
+        },
+        {
+          "path": "src/gateway/server-methods/sessions-delete.ts",
+          "contains": "\"sessions.delete\": async"
+        },
+        {
+          "path": "src/gateway/server-methods/sessions-delete.ts",
+          "contains": ": await deleteSessionEntryLifecycle(deletionParams);"
+        },
+        {
+          "path": "src/config/sessions/session-accessor.sqlite-lifecycle.ts",
+          "contains": "throw new Error(\"Committed session deletion omitted its database identity\");"
+        }
+      ]
+    },
+    {
+      "id": "control-ui-session-status-filter",
+      "entrypoints": [
+        "openclaw control-ui session-status active",
+        "openclaw control-ui session-status archived",
+        "openclaw control-ui session-status all"
+      ],
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_STATUS_FILTER_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-status-filter"],
+      "reach": "Open Filters on the authenticated Sessions page and find the Session state choices.",
+      "drive": "Start with one active and one archived disposable session. Observe Active, click Archived and All, then return to Active and click Refresh.",
+      "observe": "Four distinct authenticated sessions-page reads use the default, true, all and default archive scopes. Gateway identities and visible rows agree in every state. The browser sends no session mutation and the Gateway and disposable state are cleaned up.",
+      "gotchas": "Use the real Refresh button to prove a fresh read after returning to Active. The isolated Gateway limits V8 semi-spaces to 4 MiB for this journey.",
+      "source": [
+        {"path": "ui/src/pages/sessions/sessions-filters.tsx", "contains": "props.onStatusFilterChange(value)"},
+        {"path": "ui/src/pages/sessions/list-query.ts", "contains": "source: \"sessions-page\""},
+        {"path": "ui/src/lib/sessions/session-requests.ts", "contains": "params.archived = \"all\""},
+        {"path": "src/gateway/server-methods/sessions-read.ts", "contains": "\"sessions.list\": createPreparedReadHandler"}
+      ]
+    },
+    {
+      "id": "control-ui-session-archive-restore",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RESTORE_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-archive-restore"],
+      "reach": "Use the row menu to archive an idle disposable session. Open the Archived Sessions view to restore it.",
+      "drive": "Archive the selected row, then restart the Gateway and authenticate in a fresh browser. Restore the same row from Archived. Restart the Gateway again and open Active in a fresh browser.",
+      "observe": "One accepted patch per action carries the same exact session ID and expected archive state. Both writes survive separate Gateway restarts. The unselected row never leaves Active. Authenticated reads and visible rows agree, and cleanup closes the Gateway and removes the disposable state.",
+      "gotchas": "Use a commit-attested Chromium image and run serially. The fixture has no descendants, automations or active work. Confirmation and Undo need task-specific verification.",
+      "source": [
+        {"path": "ui/src/pages/sessions/archive-actions.ts", "contains": "return await host.patch(row.key, { archived: true }"},
+        {"path": "ui/src/pages/sessions/sessions-page-menu.ts", "contains": "{ archived: false }"},
+        {"path": "ui/src/components/session-menu-view.tsx", "contains": "sessionsView.restoreSession"},
+        {"path": "ui/src/pages/sessions/list-query.ts", "contains": "source: \"sessions-page\""},
+        {"path": "src/gateway/server-methods/sessions-patch-archive.ts", "contains": "\"archivedAt\""}
+      ]
+    },
+    {
+      "id": "control-ui-session-archive-subtree-undo",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_SUBTREE_UNDO_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-archive-subtree-undo"],
+      "reach": "From the parent row menu in the All Sessions view, open the nested-session archive confirmation.",
+      "drive": "Cancel once, then confirm Archive all for the parent and its child. Click the successful batch's Undo action and restart the Gateway with the same disposable state.",
+      "observe": "Cancel sends no mutation. Archive all and Undo each receive one accepted batch patch for the exact original parent and child. Gateway and visible rows agree after each read. The third, unselected session stays active. A fresh browser confirms both restored IDs after restart.",
+      "gotchas": "Use the prepared Chromium image and serial execution. Use persistent idle fixture rows with no pins, automations or running jobs.",
+      "source": [
+        {"path": "ui/src/pages/sessions/sessions-page-menu.ts", "contains": "host.archive(row, hasSessionArchiveDescendants(row, rows))"},
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "export async function archiveConfirmedSessionsWithUndo"},
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "restoreArchivedSessions(undoHost, archived, scope)"},
+        {"path": "ui/src/pages/sessions/session-row.tsx", "contains": "session-data-row--archived"},
+        {"path": "packages/gateway-protocol/src/session-row-fields.ts", "contains": "export function expandSessionRowFacts"},
+        {"path": "packages/gateway-protocol/src/schema/sessions-create.ts", "contains": "parentSessionKey: Type.Optional(NonEmptyString)"}
+      ]
+    },
+    {
+      "id": "control-ui-session-sidebar-archive-automations",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_SIDEBAR_ARCHIVE_AUTOMATIONS_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-sidebar-archive-automations"],
+      "reach": "Alt-click two independent active sessions in the sidebar, right-click an included row, then choose Archive 2.",
+      "drive": "Bind one future automation to a selected session and another to the unselected control. Cancel the warning once, reopen it and confirm Archive anyway. Use the Undo toast, then restart the Gateway.",
+      "observe": "Both warnings name only the selected session's job. Cancel causes no write. The two selected rows archive, and only the selected job pauses. Undo restores both original session IDs and sidebar rows after restart. The paused job stays disabled, the unselected job stays enabled and neither job runs.",
+      "gotchas": "Select top-level rows. Keep scheduling off and fixtures due well after the test. The read-only cron.get checks use a separate authenticated connection.",
+      "source": [
+        {"path": "ui/src/components/app-sidebar-session-navigation-logic.ts", "contains": "if (!session.isChild && event.altKey)"},
+        {"path": "ui/src/components/session-organizer-operations.runtime.ts", "contains": "await archiveSessionsWithUndo("},
+        {"path": "ui/src/components/session-automation-confirm.ts", "contains": "return readBoundAutomationNotice(request)"},
+        {"path": "src/gateway/server-methods/sessions-patch-effects.ts", "contains": "await disableCronJobsBoundToSessions({"},
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "restoreArchivedSessions(undoHost, archived, scope)"}
+      ]
+    },
+    {
+      "id": "control-ui-session-archive-running",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RUNNING_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-archive-running"],
+      "reach": "Start one real Gateway run against a local CLI backend, then open Archive session from the running row in All Sessions.",
+      "drive": "Cancel the active-work warning, verify the same worker is still running, then reopen the warning. Subscribe via a separate read-only connection before confirming. Check the native archive event, run settlement and child exit before restarting the Gateway.",
+      "observe": "Cancel issues no session write and leaves the work active. Confirm archives only the selected session and produces an archive abort for the original run ID. The actual worker exits without a final answer. A fresh browser and Gateway preserve both session IDs and archive only the selected row.",
+      "gotchas": "Use the isolated CLI test plugin rather than cloud credentials. A timeout or a worker stopped by sandbox cleanup cannot prove archive cancellation. Keep a separate idle control session.",
+      "source": [
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "export async function confirmRunningSessionsArchive"},
+        {"path": "ui/src/i18n/locales/en-session-organization.ts", "contains": "Active work in this session will be stopped."},
+        {"path": "src/gateway/server-methods/sessions-lifecycle-drain.ts", "contains": "stopReason: params.action"},
+        {"path": "src/gateway/chat-abort.ts", "contains": "state: \"aborted\" as const"},
+        {"path": "src/agents/cli-runner/execute-process.ts", "contains": "supervisor.cancel(runParams.runId, \"manual-cancel\")"}
+      ]
+    }
+  ]
+}

@@ -1,9 +1,10 @@
+import hashlib
 import json
 import subprocess
 import unittest
 from unittest.mock import patch
 import test_autopilot as fixtures
-from workbench import autopilot
+from workbench import autopilot, prompt_profiles
 
 
 class ReviewScopeTests(unittest.TestCase):
@@ -49,6 +50,20 @@ class ReviewScopeTests(unittest.TestCase):
         self.assertIn('fixed small source', direct.call_args.args[0])
         self.assertIn('no tools', direct.call_args.args[0])
 
+    def test_impact_review_can_inspect_unchanged_callers_even_for_small_changes(self):
+        self.commit('fixed small source')
+        data = autopilot.cli.read(self.f.task)
+        data['impact_review'] = 'runtime-v1'
+        autopilot.cli.write(self.f.task, data)
+        with patch.object(autopilot, 'execute_model', return_value={
+                'exit_code': 0, 'timed_out': False, 'stdout': '{}', 'stderr': ''}) as adapter, \
+                patch.object(autopilot, 'direct_review') as direct:
+            autopilot._model(self.f.task, 'final-review', 'REPORT', read_only=True, model=adapter)
+        direct.assert_not_called()
+        self.assertIn('callers', adapter.call_args.args[1])
+        self.assertTrue(adapter.call_args.kwargs['read_only'])
+        self.assertTrue(adapter.call_args.kwargs['file_tools_only'])
+
     def test_oversized_original_evidence_never_falls_back_or_calls_any_model(self):
         with patch.object(autopilot, 'execute_model') as cli, patch.object(autopilot, 'direct_review') as direct:
             with self.assertRaisesRegex(autopilot.AutopilotError, '100000'):
@@ -87,6 +102,27 @@ class ReviewScopeTests(unittest.TestCase):
         self.assertTrue(cli.call_args.kwargs['read_only'])
         self.assertIn(str(self.f.task.parent), cli.call_args.args[1])
         self.assertIn('decode embedded scripts', cli.call_args.args[1])
+
+    def test_planner_guidance_tracks_kind_and_preserves_read_only_adapter(self):
+        for kind, observable in (('bug', 'same surface'), ('feature', 'side effects')):
+            with self.subTest(kind=kind):
+                data = autopilot.cli.read(self.f.task)
+                data['kind'] = kind
+                autopilot.cli.write(self.f.task, data)
+                with patch.object(autopilot, 'execute_model', return_value={
+                        'exit_code': 0, 'timed_out': False, 'stdout': '{}', 'stderr': ''}) as adapter:
+                    autopilot._model(self.f.task, 'plan', 'UNTRUSTED TASK DESCRIPTION', read_only=True, model=adapter)
+                prompt = adapter.call_args.args[1]
+                guide, task = prompt.split('\n\nTASK STAGE AND UNTRUSTED INPUTS\n', 1)
+                self.assertIn(observable, guide)
+                self.assertIn('UNTRUSTED TASK DESCRIPTION', task)
+                self.assertTrue(adapter.call_args.kwargs['read_only'])
+                self.assertTrue(adapter.call_args.kwargs['file_tools_only'])
+                record = json.loads((self.f.task.parent / 'plan-model.json').read_text())['workflow_guidance']
+                self.assertEqual(record['pstack_commit'], prompt_profiles.PSTACK_COMMIT)
+                self.assertEqual(record['kind'], kind)
+                applied = guide.split('IBOARD WORKFLOW GUIDANCE\n', 1)[1]
+                self.assertEqual(record['guidance_sha256'], hashlib.sha256(applied.encode()).hexdigest())
 
     def test_complete_diff_and_entrypoints_allow_bounded_tool_free_review(self):
         self.commit('large source\n' * 10000)

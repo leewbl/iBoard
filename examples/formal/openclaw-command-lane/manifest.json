@@ -1,0 +1,54 @@
+{
+  "id": "openclaw-command-lane",
+  "method": "bounded-real-code",
+  "tool_version": "node v24.22.1",
+  "property": "When a command lane has capacity one, a second command callback cannot start while the first remains active.",
+  "harm": "Two commands in the same lane could modify shared session state at the same time.",
+  "bounds": [
+    "One lane, three commands, capacity fixed at one.",
+    "All legal orders of the three enqueue events and three settlement events, with each settlement either fulfilling or rejecting."
+  ],
+  "assumptions": [
+    "Each event is followed by an event-loop turn so the command queue can drain pending microtasks.",
+    "Each queued command has equal priority and uses a controlled promise inside the real enqueue API."
+  ],
+  "exclusions": [
+    "Gateway restarts, dynamic capacity, grouped lanes, task timeouts, abort signals, and four or more commands."
+  ],
+  "checker": "capacity.mjs",
+  "replay": "replay.mjs",
+  "minimum_explored": 40,
+  "source": [
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "function drainLane(",
+      "meaning": "The drain loop evaluates capacity before admitting the next callback."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "state.activeTasks.set(taskId, entry.sessionTarget)",
+      "meaning": "Admission accounts for active work before invoking callbacks."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "state.activeTasks.delete(taskId)",
+      "meaning": "Settlement releases capacity before pumping the same lane."
+    },
+    {
+      "path": "src/process/command-queue.ts",
+      "contains": "export function enqueueCommandInLane<",
+      "meaning": "The check enqueues real callbacks through this public API."
+    },
+    {
+      "path": "src/process/command-queue.state.ts",
+      "contains": "export function enqueueLaneQueue(",
+      "meaning": "Equal-priority commands enter the production queue used in the exploration."
+    }
+  ],
+  "mutation": {
+    "path": "src/process/command-queue.ts",
+    "before": "state.activeTasks.size < state.maxConcurrent &&",
+    "after": "state.activeTasks.size <= state.maxConcurrent &&",
+    "meaning": "Permit a new admission even when every slot in the lane is occupied."
+  }
+}

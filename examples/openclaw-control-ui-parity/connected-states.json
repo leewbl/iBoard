@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "openclaw_connected": {
+    "driver_sha256": "ec3c2f18bf5bacc28acf231a4d2e801b2fc4ad0597591f93b0840316c89b29a9"
+  },
+  "rebuild": {
+    "profile": "openclaw-control-ui-login",
+    "sha256": "ca05a69a4f7917e28401957ab5a547bdf1ead2417e70ce1eeb4068efde523b9c"
+  },
+  "viewport": {"width": 1280, "height": 800},
+  "states": [
+    {"id": "empty", "journey": "empty"},
+    {"id": "active", "journey": "active"},
+    {"id": "archived", "journey": "archived"},
+    {"id": "all", "journey": "all"}
+  ]
+}

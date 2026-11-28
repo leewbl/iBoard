@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "source": "examples/openclaw-runtime-probes/shell-viewport.js",
+  "samples": 3,
+  "settle_ms": 50,
+  "metrics": {
+    "visual_viewport_height_px": {"direction": "decrease", "min_change": 100, "restore_tolerance": 1, "max_spread": 1},
+    "published_shell_height_px": {"direction": "decrease", "min_change": 100, "restore_tolerance": 1, "max_spread": 1}
+  }
+}

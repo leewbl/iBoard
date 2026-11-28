@@ -12,7 +12,7 @@ import re
 import subprocess
 import tempfile
 
-from workbench import cli, delivery
+from workbench import cli, delivery, run_control
 from workbench.task_lock import locked_task
 
 
@@ -82,7 +82,8 @@ def _report_summary(data, item, commit):
         if len(raw) > 2_000_000 or hashlib.sha256(raw).hexdigest() != item['sha256']:
             raise PublishError('sandbox evidence changed or exceeds the publication limit')
         report = json.loads(raw)
-        if not delivery._valid_run(item, item['actor'], item['kind'], commit, data['repo']):
+        regression = data.get('regression_test') if item['kind'] in ('tdd-red', 'tdd-green') else None
+        if not delivery._valid_run(item, item['actor'], item['kind'], commit, data['repo'], regression=regression):
             raise PublishError('sandbox evidence does not match the verified commit')
         if (type(report.get('exit_code')) is not int or type(report.get('expected_exit')) is not int or
                 not -255 <= report['exit_code'] <= 255):
@@ -318,9 +319,13 @@ def _reviewed_screenshot(data, head):
     raise PublishError('no independently reviewed screenshot is bound to this candidate')
 
 
-def _screenshot_body(task_path, data, head, repo, github):
+def _screenshot_body(task_path, data, head, repo, github, *, refactor_review=None, replay_check=None):
     """Publish a reviewed screenshot in a standalone, reproducible evidence branch."""
-    original, screenshot, review = _reviewed_screenshot(data, head)
+    review_data = data
+    if refactor_review is not None:
+        review_data = {**data, 'evidence': [item for item in data['evidence']
+                       if item.get('kind') != 'independent-review' or item == refactor_review]}
+    original, screenshot, review = _reviewed_screenshot(review_data, head)
     image = _publication_png(original)
     branch = f"workbench-evidence/{data['id']}/{head}"
     manifest = {'schema': 1, 'candidate_commit': head, 'original_screenshot_sha256': screenshot['sha256'],
@@ -364,7 +369,8 @@ def _screenshot_body(task_path, data, head, repo, github):
             if issues or checked_head != head:
                 raise PublishError('evidence or budget changed before screenshot publication')
             delivery._independent_verification(current_data, head)
-            _local_remote_guard(task_path, data, head, github, repo)
+            _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                                replay_check=replay_check)
             github.push_new(directory, repo, branch, commit)
         elif current != commit:
             raise PublishError('screenshot evidence branch differs; refusing to overwrite')
@@ -395,16 +401,93 @@ def _pr_body(data, head):
                 not isinstance(destination, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', destination)):
             raise PublishError('UI publication requires an accessible verified screenshot')
     sections = [('reproduction', data['base_commit']), ('resolution', head), ('test-result', head)]
-    if data.get('kind') == 'feature':
+    if data.get('kind') == 'refactor':
         sections = [('test-result', head)]
+    elif data.get('kind') == 'feature':
+        sections = [('resolution', head), ('test-result', head)] if data.get('phase_binding') else [('test-result', head)]
+    if data.get('regression_test') is not None:
+        from workbench import tdd
+        sections = [('tdd-red', data['base_commit']), ('tdd-green', head), *sections]
     body = ('This change was prepared by the engineering workbench.\n\n'
             f'Verified candidate: `{head}`\n')
+    if data.get('regression_test') is not None:
+        digest = tdd.digest(data['regression_test'])
+        path = data['regression_test']['path']
+        body += f'\nFocused regression `{path}` retained in the candidate. Source SHA-256 `{digest}`.\n'
+    if data.get('root_cause'):
+        item = delivery._independent_verification(data, head, destination=data.get('delivery_repo'))
+        causal = json.loads(Path(item['path']).read_bytes())['causal_verification']
+        body += '\n## Root cause\n\n'
+        body += '\n'.join('    ' + line for line in _public_log_excerpt(causal['explanation']).splitlines()) + '\n'
+        body += f'\nPaired baseline and candidate controls. Independent review SHA-256 `{item["sha256"]}`.\n'
     if data.get('surface') == 'ui':
         body += (f"\n## Screenshot\n\n[View verified screenshot](https://github.com/{destination}/blob/"
                  f"{artifact['commit']}/screenshot.png) (SHA-256 `{artifact['sha256']}`). "
                  f"[View screenshot provenance](https://github.com/{destination}/blob/{artifact['commit']}/manifest.json).\n")
+    if data.get('visual_baseline'):
+        from workbench import visual_parity
+        proof = visual_parity.require(data, head)
+        states = cli.read(Path(proof['path']))['states']
+        body += (f'\n## Visual parity\n\nZero changed pixels in both independent captures of '
+                 f'each frozen state: {", ".join(states)}. Evidence SHA-256 `{proof["sha256"]}`.\n')
     if data.get('kind') == 'feature':
         body += f'\n## Functional documentation\n\n[View documentation at the verified commit]({_feature_doc_link(data, head)})\n'
+    if 'skill_authoring' in data:
+        from workbench import skill_authoring
+        proof = skill_authoring.require(data, head)
+        body += ('\n## Skill verification\n\n'
+                 f'Checked committed metadata and references with {proof["probes"]} offline structural runs. '
+                 f'Evidence SHA-256 `{proof["sha256"]}`.\n')
+    if 'project_verification_maintenance' in data:
+        from workbench import project_verify_delivery
+        proof = project_verify_delivery.require(data, head)
+        body += ('\n## Verification skill maintenance\n\n'
+                 f'`{proof["skill"]}` passed {proof["runs"]} isolated checks, including doctor. '
+                 f'Evidence SHA-256 `{proof["sha256"]}`.\n')
+        if 'source_review_sha256' in proof:
+            body += (f'Read-only source review completed for {proof["source_reviewed_features"]} features. '
+                     f'Source review SHA-256 `{proof["source_review_sha256"]}`.\n')
+    if 'performance_contract' in data:
+        from workbench import perf_issue
+        measurement = perf_issue.require(data, head)
+        body += ('\n## Performance verification\n\n'
+                 f'Alternating {measurement["scope"]} workload: '
+                 f'{measurement["baseline_ms"]:.3f} ms → {measurement["candidate_ms"]:.3f} ms '
+                 f'({measurement["delta_pct"]:.2f}% lower median). '
+                 f'Evidence SHA-256 `{measurement["artifact"]["sha256"]}`.\n')
+    if 'blast_radius' in data:
+        from workbench import blast_radius
+        impact = blast_radius.require(data, head)
+        facts = impact['facts'].values()
+        proven = sum(row['status'] == 'proven' for row in facts)
+        body += (f'\n## Blast-radius verification\n\n'
+                 f'{proven} facts proved with paired runs and independent reviews. '
+                 f'{len(facts) - proven} facts remain unproven. '
+                 f'Evidence SHA-256 `{data["blast_radius"]["report"]["sha256"]}`.\n')
+    if data.get('kind') == 'refactor':
+        from workbench import refactor, refactor_delivery
+        try:
+            proof = refactor_delivery.require(data, head)
+            raw = refactor._read(Path(proof['path']), 512_000)
+            if hashlib.sha256(raw).hexdigest() != proof['sha256']:
+                raise PublishError('refactoring report changed while preparing the PR description')
+            steps = len(json.loads(raw)['steps'])
+        except (OSError, ValueError, KeyError, cli.WorkbenchError) as error:
+            raise PublishError(str(error)) from error
+        unit = 'commit' if steps == 1 else 'commits'
+        body += (f'\n## Refactoring equivalence\n\nVerified {steps} ordered {unit} against the frozen behavior contract. '
+                 f'Comparison evidence SHA-256 `{proof["sha256"]}`.\n')
+    if data.get('phase_binding'):
+        from workbench import phase_contract
+
+        phase = phase_contract.read(data)
+        result = phase_contract.verify_completion(data, head, context=phase)
+        ceiling = phase['entry']['verify']['perf']['max_ms']
+        trunk = phase['contract']['plan']['baseline']
+        digest = data['phase_result']['sha256']
+        body += (f"\n## Phase acceptance\n\nPhase `{phase['phase']}` used original trunk `{trunk}` as its benchmark. "
+                 f"The verified candidate median was {result['median_ms']:.3f} ms against a {ceiling:g} ms limit. "
+                 f"Phase evidence SHA-256 `{digest}`.\n")
     for kind, commit in sections:
         matching = [item for item in data['evidence'] if not item.get('superseded') and
                     item.get('kind') == kind and item.get('commit') == commit and
@@ -416,14 +499,15 @@ def _pr_body(data, head):
             summary, excerpt = _report_summary(data, item, commit)
             body += f"- {summary}; commit `{commit}`; report SHA-256 `{item['sha256']}`\n"
             body += '\n' + '\n'.join('      ' + line for line in excerpt.splitlines()) + '\n'
-    gateway = _require_gateway(data, head, data.get('delivery_repo'))
-    if gateway:
-        author, verifier = gateway
-        body += ('\n## Offline Gateway verification\n\n'
-                 'The implementer and independent verifier used separate containers on the same source-verified '
-                 'image. Both completed startup, HTTP readiness and liveness, the real CLI health query, and cleanup.\n\n'
-                 f"- Implementer report SHA-256: `{author['sha256']}`\n"
-                 f"- Independent rerun report SHA-256: `{verifier['sha256']}`\n")
+    journeys = _require_gateway(data, head, data.get('delivery_repo'))
+    if journeys:
+        body += ('\n## Offline OpenClaw verification\n\n'
+                 'Each journey passed in two separate containers on the same source-verified image.\n\n')
+        for journey, (author, verifier) in journeys.items():
+            body += (f"- `{journey}` implementer report SHA-256: `{author['sha256']}`\n"
+                     f"- `{journey}` independent rerun report SHA-256: `{verifier['sha256']}`\n")
+            if verifier.get('screenshot_sha256'):
+                body += f"- `{journey}` independent screenshot SHA-256: `{verifier['screenshot_sha256']}`\n"
     body += '\nLog excerpts are bounded and common credentials, URLs, email addresses, and paths are redacted.\n'
     if len(body.encode('utf-8')) > 60000:
         raise PublishError('PR evidence summary exceeds the publication size limit')
@@ -431,10 +515,60 @@ def _pr_body(data, head):
              if data.get('kind') == 'bug' and data.get('original_source') == data.get('source') else None)
     if issue is not None:
         body += f'\nResolves #{issue}\n'
+    if 'pr_brief' in data:
+        from workbench import pr_brief
+        try:
+            body = pr_brief.render(data, head, body)
+        except pr_brief.ERRORS as error:
+            raise PublishError(str(error)) from error
     return body
 
 
-def _matches_pr(pr, repo, number, branch, head, base):
+def _brief(data, head, repo):
+    from workbench import pr_brief
+    try:
+        return pr_brief.require(data, head, repo) if 'pr_brief' in data else {}
+    except pr_brief.ERRORS as error:
+        raise PublishError(str(error)) from error
+
+
+def _matches_presentation(pr, body, title):
+    return pr.get('body') == body and (title is None or (pr.get('title') == title and pr.get('isDraft') is False))
+
+
+def _require_ready_pr(pulls, title):
+    if title is not None and any(pr.get('isDraft') is not False for pr in pulls):
+        raise PublishError('existing open PR is a draft or its ready state is unknown')
+
+
+def _update_presentation(github, repo, number, body, title):
+    if title is None:
+        github.update_body(repo, number, body)
+    else:
+        github.update_body(repo, number, body, title=title)
+
+
+def _base_matches(github, repo, data, parent):
+    if parent is None:
+        return github.branch(repo, 'main') == data['base_commit']
+    from workbench import pr_brief
+    try:
+        pr_brief.verify_parent(github, repo, data, parent)
+    except delivery.DeliveryError as error:
+        raise PublishError(str(error)) from error
+    return True
+
+
+def _matching_pulls(github, repo, branch, parent):
+    if parent is None:
+        return github.pulls(repo, branch)
+    pulls = github.pulls(repo, branch, base=None)
+    if any(pr.get('baseRefName') != parent['branch'] for pr in pulls):
+        raise PublishError('existing PR targets a different base branch')
+    return pulls
+
+
+def _matches_pr(pr, repo, number, branch, head, base, base_branch='main'):
     owner, name = repo.split('/')
     head_repo = pr.get('headRepository')
     head_owner = pr.get('headRepositoryOwner')
@@ -443,7 +577,7 @@ def _matches_pr(pr, repo, number, branch, head, base):
             str(head_repo.get('name', '')).lower() == name.lower() and
             str(head_owner.get('login', '')).lower() == owner.lower() and
             pr.get('headRefName') == branch and pr.get('headRefOid') == head and
-            pr.get('baseRefName') == 'main' and pr.get('baseRefOid') == base)
+            pr.get('baseRefName') == base_branch and pr.get('baseRefOid') == base)
 
 
 class Publisher(delivery.GitHub):
@@ -479,6 +613,19 @@ class Publisher(delivery.GitHub):
                                       capture_output=True, timeout=self._bounded(30))
             if ancestor.returncode:
                 raise PublishError('updated candidate must descend from the published candidate')
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise PublishError('unable to check the ancestry of the updated candidate') from error
+        self._push_leased(workspace, repo, branch, old, head)
+
+    def push_rebased(self, workspace, repo, branch, old, head):
+        """Replace the original verified task branch after a replay gate."""
+        if (not re.fullmatch(r'workbench/[A-Za-z0-9][A-Za-z0-9_-]{0,63}', branch)
+                or not all(re.fullmatch(r'[0-9a-f]{40}', x) for x in (old, head)) or old == head):
+            raise PublishError('invalid replay branch or revisions')
+        self._push_leased(workspace, repo, branch, old, head)
+
+    def _push_leased(self, workspace, repo, branch, old, head):
+        try:
             proc = subprocess.run(['git', '-C', workspace, 'push',
                                    f'--force-with-lease=refs/heads/{branch}:{old}',
                                    f'https://github.com/{repo}.git', f'{head}:refs/heads/{branch}'],
@@ -490,19 +637,24 @@ class Publisher(delivery.GitHub):
         if proc.returncode:
             raise PublishError('update failed or remote branch changed; inspect remote state')
 
-    def pulls(self, repo, branch):
-        return self._call('pr', 'list', '--repo', repo, '--state', 'open', '--head', branch,
-                          '--base', 'main', '--json', 'number,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository,headRepository,headRepositoryOwner,body')
+    def pulls(self, repo, branch, *, base='main', state='open'):
+        scope = ('--base', base) if base is not None else ()
+        return self._call('pr', 'list', '--repo', repo, '--state', state, '--head', branch, *scope,
+                          '--json', 'number,headRefName,headRefOid,baseRefName,baseRefOid,isCrossRepository,'
+                          'headRepository,headRepositoryOwner,body,title,isDraft,state')
 
-    def create(self, repo, branch, task_id, data):
+    def create(self, repo, branch, task_id, data, *, draft=False):
         body = data['_prepared_pr_body']
+        title = data.get('_prepared_pr_title') or f'Complete verified task {task_id}'
+        base = data.get('_prepared_pr_base', 'main')
         with tempfile.TemporaryDirectory(prefix='workbench-pr-') as directory:
             path = Path(directory) / 'body.md'
             path.write_text(body, encoding='utf-8')
             try:
-                proc = subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--base', 'main',
-                                       '--head', branch, '--title', f'Complete verified task {task_id}',
-                                       '--body-file', str(path)], capture_output=True, text=True, timeout=self._bounded(120))
+                proc = subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--base', base,
+                                       '--head', branch, '--title', title, '--body-file', str(path),
+                                       *(['--draft'] if draft else [])], capture_output=True, text=True,
+                                      timeout=self._bounded(120))
             except subprocess.TimeoutExpired as error:
                 raise PublishError('PR creation outcome unknown after timeout; inspect GitHub before retrying') from error
             except OSError as error:
@@ -514,13 +666,15 @@ class Publisher(delivery.GitHub):
             raise PublishError('PR creation response did not identify a pull request')
         return int(match.group(1))
 
-    def update_body(self, repo, number, body):
+    def update_body(self, repo, number, body, *, title=None):
         with tempfile.TemporaryDirectory(prefix='workbench-pr-') as directory:
             path = Path(directory) / 'body.md'
             path.write_text(body, encoding='utf-8')
             try:
-                proc = subprocess.run(['gh', 'pr', 'edit', str(number), '--repo', repo,
-                                       '--body-file', str(path)], capture_output=True, text=True,
+                args = ['gh', 'pr', 'edit', str(number), '--repo', repo, '--body-file', str(path)]
+                if title is not None:
+                    args.extend(('--title', title))
+                proc = subprocess.run(args, capture_output=True, text=True,
                                       timeout=self._bounded(120))
             except subprocess.TimeoutExpired as error:
                 raise PublishError('PR description update outcome unknown; inspect remote before retrying') from error
@@ -538,28 +692,85 @@ def _require_gateway(data, head, repo):
         raise PublishError(str(error)) from error
 
 
-def _local_remote_guard(task_path, data, head, github, repo):
-    _require_gateway(cli.read(task_path), head, repo)
+def _local_remote_guard(task_path, data, head, github, repo, *, refactor_review=None, replay_check=None):
+    latest = cli.read(task_path)
+    _require_gateway(latest, head, repo)
+    if latest.get('project_verification_maintenance') != data.get('project_verification_maintenance'):
+        raise PublishError('the verification maintenance proof changed before GitHub write')
+    if 'project_verification_maintenance' in latest:
+        from workbench import project_verify_delivery
+        project_verify_delivery.require(latest, head)
+    if latest.get('pr_brief') != data.get('pr_brief'):
+        raise PublishError('the PR briefing changed before GitHub write')
+    if 'pr_brief' in latest:
+        packet = _brief(latest, head, repo)
+        if packet['parent']:
+            _base_matches(github, repo, latest, packet['parent'])
+    if 'performance_contract' in data or 'performance_contract' in latest:
+        from workbench import perf_issue
+        if any(latest.get(key) != data.get(key) for key in ('performance_contract', 'performance_result')):
+            raise PublishError('the performance proof changed before GitHub write')
+        perf_issue.require(latest, head)
+    if latest.get('blast_radius') != data.get('blast_radius'):
+        raise PublishError('the blast-radius proof changed before GitHub write')
+    if 'blast_radius' in latest:
+        from workbench import blast_radius
+        blast_radius.require(latest, head, Path(task_path).parent / 'issue.txt')
+    if data.get('phase_binding'):
+        if latest.get('phase_binding') != data['phase_binding']:
+            raise PublishError('approved phase changed before GitHub write')
+        delivery._independent_verification(latest, head, destination=repo)
     if data.get('local_gate'):
         try:
             delivery.require_local_write(task_path, data, head, github, repo)
         except delivery.DeliveryError as error:
             raise PublishError(str(error)) from error
+    try:
+        delivery.recheck_visual_write(task_path, data, head, repo)
+        delivery.recheck_refactor_write(task_path, data, head, repo, refactor_review)
+    except delivery.DeliveryError as error:
+        raise PublishError(str(error)) from error
+    if replay_check:
+        replay_check()
+    run_control.admit(task_path, PublishError)
+
+
+def _admit_replay(task_path, data, repo, authority, action, *, number=None, previous=None):
+    if 'baseline_replay' not in data and authority is None:
+        return None
+
+    def check():
+        try:
+            delivery.require_replay_write(task_path, cli.read(task_path), repo, authority, action,
+                                          number=number, previous=previous)
+        except (ValueError, delivery.DeliveryError) as error:
+            raise PublishError(str(error)) from error
+
+    check()
+    return check
 
 
 @locked_task('task_path')
-def publish(task_path, repo, github=None):
+def publish(task_path, repo, github=None, *, replay_authority=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise PublishError('invalid repository')
     task_path = Path(task_path)
+    run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
+    delivery.require_refactor_intake(task_path, data)
+    if 'verification_target' in data:
+        raise PublishError('verification-only task does not authorize publishing')
+    if 'benny_reproduction' in data:
+        raise PublishError('Benny repair delivery requires a draft PR with sealed before/after evidence')
+    replay_check = _admit_replay(task_path, data, repo, replay_authority, 'create')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
     head, issues = cli.gate(data, 'HEAD')
     if issues:
         raise PublishError('local evidence gate failed: ' + '; '.join(issues))
     _require_gateway(data, head, repo)
-    delivery._independent_verification(data, head, destination=repo)
+    review = delivery._independent_verification(data, head, destination=repo)
+    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') or data.get('coverage_swarm') else None
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -569,75 +780,96 @@ def publish(task_path, repo, github=None):
     remote = github.repository(repo)
     if not remote.get('fork') or remote.get('owner', {}).get('login', '').lower() != owner.lower() or remote.get('default_branch') != 'main':
         raise PublishError('destination must be the user personal fork with main as default')
-    if github.branch(repo, 'main') != data['base_commit']:
+    packet = _brief(data, head, repo)
+    title, parent = packet.get('title'), packet.get('parent')
+    base_branch = parent['branch'] if parent else 'main'
+    if not _base_matches(github, repo, data, parent):
         raise PublishError('base changed since verification')
+    branch = f"workbench/{data['id']}"
+    if title is not None:
+        _require_ready_pr(_matching_pulls(github, repo, branch, parent), title)
     if data.get('surface') == 'ui':
-        body, artifact = _screenshot_body(task_path, data, head, repo, github)
+        body, artifact = _screenshot_body(task_path, data, head, repo, github, refactor_review=refactor_review,
+                                          replay_check=replay_check)
     else:
         artifact = None
         body = _pr_body({**data, 'delivery_repo': repo}, head)
-    branch = f"workbench/{data['id']}"
     current = github.remote_head(repo, branch)
     if current is None:
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('task evidence or budget changed before branch push')
-        _local_remote_guard(task_path, data, head, github, repo)
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
         github.push_new(data['repo'], repo, branch, head)
     elif current != head:
         raise PublishError('remote task branch differs; refusing to overwrite')
     current_head, issues = cli.gate(cli.read(task_path), head)
-    if issues or current_head != head or github.remote_head(repo, branch) != head or github.branch(repo, 'main') != data['base_commit']:
+    if (issues or current_head != head or github.remote_head(repo, branch) != head
+            or not _base_matches(github, repo, data, parent)):
         raise PublishError('task or remote changed while publishing; inspect before retrying')
-    pulls = github.pulls(repo, branch)
+    pulls = _matching_pulls(github, repo, branch, parent)
+    _require_ready_pr(pulls, title)
     if len(pulls) > 1:
         raise PublishError('multiple matching pull requests')
     if pulls:
         pr = pulls[0]
-        if not _matches_pr(pr, repo, pr.get('number'), branch, head, data['base_commit']):
+        if not _matches_pr(pr, repo, pr.get('number'), branch, head, data['base_commit'], base_branch):
             raise PublishError('existing pull request does not match verified task')
         number = pr['number']
-        if pr.get('body') != body:
+        if not _matches_presentation(pr, body, title):
             checked = cli.read(task_path)
             checked_head, issues = cli.gate(checked, head)
             if issues or checked_head != head or _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
                 raise PublishError('evidence or budget changed before PR description update')
-            _local_remote_guard(task_path, data, head, github, repo)
-            github.update_body(repo, number, body)
-            pulls = github.pulls(repo, branch)
-            if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or
-                    pulls[0].get('body') != body):
+            _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                                replay_check=replay_check)
+            _update_presentation(github, repo, number, body, title)
+            pulls = _matching_pulls(github, repo, branch, parent)
+            if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit'], base_branch) or
+                    not _matches_presentation(pulls[0], body, title)):
                 raise PublishError('PR description update was not confirmed')
     else:
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('task evidence or budget changed before PR creation')
-        _local_remote_guard(task_path, data, head, github, repo)
-        number = github.create(repo, branch, data['id'], {**data, '_prepared_pr_body': body})
-        pulls = github.pulls(repo, branch)
-        if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or
-                pulls[0].get('body') != body or github.remote_head(repo, branch) != head or
-                github.branch(repo, 'main') != data['base_commit']):
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
+        number = github.create(repo, branch, data['id'], {**data, '_prepared_pr_body': body,
+                                                        '_prepared_pr_title': title, '_prepared_pr_base': base_branch})
+        pulls = _matching_pulls(github, repo, branch, parent)
+        if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit'], base_branch) or
+                not _matches_presentation(pulls[0], body, title) or github.remote_head(repo, branch) != head or
+                not _base_matches(github, repo, data, parent)):
             raise PublishError('created PR identity or evidence description could not be confirmed')
     return {'repo': repo, 'pr': number, 'head': head, 'url': f'https://github.com/{repo}/pull/{number}'}
 
 
 @locked_task('task_path')
-def republish(task_path, repo, number, previous_head, github=None):
+def republish(task_path, repo, number, previous_head, github=None, *, replay_authority=None):
     """Update one existing task PR only after fresh verification and an exact lease."""
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or type(number) is not int or number < 1:
         raise PublishError('invalid repository or PR number')
     if not isinstance(previous_head, str) or not re.fullmatch(r'[0-9a-f]{40}', previous_head):
         raise PublishError('invalid previously published revision')
     task_path = Path(task_path)
+    run_control.admit(task_path, PublishError)
     data = cli.read(task_path)
+    delivery.require_refactor_intake(task_path, data)
+    if 'verification_target' in data:
+        raise PublishError('verification-only task does not authorize publishing')
+    if 'benny_reproduction' in data:
+        raise PublishError('Benny repair delivery requires a draft PR with sealed before/after evidence')
+    replay_check = _admit_replay(task_path, data, repo, replay_authority, 'replace', number=number,
+                                 previous=previous_head)
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', data.get('id', '')):
         raise PublishError('invalid task ID')
     head, issues = cli.gate(data, 'HEAD')
     if issues or head == previous_head:
         raise PublishError('new candidate is not independently verified or unchanged')
     _require_gateway(data, head, repo)
-    delivery._independent_verification(data, head, destination=repo)
+    review = delivery._independent_verification(data, head, destination=repo)
+    refactor_review = review if data.get('kind') == 'refactor' or data.get('root_cause') or data.get('coverage_swarm') else None
     github = github or Publisher()
     if isinstance(github, delivery.GitHub):
         github.set_task_deadline(data)
@@ -648,18 +880,24 @@ def republish(task_path, repo, number, previous_head, github=None):
             remote.get('default_branch') != 'main'):
         raise PublishError('destination must be the signed-in personal fork')
     branch = f"workbench/{data['id']}"
-    pulls = github.pulls(repo, branch)
-    already_updated = (len(pulls) == 1 and _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) and
-                       github.branch(repo, 'main') == data['base_commit'] and github.remote_head(repo, branch) == head)
+    packet = _brief(data, head, repo)
+    title, parent = packet.get('title'), packet.get('parent')
+    base_branch = parent['branch'] if parent else 'main'
+    pulls = _matching_pulls(github, repo, branch, parent)
+    _require_ready_pr(pulls, title)
+    already_updated = (len(pulls) == 1 and _matches_pr(pulls[0], repo, number, branch, head, data['base_commit'], base_branch)
+                       and _base_matches(github, repo, data, parent) and github.remote_head(repo, branch) == head)
     if not already_updated:
-        if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, previous_head, data['base_commit']) or
-                github.branch(repo, 'main') != data['base_commit'] or github.remote_head(repo, branch) != previous_head):
+        if (len(pulls) != 1
+                or not _matches_pr(pulls[0], repo, number, branch, previous_head, data['base_commit'], base_branch)
+                or not _base_matches(github, repo, data, parent) or github.remote_head(repo, branch) != previous_head):
             raise PublishError('PR, task branch, or base changed before update')
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('evidence or budget changed before update')
     if data.get('surface') == 'ui':
-        body, artifact = _screenshot_body(task_path, data, head, repo, github)
+        body, artifact = _screenshot_body(task_path, data, head, repo, github, refactor_review=refactor_review,
+                                          replay_check=replay_check)
     else:
         artifact = None
         body = _pr_body({**data, 'delivery_repo': repo}, head)
@@ -667,12 +905,14 @@ def republish(task_path, repo, number, previous_head, github=None):
         checked_head, issues = cli.gate(cli.read(task_path), head)
         if issues or checked_head != head:
             raise PublishError('evidence or budget changed before update')
-        _local_remote_guard(task_path, data, head, github, repo)
-        github.push_update(data['repo'], repo, branch, previous_head, head)
-    if github.remote_head(repo, branch) != head or github.branch(repo, 'main') != data['base_commit']:
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
+        push = github.push_rebased if replay_check else github.push_update
+        push(data['repo'], repo, branch, previous_head, head)
+    if github.remote_head(repo, branch) != head or not _base_matches(github, repo, data, parent):
         raise PublishError('remote changed during update; inspect before retrying')
-    pulls = github.pulls(repo, branch)
-    if len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']):
+    pulls = _matching_pulls(github, repo, branch, parent)
+    if len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit'], base_branch):
         raise PublishError('PR did not update to the verified candidate')
     checked = cli.read(task_path)
     checked_head, issues = cli.gate(checked, head)
@@ -681,12 +921,14 @@ def republish(task_path, repo, number, previous_head, github=None):
     delivery._independent_verification(checked, head, destination=repo)
     if _pr_body({**checked, 'delivery_repo': repo, '_ui_evidence': artifact}, head) != body:
         raise PublishError('published evidence changed during PR update')
-    if pulls[0].get('body') != body:
-        _local_remote_guard(task_path, data, head, github, repo)
-        github.update_body(repo, number, body)
-        pulls = github.pulls(repo, branch)
-    if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit']) or
-            pulls[0].get('body') != body or github.remote_head(repo, branch) != head or
-            github.branch(repo, 'main') != data['base_commit']):
+    _require_ready_pr(pulls, title)
+    if not _matches_presentation(pulls[0], body, title):
+        _local_remote_guard(task_path, data, head, github, repo, refactor_review=refactor_review,
+                            replay_check=replay_check)
+        _update_presentation(github, repo, number, body, title)
+        pulls = _matching_pulls(github, repo, branch, parent)
+    if (len(pulls) != 1 or not _matches_pr(pulls[0], repo, number, branch, head, data['base_commit'], base_branch) or
+            not _matches_presentation(pulls[0], body, title) or github.remote_head(repo, branch) != head or
+            not _base_matches(github, repo, data, parent)):
         raise PublishError('PR description or identity changed; inspect before retrying')
     return {'repo': repo, 'pr': number, 'head': head, 'url': f'https://github.com/{repo}/pull/{number}'}

@@ -52,6 +52,31 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(args[args.index(flag) + 1], 'Read,Edit,Write,Glob,Grep')
             self.assertEqual(spawn.return_value.communicate.call_args.kwargs['timeout'], 75)
 
+    def test_trace_retains_observations_and_final_output_without_tool_payload(self):
+        stream = [
+            {'type':'system', 'subtype':'init', 'model':'glm-test'},
+            {'type':'assistant', 'message':{'content':[
+                {'type':'thinking', 'thinking':'private-thought'},
+                {'type':'text', 'text':'Checking test-secret'},
+                {'type':'tool_use', 'name':'Read', 'id':'one', 'input':{'file_path':'private-input'}}]}},
+            {'type':'user', 'message':{'content':[
+                {'type':'tool_result', 'tool_use_id':'one', 'content':'private-output'}]}},
+            {'type':'result', 'subtype':'success', 'is_error':False, 'result':'{"status":"ready"}'},
+        ]
+        with patch.object(claude_glm, 'ROOT', self.root), patch.object(Path, 'home', return_value=self.root), \
+             patch.object(claude_glm.subprocess, 'Popen') as spawn:
+            spawn.return_value.communicate.return_value = ('\n'.join(map(json.dumps, stream)), '')
+            spawn.return_value.returncode = 0
+            result = claude_glm.execute(self.workspace, 'a task', 30, capture_trace=True)
+        self.assertIn('stream-json', spawn.call_args.args[0])
+        self.assertEqual(result['stdout'], '{"status":"ready"}')
+        self.assertEqual(result['model'], 'glm-test')
+        self.assertEqual(result['provider'], 'zhipu')
+        self.assertEqual([event['type'] for event in result['trace']], ['assistant', 'tool_use', 'tool_result'])
+        self.assertTrue(result['trace_completed'])
+        self.assertNotIn('private-', json.dumps(result))
+        self.assertNotIn('test-secret', json.dumps(result))
+
     def test_rejects_untrusted_endpoint(self):
         (self.root / '.claude/settings.json').write_text(json.dumps({'env': {'ANTHROPIC_BASE_URL': 'https://example.com'}}))
         with patch.object(claude_glm, 'ROOT', self.root), patch.object(Path, 'home', return_value=self.root):
@@ -94,6 +119,7 @@ class AdapterTests(unittest.TestCase):
         self.assertIn(str(evidence.resolve()), fs['denyWrite'])
         self.assertIn(str(self.workspace.resolve()), fs['denyWrite'])
         self.assertEqual(seen['args'][seen['args'].index('--tools') + 1], 'Bash,Read,Glob,Grep')
+        self.assertEqual(seen['args'][seen['args'].index('--add-dir') + 1], str(evidence.resolve()))
 
     def test_evidence_cannot_expose_credentials_or_home_or_follow_links(self):
         evidence = self.root / 'evidence'

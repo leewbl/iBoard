@@ -6,6 +6,7 @@ from functools import wraps
 from inspect import signature
 import os
 from pathlib import Path
+import stat
 
 
 class TaskBusy(OSError):
@@ -16,20 +17,45 @@ _held = ContextVar('workbench_task_locks', default=frozenset())
 
 
 @contextmanager
-def task_lock(task):
+def observe_task_lock(task):
+    """Observe an existing lock and keep idle records stable during inspection."""
+    path = task.parent / '.task.lock'
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+    except FileNotFoundError:
+        yield 'not-recorded'
+        return
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError('task lock is not a regular file')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield 'held'
+        else:
+            yield 'idle'
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def task_lock(task, *, lock_name='.task.lock', wait=False, reentrant=True):
     task = Path(task).expanduser().resolve(strict=True)
-    if task in _held.get():
+    lock_key = (task, lock_name)
+    if lock_key in _held.get():
+        if not reentrant:
+            raise TaskBusy(f'task is already being operated on: {task}')
         yield
         return
-    path = task.parent / '.task.lock'
+    path = task.parent / lock_name
     flags = os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0)
     fd = os.open(path, flags, 0o600)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise TaskBusy(f'task is already being operated on: {task}') from error
-        token = _held.set(_held.get() | {task})
+        token = _held.set(_held.get() | {lock_key})
         try:
             yield
         finally:

@@ -13,6 +13,19 @@ class LocalGateError(Exception):
     pass
 
 
+def _select(data, head, files, reason):
+    try:
+        command = local_vitest.command(data['repo'], data['base_commit'], head, files)
+    except local_vitest.GuardError as error:
+        raise LocalGateError(str(error)) from error
+    record = {'schema':1, 'mode':'openclaw-vitest-json-v1', 'command':command,
+              'files':list(files), 'base':data['base_commit'], 'criteria_digest':cli.criteria_digest(data),
+              'reason':reason.strip()}
+    data['local_gate'] = record
+    data['events'].append({'at':cli.now(), 'type':'local-gate-selected', **record})
+    return record
+
+
 def configure(task_path, files, reason):
     task = Path(task_path).expanduser().resolve(strict=True)
     with task_lock(task):
@@ -34,16 +47,7 @@ def configure(task_path, files, reason):
             if dirty or state.get('candidate_commit') != current:
                 raise LocalGateError('delivery revalidation requires the unchanged clean candidate')
         head = current if state and state.get('phase') == 'delivery' else (data.get('adoption', {}).get('candidate_commit') or cli.sha(data['repo'], 'HEAD'))
-        try:
-            command = local_vitest.command(data['repo'], data['base_commit'], head, files)
-        except local_vitest.GuardError as error:
-            raise LocalGateError(str(error)) from error
-        record = {'schema': 1, 'mode': 'openclaw-vitest-json-v1', 'command': command,
-                  'files': list(files),
-                  'base': data['base_commit'], 'criteria_digest': cli.criteria_digest(data),
-                  'reason': reason.strip()}
-        data['local_gate'] = record
-        data['events'].append({'at': cli.now(), 'type': 'local-gate-selected', **record})
+        record = _select(data, head, files, reason)
         if state and state.get('phase') == 'delivery':
             data['local_gate_reverify'] = {'candidate': current, 'base': data['base_commit'],
                 'policy_digest': _digest_policy(record), 'event_index': len(data['events']) - 1}

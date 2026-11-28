@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from model.claude_glm import ROOT
 
 
-def review(prompt: str, timeout: int = 60, *, opener=urllib.request.urlopen):
+def review(prompt: str, timeout: int = 60, *, expected_model=None, opener=urllib.request.urlopen):
     if not prompt.strip() or len(prompt) > 100_000 or not 1 <= timeout <= 300:
         raise ValueError('invalid review prompt or timeout')
     key = (ROOT / 'glm.ini').read_text(encoding='utf-8').strip()
@@ -22,6 +22,8 @@ def review(prompt: str, timeout: int = 60, *, opener=urllib.request.urlopen):
     if parsed.scheme != 'https' or parsed.hostname not in {'open.bigmodel.cn', 'api.z.ai'} or parsed.username or parsed.password:
         raise ValueError('unsupported GLM endpoint')
     model = env['ANTHROPIC_DEFAULT_SONNET_MODEL'].split('[', 1)[0]
+    if expected_model is not None and model != expected_model:
+        raise ValueError('configured GLM review model does not match the requested model')
     body = json.dumps({'model': model, 'max_tokens': 2048, 'thinking': {'type': 'disabled'},
                        'messages': [{'role': 'user', 'content': prompt}]}).encode()
     request = urllib.request.Request(base + '/v1/messages', data=body,

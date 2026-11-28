@@ -73,13 +73,20 @@ try {
   assert.equal(live.body.ok, true);
   emit('doctor', { readiness: ready, liveness: live });
 
+  const healthStarted = performance.now();
+  // Supply the warning flag OpenClaw would add by respawning the source CLI.
   const { stdout } = await promisify(execFile)(process.execPath,
-    [...entry, 'gateway', 'health', '--url', ws, '--token', token, '--timeout', '30000', '--json'],
+    ['--disable-warning=ExperimentalWarning', ...entry,
+      'gateway', 'health', '--url', ws, '--token', token, '--timeout', '30000', '--json'],
     { cwd: '/app', env, timeout: 45000, killSignal: 'SIGKILL', maxBuffer: 512 * 1024 });
   const health = JSON.parse(stdout);
   assert.equal(health.ok, true, 'CLI did not return a healthy Gateway');
   assert.ok(!result, 'Gateway exited during the CLI check');
-  emit('evidence', { command: ['gateway', 'health', '--url', ws, '--timeout', '30000', '--json'], health });
+  emit('evidence', {
+    command: ['gateway', 'health', '--url', ws, '--timeout', '30000', '--json'],
+    elapsedMs: Math.round(performance.now() - healthStarted),
+    health,
+  });
   passed = true;
 } finally {
   try {

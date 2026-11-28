@@ -19,8 +19,12 @@ else:
     from task_lock import task_lock
 
 SCHEMA = 1
-KINDS = ('reproduction', 'resolution', 'feature-doc', 'test-result', 'screenshot', 'runtime-log', 'independent-review')
+KINDS = ('reproduction', 'resolution', 'feature-doc', 'test-result', 'screenshot', 'runtime-log',
+         'independent-review', 'tdd-red', 'tdd-green')
 CI_SKIP_POLICIES = ('openclaw-selected-v1',)
+TASK_KINDS = ('bug', 'feature', 'refactor')
+REFACTOR_CRITERION = 'refactor-behavior'
+REFACTOR_CRITERION_TEXT = 'Every candidate commit preserves all observations in the approved frozen refactor contract.'
 
 class WorkbenchError(Exception):
     pass
@@ -103,7 +107,7 @@ def find_criterion(data, cid):
             return c
     raise WorkbenchError(f'unknown criterion: {cid}')
 
-def init(a):
+def init(a, *, quiet=False):
     path = Path(a.task).expanduser().resolve()
     if path.exists():
         raise WorkbenchError('task record already exists')
@@ -128,7 +132,8 @@ def init(a):
                 limits={'iterations':a.iterations, 'seconds':a.seconds, 'cost':'provider-limit'}, iterations=0,
                 criteria=[], criterion_changes=[], evidence=[], events=[{'at':now(), 'type':'created'}])
     write(path, data)
-    print(f'Created {path}; base {head}')
+    if not quiet:
+        print(f'Created {path}; base {head}')
 
 def criterion_add(a, data):
     cid = nonempty(a.id, 'criterion id')
@@ -140,6 +145,8 @@ def criterion_add(a, data):
     data['criterion_changes'].append({'at':now(), 'id':cid, 'action':'add', 'text':a.text, 'reason':nonempty(a.reason, 'reason')})
 
 def criterion_change(a, data):
+    if data['kind'] == 'refactor' and a.id == REFACTOR_CRITERION:
+        raise WorkbenchError('the frozen refactoring behavior criterion cannot be changed')
     c = find_criterion(data, a.id)
     old = c['text']
     new = nonempty(a.text, 'criterion text')
@@ -190,7 +197,8 @@ def evidence_add(a, data):
         raise WorkbenchError('evidence file is empty')
     actor = nonempty(a.actor, 'actor')
     commit = sha(data['repo'], a.commit)
-    if a.kind == 'reproduction' and (commit != data['base_commit'] or sha(data['repo'], 'HEAD') != data['base_commit']):
+    if a.kind in ('reproduction', 'tdd-red') and (
+            commit != data['base_commit'] or sha(data['repo'], 'HEAD') != data['base_commit']):
         raise WorkbenchError('reproduction must be recorded while the base commit is checked out')
     if a.kind == 'independent-review' and actor == data['implementer']:
         raise WorkbenchError('independent review actor must differ from implementer')
@@ -208,6 +216,13 @@ def gate(data, expected):
     if data['status'] != 'running':
         issues.append(f"task is {data['status']}, not running")
     issues += enforce_budget(data)
+    head, evidence_issues = evidence_gate(data, expected)
+    return head, issues + evidence_issues
+
+
+def evidence_gate(data, expected):
+    """Audit acceptance bound to the current worktree without authorizing work."""
+    issues = []
     if not data['criteria']:
         issues.append('no acceptance criteria recorded')
     for change in data['criterion_changes']:
@@ -238,13 +253,54 @@ def gate(data, expected):
         except WorkbenchError:
             issues.append(f"evidence {e['id']} missing or unreadable")
             continue
-        if e['kind'] == 'reproduction':
+        if e['kind'] in ('reproduction', 'tdd-red'):
             if e['commit'] == data['base_commit']:
                 valid.append(e)
         elif e['commit'] == target:
             valid.append(e)
     kinds = {e['kind'] for e in valid}
-    required = {'reproduction', 'resolution', 'test-result', 'independent-review'} if data['kind'] == 'bug' else {'feature-doc', 'test-result', 'independent-review'}
+    required = {'test-result', 'independent-review'}
+    if data['kind'] == 'bug':
+        required.update(('reproduction', 'resolution'))
+    elif data['kind'] == 'refactor':
+        from workbench import refactor_delivery
+        if not any(c == {'id': REFACTOR_CRITERION, 'text': REFACTOR_CRITERION_TEXT, 'revision': 1}
+                   for c in data['criteria']):
+            issues.append('missing the original refactoring behavior criterion')
+        try:
+            refactor_delivery.require(data, target)
+        except refactor_delivery.RefactorGateError as error:
+            issues.append(str(error))
+    else:
+        required.add('feature-doc')
+    if 'verification_target' in data:
+        required.update(('reproduction', 'resolution'))
+    if 'skill_authoring' in data:
+        from workbench import skill_authoring
+        try:
+            skill_authoring.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
+    if 'project_verification_maintenance' in data:
+        from workbench import project_verify_delivery
+        try:
+            project_verify_delivery.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
+    if 'performance_contract' in data:
+        from workbench import perf_issue
+        try:
+            perf_issue.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
+    if 'blast_radius' in data:
+        from workbench import blast_radius
+        try:
+            blast_radius.require(data, target)
+        except WorkbenchError as error:
+            issues.append(str(error))
+    if data.get('regression_test') is not None:
+        required.update(('tdd-red', 'tdd-green'))
     required.add('screenshot' if data['surface'] == 'ui' else 'runtime-log')
     for missing in sorted(required - kinds):
         issues.append(f'missing valid {missing} evidence')
@@ -263,7 +319,7 @@ def gate(data, expected):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     sp = p.add_subparsers(dest='command', required=True)
-    q = sp.add_parser('init'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--repo', required=True); q.add_argument('--kind', choices=('bug','feature'), required=True); q.add_argument('--source', required=True); q.add_argument('--implementer', required=True); q.add_argument('--surface', choices=('ui','non-ui'), required=True); q.add_argument('--iterations', type=int, required=True); q.add_argument('--seconds', type=int, required=True)
+    q = sp.add_parser('init'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--repo', required=True); q.add_argument('--kind', choices=TASK_KINDS, required=True); q.add_argument('--source', required=True); q.add_argument('--implementer', required=True); q.add_argument('--surface', choices=('ui','non-ui'), required=True); q.add_argument('--iterations', type=int, required=True); q.add_argument('--seconds', type=int, required=True)
     q = sp.add_parser('criterion-add'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--text', required=True); q.add_argument('--reason', required=True)
     q = sp.add_parser('criterion-change'); q.add_argument('--task', required=True); q.add_argument('--id', required=True); q.add_argument('--text', required=True); q.add_argument('--reason', required=True); q.add_argument('--basis', required=True)
     q = sp.add_parser('evidence-add'); q.add_argument('--task', required=True); q.add_argument('--kind', choices=KINDS, required=True); q.add_argument('--file', required=True); q.add_argument('--commit', required=True); q.add_argument('--actor', required=True); q.add_argument('--description', required=True); q.add_argument('--criterion', action='append')
