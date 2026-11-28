@@ -1,6 +1,8 @@
 """Verify OpenClaw user journeys using iBoard's offline Docker runner."""
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -23,6 +25,7 @@ JOURNEYS = {
     "skills-library-lifecycle": ("skills-library-lifecycle.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS"),
     "skills-library-import": ("skills-library-lifecycle.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS"),
     "skills-library-team": ("skills-library-team.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS"),
+    "tui-chat-pty": ("tui-chat-pty.mjs", "VERIFY_OPENCLAW_TUI_CHAT_PTY_PASS"),
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
 SESSION_RENAME = 'control-ui-session-rename'
@@ -54,6 +57,8 @@ def _timeout(journey):
     if journey == 'skills-library-import':
         return 480
     if journey == 'skills-library-team':
+        return 480
+    if journey == 'tui-chat-pty':
         return 480
     if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR, SESSION_ARCHIVE_RUNNING):
         return 600
@@ -379,6 +384,71 @@ def _library_team_evidence(report):
         return False
 
 
+def _tui_chat_evidence(report):
+    try:
+        lines = report['stdout'].splitlines()
+        if (report.get('stdout_truncated') or len(lines) != 4
+                or lines[-1] != JOURNEYS['tui-chat-pty'][1]):
+            return False
+        doctor, tui, cleanup = map(json.loads, lines[:-1])
+        gateway_pid = doctor['gatewayPid']
+        if not (doctor.get('phase') == 'doctor' and doctor.get('ready') is True and doctor.get('live') is True
+                and type(gateway_pid) is int and gateway_pid > 1 and tui.get('phase') == 'tui'
+                and cleanup == {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True}
+                and cleanup['scratchRemoved'] is True and type(cleanup['exit']['code']) is int
+                and tui['sessionKey'] == 'agent:main:iboard-tui-proof'
+                and isinstance(tui['sessionId'], str) and tui['sessionId'].strip()
+                and type(tui['priorMessageCount']) is int and tui['priorMessageCount'] == 0
+                and tui['dimensions'] == {'cols': 120, 'rows': 40}
+                and type(tui['dimensions']['cols']) is int and type(tui['dimensions']['rows']) is int):
+            return False
+        backend, history = tui['backend'], tui['history']
+        if not (type(backend['pid']) is int and backend['pid'] > 1 and backend['inputMatched'] is True
+                and type(backend['calls']) is int and backend['calls'] == 1
+                and history['sessionId'] == tui['sessionId']
+                and history['messages'] == [
+                    {'role': 'user', 'text': 'Check the terminal repair loop.'},
+                    {'role': 'assistant', 'text': 'iBoard verified this terminal turn.'},
+                ]):
+            return False
+        pids = {gateway_pid, backend['pid']}
+        if len(pids) != 2:
+            return False
+        if tui['first']['transcriptSha'] == tui['reopened']['transcriptSha']:
+            return False
+        for name in ('first', 'reopened'):
+            record = tui[name]
+            pid = record['pid']
+            if not (type(pid) is int and pid > 1 and pid not in pids
+                    and type(record['exitCode']) is int and record['exitCode'] == 0
+                    and type(record['signal']) is int and record['signal'] == 0):
+                return False
+            pids.add(pid)
+            for key, expected in (('readyRow', 'gateway connected'),
+                                  ('promptRow', 'Check the terminal repair loop.'),
+                                  ('replyRow', 'iBoard verified this terminal turn.')):
+                row = record[key]
+                if not isinstance(row, str) or expected not in (row.lower() if key == 'readyRow' else row):
+                    return False
+                if '\n' in row or '\r' in row or len(row) > 120:
+                    return False
+            encoded = record['transcriptBase64']
+            if not isinstance(encoded, str) or len(encoded) > 131_072:
+                return False
+            transcript = base64.b64decode(encoded, validate=True)
+            if (not transcript or len(transcript) > 96 * 1024
+                    or base64.b64encode(transcript).decode('ascii') != encoded
+                    or record['transcriptSha'] != hashlib.sha256(transcript).hexdigest()
+                    or b'\x1b[?2026h' not in transcript or b'\x1b[?2026l' not in transcript
+                    or transcript.find(b'\x1b[?2026h') > transcript.find(b'\x1b[?2026l')
+                    or b'Check the terminal repair loop.' not in transcript
+                    or b'iBoard verified this terminal turn.' not in transcript):
+                return False
+        return True
+    except (KeyError, ValueError, TypeError, AttributeError, binascii.Error):
+        return False
+
+
 def _archive_batch_evidence(mutation, readback, pids, *, sidebar=False):
     first = {key: mutation[key] for key in ('key', 'sessionId')}
     second, survivor = mutation['second' if sidebar else 'nested'], mutation['survivor']
@@ -563,6 +633,7 @@ def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None, recordi
         and (journey != 'skills-library-lifecycle' or _library_evidence(report))
         and (journey != 'skills-library-import' or _library_import_evidence(report))
         and (journey != 'skills-library-team' or _library_team_evidence(report))
+        and (journey != 'tui-chat-pty' or _tui_chat_evidence(report))
         and (recording is None or browser_recording.receipt(
             report, recording, report.get('commit'), expected_journey=journey.removeprefix('control-ui-')))
     )
@@ -672,6 +743,17 @@ def required_journeys(data, head):
         'src/gateway/server/ws-connection/authenticated-request-dispatch.ts',
     ) for path in paths):
         selected.append('skills-library-team')
+    if any((path.startswith('src/tui/') and not re.search(
+        r'(?:^|/)(?:__tests__|fixtures)(?:/|$)|(?:\.|-)(?:test|spec)(?:[.-]|$)', path)) or path in (
+        'src/cli/tui-cli.ts', 'src/cli/tui-cli-options.ts', 'src/cli/run-main.ts',
+        'src/tui/tui-pty-test-support.ts', 'src/tui/tui-pty-terminal-evidence-test-support.ts',
+        'src/gateway/server-methods/chat.ts', 'src/gateway/server-methods/chat-send.ts',
+        'src/gateway/server-methods/chat-send-agent-dispatch.ts',
+        'src/gateway/server-methods/chat-history-pages.ts', 'src/gateway/chat-history-budget.ts',
+        'src/gateway/chat-history-response-page.ts', 'src/gateway/server-methods/sessions-read.ts',
+        'src/gateway/server-methods/sessions-create.ts',
+    ) for path in paths):
+        selected.append('tui-chat-pty')
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
         selected.append('config-validate')
     sessions_ui = any(path == 'ui/src/styles/sessions.css'
@@ -810,6 +892,8 @@ def require(data, head, destination, *, review_item=None):
                 if journey == 'skills-library-import' and not _library_import_evidence(run):
                     continue
                 if journey == 'skills-library-team' and not _library_team_evidence(run):
+                    continue
+                if journey == 'tui-chat-pty' and not _tui_chat_evidence(run):
                     continue
                 if (run.get('commit') == head
                         and run.get('helper_sha256') == helpers[journey] and run.get('passed') is True

@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -29,7 +30,7 @@ class GatewayGateTests(unittest.TestCase):
                 filter_fault=None, rename_fields=None, archive=False, archive_fault=None, archive_tree=False,
                 tree_fault=None, archive_sidebar=False, sidebar_fault=None, archive_running=False, running_fault=None,
                 library_image=None, lifecycle_image=None, lifecycle_fault=None, import_image=None, import_fault=None,
-                team_image=None, team_fault=None):
+                team_image=None, team_fault=None, tui_image=None, tui_fault=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -50,6 +51,8 @@ class GatewayGateTests(unittest.TestCase):
             journeys['skills-library-import'] = import_image
         if team_image is not None:
             journeys['skills-library-team'] = team_image
+        if tui_image is not None:
+            journeys['tui-chat-pty'] = tui_image
         if rename:
             journeys[verify_openclaw.SESSION_RENAME] = gateway_image
         if delete:
@@ -77,6 +80,8 @@ class GatewayGateTests(unittest.TestCase):
                     extra['stdout'] = self.import_stdout(import_fault)
                 if journey == 'skills-library-team':
                     extra['stdout'] = self.team_stdout(team_fault)
+                if journey == 'tui-chat-pty':
+                    extra['stdout'] = self.tui_stdout(tui_fault)
                 if journey in verify_openclaw.BROWSER_JOURNEYS:
                     png = path.with_suffix('.png')
                     png.write_bytes(name.encode())
@@ -106,6 +111,27 @@ class GatewayGateTests(unittest.TestCase):
             'kind': 'independent-review', 'actor': 'independent-verifier', 'commit': self.head,
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
         })
+
+    def tui_stdout(self, fault=None):
+        def record(pid):
+            raw = (b'\x1b[?2026hgateway connected\nCheck the terminal repair loop.\n'
+                   b'iBoard verified this terminal turn.\x1b[?2026l' + str(pid).encode())
+            return {'pid': pid, 'readyRow': 'gateway connected', 'promptRow': 'Check the terminal repair loop.',
+                    'replyRow': 'iBoard verified this terminal turn.', 'exitCode': 0, 'signal': 0,
+                    'transcriptBase64': base64.b64encode(raw).decode(), 'transcriptSha': hashlib.sha256(raw).hexdigest()}
+        events = [
+            {'phase': 'doctor', 'gatewayPid': 19, 'ready': True, 'live': True},
+            {'phase': 'tui', 'sessionKey': 'agent:main:iboard-tui-proof', 'sessionId': 'session-1',
+             'priorMessageCount': 0, 'dimensions': {'cols': 120, 'rows': 40},
+             'first': record(21), 'reopened': record(22), 'backend': {'pid': 23, 'inputMatched': True, 'calls': 1},
+             'history': {'sessionId': 'session-1', 'messages': [
+                 {'role': 'user', 'text': 'Check the terminal repair loop.'},
+                 {'role': 'assistant', 'text': 'iBoard verified this terminal turn.'}]}},
+            {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True},
+        ]
+        if fault:
+            fault(events)
+        return ''.join(json.dumps(row) + '\n' for row in events) + 'VERIFY_OPENCLAW_TUI_CHAT_PTY_PASS\n'
 
     def team_stdout(self, fault=None):
         content = hashlib.sha256(b'---\nname: iboard-team-fixture\ndescription: Offline team library fixture\n---\n\nCheck the shared checklist.\n').hexdigest()
@@ -686,6 +712,68 @@ class GatewayGateTests(unittest.TestCase):
             run['stdout'] = 'VERIFY_OPENCLAW_SKILLS_LIBRARY_TEAM_PASS\n'
             self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
 
+    def test_tui_gate_requires_terminal_transcripts_real_reply_and_history(self):
+        journey = 'tui-chat-pty'
+        image = 'sha256:' + 'f' * 64
+        self.assertEqual(verify_openclaw._journey(journey), ('tui-chat-pty.mjs',
+            'VERIFY_OPENCLAW_TUI_CHAT_PTY_PASS', ['node', '/workspace/tui-chat-pty.mjs']))
+        self.assertEqual(verify_openclaw._timeout(journey), 480)
+        for path in ('src/tui/tui.ts', 'src/tui/components/chat.ts', 'src/cli/tui-cli.ts',
+                     'src/cli/tui-cli-options.ts', 'src/cli/run-main.ts',
+                     'src/tui/tui-pty-test-support.ts', 'src/tui/tui-pty-terminal-evidence-test-support.ts',
+                     'src/gateway/server-methods/chat.ts', 'src/gateway/server-methods/chat-history-pages.ts'):
+            self.changed_paths.return_value = path + '\0'
+            self.assertIn(journey, verify_openclaw.required_journeys(self.data, self.head))
+        for path in ('src/tui/tui.test.ts', 'src/tui/tui-pty-runtime-test-support.ts',
+                     'src/tui/__tests__/fixture.ts', 'src/tui/fixtures/example.ts'):
+            self.changed_paths.return_value = path + '\0'
+            self.assertNotIn(journey, verify_openclaw.required_journeys(self.data, self.head))
+        self.changed_paths.return_value = 'src/cli/tui-cli.ts\0'
+        faults = (
+            lambda e: e[0].update(gatewayPid=True),
+            lambda e: e[0].update(ready=False),
+            lambda e: e[1].update(sessionKey='agent:main:other'),
+            lambda e: e[1].update(priorMessageCount=False),
+            lambda e: e[1]['dimensions'].update(cols=80),
+            lambda e: e[1]['backend'].update(inputMatched=False),
+            lambda e: e[1]['backend'].update(calls=True),
+            lambda e: e[1]['backend'].update(pid=e[0]['gatewayPid']),
+            lambda e: e[1]['first'].update(pid=e[1]['backend']['pid']),
+            lambda e: e[1]['reopened'].update(pid=e[1]['first']['pid']),
+            lambda e: e[1]['reopened'].update(transcriptBase64=e[1]['first']['transcriptBase64'],
+                                               transcriptSha=e[1]['first']['transcriptSha']),
+            lambda e: e[1]['first'].update(exitCode=True),
+            lambda e: e[1]['reopened'].update(signal=9),
+            lambda e: e[1]['first'].update(readyRow='connecting'),
+            lambda e: e[1]['first'].update(promptRow='different prompt'),
+            lambda e: e[1]['reopened'].update(replyRow='different reply'),
+            lambda e: e[1]['first'].update(transcriptBase64='not base64!'),
+            lambda e: e[1]['first'].update(transcriptSha='0' * 64),
+            lambda e: e[1]['reopened'].update(transcriptBase64=base64.b64encode(b'garbage').decode(),
+                                               transcriptSha=hashlib.sha256(b'garbage').hexdigest()),
+            lambda e: e[1]['history'].update(sessionId='other'),
+            lambda e: e[1]['history']['messages'].reverse(),
+            lambda e: e[1]['history']['messages'][1].update(text='fabricated'),
+            lambda e: e[2].update(scratchRemoved=1),
+        )
+        for fault in faults:
+            with self.subTest(fault=fault):
+                self.reports(tui_image=image, tui_fault=fault)
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+        self.reports(tui_image=image)
+        self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
+        run = {'exit_code': 0, 'cleanup_confirmed': True, 'container_created': True,
+               'workspace_read_only': True, 'stdout': self.tui_stdout()}
+        with patch.object(cli, 'sha', return_value=self.head), \
+                patch.object(verify_openclaw.workflow, '_verified_image', return_value=image), \
+                patch.object(verify_openclaw, 'run_sandbox', return_value=run):
+            self.assertTrue(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+            run['stdout'] = self.tui_stdout(lambda e: e[1]['history'].update(sessionId='different'))
+            self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+            run['stdout'] = 'VERIFY_OPENCLAW_TUI_CHAT_PTY_PASS\n'
+            self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+
     def test_connected_ui_requires_a_bound_screenshot_in_its_own_output(self):
         journey = 'control-ui-connected'
         helper, _ = verify_openclaw.BROWSER_JOURNEYS[journey]
@@ -785,10 +873,13 @@ class GatewayGateTests(unittest.TestCase):
                      'src/gateway/session-row-presentation.ts', 'packages/gateway-protocol/src/session-row-fields.ts'):
             with self.subTest(path=path):
                 self.changed_paths.return_value = path + '\0'
-                self.assertEqual(verify_openclaw.required_journeys(self.data, self.head),
-                                 ['gateway-health', journey, verify_openclaw.SESSION_ARCHIVE,
-                                  verify_openclaw.SESSION_ARCHIVE_TREE, verify_openclaw.SESSION_ARCHIVE_SIDEBAR,
-                                  verify_openclaw.SESSION_ARCHIVE_RUNNING])
+                expected = ['gateway-health']
+                if path == 'src/gateway/server-methods/sessions-read.ts':
+                    expected.append('tui-chat-pty')
+                expected.extend([journey, verify_openclaw.SESSION_ARCHIVE,
+                                 verify_openclaw.SESSION_ARCHIVE_TREE, verify_openclaw.SESSION_ARCHIVE_SIDEBAR,
+                                 verify_openclaw.SESSION_ARCHIVE_RUNNING])
+                self.assertEqual(verify_openclaw.required_journeys(self.data, self.head), expected)
         github = Mock()
         faults = (
             lambda evidence: evidence['steps'].pop(),

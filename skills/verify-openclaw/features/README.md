@@ -1,6 +1,7 @@
 | Journey | User-facing feature | Evidence |
 | --- | --- | --- |
 | [gateway-health](gateway-health.md) | Check whether a fresh Gateway can answer a real health RPC | Readiness and liveness HTTP responses, CLI health JSON, child exit, Docker cleanup |
+| [tui-chat-pty](tui-chat-pty.md) | Send a message in the connected terminal and reopen the same session | Actual key input, completed PTY frames and raw transcripts, independent Gateway history, two clean exits |
 | [skills-check](skills-check.md) | Discover workspace skills and see which prerequisites are missing | CLI JSON with and without an environment prerequisite, unchanged fixture files, Docker cleanup |
 | [skills-inspect](skills-inspect.md) | List local skills and view the details of a named skill | CLI JSON for list, detail and an absent name, unchanged fixture files, Docker cleanup |
 | [skills-library-help](skills-library-help.md) | Find library commands and the options for reading a revision | Exact names from bare and explicit parent help, read help, unchanged configuration, Docker cleanup |
@@ -10,7 +11,7 @@
 | [workshop-roundtrip](workshop-roundtrip.md) | Archive a learned skill and restore its original content | CLI list before and after archive and restore, archive version, restored content, Docker cleanup |
 | [config-validate](config-validate.md) | Check the validity of a local configuration | Exit codes and JSON for valid and invalid port types, unchanged fixture inputs, Docker cleanup |
 
-`audit` runs the nine headless journeys above. Use a compiled Control UI image with Chromium for the eight browser journeys below.
+`audit` runs the ten non-browser journeys above. Use a compiled Control UI image with Chromium for the eight browser journeys below.
 
 - [`control-ui-connected`](../SKILL.md#drive) checks the login form, the authenticated Gateway session-list response and the empty Sessions page.
 - [`control-ui-session-rename`](../SKILL.md#session-rename) checks cancellation, a successful rename and an authenticated read of the same updated session after the Gateway restarts.

@@ -1,9 +1,14 @@
 {
   "project": "openclaw",
-  "surface": "OpenClaw CLI and the browser Control UI served by its local Gateway.",
-  "launch": "The launch scripts use the CLI entry at /app/src/entry.ts with the image's tsx loader. The Gateway starts on loopback with an empty temporary state directory and requires both readiness and liveness before use. Browser journeys also need the matching compiled Control UI and preinstalled Chromium in the source image.",
+  "surface": "OpenClaw CLI, interactive terminal UI and the browser Control UI served by its local Gateway.",
+  "launch": "The launch scripts use the CLI entry at /app/src/entry.ts with the image's tsx loader. The Gateway starts on loopback with an empty temporary state directory and requires both readiness and liveness before use. The terminal journey uses OpenClaw's installed PTY helper. Browser journeys also need the matching compiled Control UI and preinstalled Chromium in the source image.",
   "cleanup": "Helpers remove their temporary state. Gateway shuts down only the child it launched and checks that its loopback endpoint is closed.",
   "entrypoint_inventory": [
+    {
+      "namespace": "openclaw",
+      "sources": [{"path": "src/cli/tui-cli.ts", "receiver": "program"}],
+      "excluded": {}
+    },
     {
       "namespace": "openclaw skills",
       "sources": [
@@ -79,6 +84,24 @@
     "source": [{"path": "package.json", "contains": "\"name\": \"openclaw\""}, {"path": "src/entry.ts", "contains": "process.argv"}]
   },
   "features": [
+    {
+      "id": "tui-chat-pty",
+      "entrypoints": ["openclaw tui"],
+      "helper": "tui-chat-pty.mjs",
+      "marker": "VERIFY_OPENCLAW_TUI_CHAT_PTY_PASS",
+      "reach": "Open the canonical TUI in a pseudoterminal connected to a fresh loopback Gateway.",
+      "drive": "Type one message through the terminal, read its reply, exit using /exit and open the same session in a fresh PTY.",
+      "observe": "Require completed terminal frames to show the connected state and both messages. Read exact user and assistant messages from the Gateway, compare session identity after reopening, and confirm a single backend invocation and clean exits.",
+      "gotchas": "The actual terminal and Gateway are active. A deterministic local backend supplies the assistant text, so the journey measures rendering, transport and history, while real model behavior and the embedded local TUI aliases need separate checks.",
+      "source": [
+        {"path": "src/cli/tui-cli.ts", "contains": ".command(\"tui\")"},
+        {"path": "src/tui/tui.ts", "contains": "reconnected ? \"gateway reconnected\" : \"gateway connected\""},
+        {"path": "src/tui/tui-command-handlers.ts", "contains": "exit: () => requestExit()"},
+        {"path": "src/tui/gateway-chat.ts", "contains": "async sendChat("},
+        {"path": "src/tui/tui-pty-test-support.ts", "contains": "const pty = nodePty.spawn(command, args, {"},
+        {"path": "src/tui/tui-pty-terminal-evidence-test-support.ts", "contains": "export async function waitForSynchronizedFrameRows("}
+      ]
+    },
     {
       "id": "skills-library-help",
       "entrypoints": ["openclaw skills library"],
