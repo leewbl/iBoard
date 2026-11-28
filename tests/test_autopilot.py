@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from test_runner import tiny_png
 
-from workbench import (autopilot, cli, delivery, intent_review, pickup, publish, run_control, stack_verify,
+from workbench import (autopilot, bug_cause, cli, delivery, intent_review, pickup, publish, run_control, stack_verify,
                        tdd, visual_parity, workflow)
 
 
@@ -410,7 +410,9 @@ class AutopilotTests(unittest.TestCase):
                            'cleanup_confirmed':True, 'timed_out':False, 'exit_code':expect_exit,
                            'expected_exit':expect_exit, 'stdout':marker, 'expected_marker':marker,
                            'workspace':str(self.workspace), 'command':command, 'source_mode':'workspace',
-                           'source_verified_commit':commit})
+                           'source_verified_commit':commit, 'image':image, 'schema':cli.SCHEMA,
+                           'create_stdout': f'{len(self.calls):064x}\n', 'create_stdout_truncated':False,
+                           'workspace_read_only':True})
         cli.evidence_add(argparse.Namespace(file=str(report), kind=kind, commit=commit,
                                             actor=actor, description=description, criterion=[]), data)
         cli.write(task, data)
@@ -442,6 +444,75 @@ class AutopilotTests(unittest.TestCase):
         self.assertNotIn('implement', self.calls)
         self.assertEqual((self.workspace / 'code.txt').read_text(), 'broken')
         self.assertEqual(cli.read(self.task)['status'], 'paused')
+
+    def _causal_plan(self):
+        data = cli.read(self.task)
+        data['root_cause'] = bug_cause.MODE
+        cli.write(self.task, data)
+        cli.write(self.task.with_name('input-stage.json'), {'schema': cli.SCHEMA, 'root_cause': bug_cause.MODE,
+                                                            'run_settings': {'source_mode': 'workspace'}})
+        source = {'path': 'code.txt', 'line': 1}
+        trigger = ['node', '/workspace/repro.js', 'trigger']
+        for name in ('reproduction', 'resolution'):
+            self.plan[name]['command'] = trigger
+        self.plan['root_cause'] = {'mechanism': {**source, 'claim': 'Capacity comparison admits one extra job.'},
+                                   'probes': [
+            {'id': name, 'alternative': {**source, 'claim': reason},
+             'control': {'command': [*trigger[:-1], name], 'marker': name.upper(), 'exit_code': 0}}
+            for name, reason in [('lane', 'Commands are counted in the wrong lane.'),
+                                 ('settle', 'Settled tasks never release their slot.')]]}
+        return {'mechanism': 'supported', 'trigger_quote': 'BROKEN', 'probes': {
+            name: {'verdict': 'ruled-out', 'reason': 'The observed control isolates this behavior.',
+                   'quote': name.upper()} for name in ('lane', 'settle')}}
+
+    def _causal_model(self, verdict):
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'actual baseline run' in prompt:
+                for name in ('BASELINE_lane_VERIFIER', 'BASELINE_settle_VERIFIER'):
+                    self.assertIn(name, prompt)
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_verdict': verdict})
+            elif 'Implement this explicitly' in prompt:
+                self.assertIn('independently established mechanism', prompt)
+            elif 'CAUSAL CONTRACT AND VERDICT' in prompt:
+                self.assertIn('CANDIDATE_PROBE_settle', prompt)
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_fixed': True,
+                                               'causal_explanation': 'The change corrects the comparison.'})
+            return result
+        return model
+
+    def test_every_causal_probe_is_reviewed_and_replayed_before_local_handoff(self):
+        verdict = self._causal_plan()
+        calls = []
+        model = self._causal_model(verdict)
+
+        def retry_fixture(workspace, prompt, timeout, *, read_only):
+            result = model(workspace, prompt, timeout, read_only=read_only)
+            if 'actual baseline run' in prompt:
+                calls.append(prompt)
+                if len(calls) == 1:
+                    result['stdout'] += '\nUnexpected commentary.'
+            return result
+
+        result = autopilot.run(self.task, self.issue, 'sha256:' + 'a' * 64, model=retry_fixture,
+                               check=self.check, local_handoff=True)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[1].startswith(calls[0] + '\nThe previous response'))
+        data = cli.read(self.task)
+        item = delivery._independent_verification(data, result['candidate_commit'])
+        record = json.loads(Path(item['path']).read_bytes())['causal_verification']
+        self.assertEqual(set(record['probe_runs']), {'lane', 'settle'})
+        self.assertEqual(record['baseline']['verdict'], verdict)
+        for evidence in (record, record['baseline']):
+            self.assertEqual([len(pair) for pair in evidence['probe_runs'].values()], [2, 2])
+
+    def test_unresolved_causal_probe_blocks_implementation(self):
+        verdict = self._causal_plan()
+        verdict['probes']['settle']['verdict'] = 'inconclusive'
+        with self.assertRaisesRegex(autopilot.AutopilotError, 'did not rule out hypothesis settle'):
+            autopilot.run(self.task, self.issue, 'sha256:' + 'a' * 64, model=self._causal_model(verdict), check=self.check)
+        self.assertNotIn('implement', self.calls)
+        self.assertEqual(cli.read(self.task)['iterations'], 0)
 
     def _focused_plan(self):
         source = ("import assert from 'node:assert/strict';\n"

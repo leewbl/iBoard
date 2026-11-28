@@ -494,7 +494,7 @@ def main(argv=None):
     parser.add_argument('--pr-repo')
     parser.add_argument('--publish-only', action='store_true', help='create the verified PR without waiting for CI or merging')
     parser.add_argument('--prepare-only', action='store_true', help='retain a paused intake without running the task')
-    parser.add_argument('--require-root-cause', action='store_true', help='require paired causal controls for a new bug')
+    parser.add_argument('--require-root-cause', action='store_true', help='require an independent root-cause comparison for a new bug')
     parser.add_argument('--swarm-manifest', help='required coverage manifest with baseline and candidate lanes')
     parser.add_argument('--swarm-sha256', help='approved SHA-256 of the coverage manifest')
     parser.add_argument('--model-profile', help='explicitly approved local role model profile')
