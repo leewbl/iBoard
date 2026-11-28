@@ -3,11 +3,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from model import codex_review
 from workbench import arena, cli, model_profiles, swarm_investigate
 
 
 GLM = {'provider': 'glm', 'model': 'glm-profile'}
 OPENAI = {'provider': 'openai', 'model': 'gpt-profile'}
+FALLBACK = {'provider': 'openai', 'model': 'gpt-standby'}
 
 
 class ProfilePanelTests(unittest.TestCase):
@@ -29,18 +31,22 @@ class ProfilePanelTests(unittest.TestCase):
         self.rubric = [{'id': key, 'text': key} for key in ('quality', 'behavior', 'scope')]
         self.calls = []
 
-    def profile(self, parent, runners):
+    def profile(self, parent, runners, *, fallback=False):
         def editor(work, prompt, timeout, **kwargs):
             return self.glm_reply(kwargs, {'available': True})
 
         spec = self.root/'probe.json'
+        engines = (GLM, OPENAI, FALLBACK) if fallback else (GLM, OPENAI)
         cli.write(spec, {'schema': 1, 'seconds': 30, 'engines': [
-            {**GLM, 'efforts': ['low', 'medium']}, {**OPENAI, 'efforts': ['low', 'medium']}]})
+            {**engine, 'efforts': ['low', 'medium']} for engine in engines]})
         inventory = model_profiles.probe(spec, self.root/'inventory.json', editor=editor,
                                          reviewer=lambda *args, **kwargs: {'available': True})
         roles = {name: GLM for name in model_profiles.TASK_ROLES}
         other = OPENAI if parent == GLM else GLM
-        roles.update({'arena-runners': runners, 'arena-cross-judge-pool': ['auto', parent, other],
+        pool = ['auto', parent, other]
+        if fallback:
+            pool.append(FALLBACK)
+        roles.update({'arena-runners': runners, 'arena-cross-judge-pool': pool,
                       'swarm-workers': GLM})
         choices = self.root/'choices.json'
         cli.write(choices, {'schema': 1, 'budget': 'small', 'parent': parent, 'roles': roles})
@@ -115,6 +121,76 @@ class ProfilePanelTests(unittest.TestCase):
         path.write_bytes(path.read_bytes() + b' ')
         with self.assertRaisesRegex(arena.ArenaError, 'receipt changed'):
             arena.verify_model_calls(dest, settings, result)
+
+    def arena_fallback_fixture(self):
+        manifest = self.root/'arena.json'
+        cli.write(manifest, {
+            'repo': str(self.repo), 'request': 'Set the exported value to new.', 'files': ['app.js'],
+            'model_profile': self.profile(GLM, [GLM, GLM], fallback=True), 'image': 'fixture',
+            'revision': self.head,
+            'check': {'command': ['node', '/workspace/check.js'], 'marker': 'NORMALIZE_PASS', 'exit_code': 0},
+            'rubric': self.rubric,
+            'design_alternatives': {'A': {'modules': ['inline'], 'state': ['value'], 'interfaces': ['public']},
+                                    'B': {'modules': ['helper'], 'state': ['value'], 'interfaces': ['public']}},
+        })
+        return manifest, self.root/'arena-result'
+
+    def test_arena_moves_to_next_approved_model_only_after_explicit_unavailability(self):
+        manifest, dest = self.arena_fallback_fixture()
+        invoked = []
+
+        def judge(prompt, model, seconds, *, effort):
+            invoked.append(model)
+            if model == OPENAI['model']:
+                raise codex_review.ModelUnavailable('explicit model_not_found')
+            if prompt.startswith('Independently verify'):
+                return {'verdict': 'PASS', 'reason': 'The same accepted behavior passed independently.'}
+            return self.score()
+
+        result = arena.run(manifest, dest, editor=self.editor, judge=judge, sandbox=self.sandbox)
+        self.assertEqual(result['status'], 'verified', result)
+        self.assertEqual(invoked, [OPENAI['model'], FALLBACK['model'], FALLBACK['model']])
+        settings = arena._settings(manifest)
+        self.assertEqual(result['scorecards']['openai']['model'], FALLBACK['model'])
+        choices = arena.verify_model_calls(dest, settings, result)
+        self.assertEqual({item['model'] for item in choices.values()}, {FALLBACK['model']})
+        for reference in result['model_calls']:
+            path = Path(reference['path'])
+            row = cli.read(path)
+            if row['status'] == 'unavailable':
+                row['reason'] = 'quota_exhausted'
+                cli.write(path, row)
+                reference['sha256'] = cli.digest(path)
+                break
+        else:
+            self.fail('Missing exact unavailability receipt.')
+        with self.assertRaisesRegex(arena.ArenaError, 'explicit model availability'):
+            arena.verify_model_calls(dest, settings, result)
+        row.update(reason='model_not_found', prompt_sha256='0' * 64)
+        cli.write(path, row)
+        reference['sha256'] = cli.digest(path)
+        with self.assertRaisesRegex(arena.ArenaError, 'frozen model order and evidence'):
+            arena.verify_model_calls(dest, settings, result)
+
+    def test_arena_does_not_try_another_judge_for_quota_or_rejection(self):
+        manifest, _ = self.arena_fallback_fixture()
+        for case in ('quota', 'rejected'):
+            with self.subTest(case=case):
+                invoked = []
+
+                def judge(prompt, model, seconds, *, effort):
+                    invoked.append(model)
+                    if case == 'quota':
+                        raise codex_review.ReviewError('Provider returned HTTP 429')
+                    if prompt.startswith('Independently verify'):
+                        return {'verdict': 'FAIL', 'reason': 'The check does not cover another required path.'}
+                    return self.score()
+
+                dest = self.root / ('blocked-' + case)
+                result = arena.run(manifest, dest, editor=self.editor, judge=judge, sandbox=self.sandbox)
+                self.assertEqual(result['status'], 'blocked', result)
+                self.assertEqual(set(invoked), {OPENAI['model']})
+                self.assertFalse((dest/'result.patch').exists())
 
     def swarm_manifest(self, path, profile, *, first=None, second='profile'):
         lane = {'question': 'What value is exported?', 'files': ['app.js:1-1']}

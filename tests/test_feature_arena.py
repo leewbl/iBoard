@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from workbench import arena, cli, feature_arena, feature_context, interrogate, investigate
+from model import codex_review
+from workbench import arena, cli, feature_arena, feature_context, interrogate, investigate, model_profiles
 from workbench.prompt_profiles import PSTACK_COMMIT
 
 
@@ -168,6 +169,67 @@ class FeatureArenaTests(unittest.TestCase):
             self.resolve(expected_model_profile='a' * 64)
         self.assertEqual(self.runs, [])
         self.assertFalse(self.out.exists())
+
+    def test_validates_feature_handoff_when_an_approved_fallback_reviews_after_scoring(self):
+        candidates = [{'provider': 'glm', 'model': 'glm-label'}, {'provider': 'glm', 'model': 'glm-adapter'}]
+        first, second = 'gpt-first-reviewer', 'gpt-fallback-reviewer'
+        reviewers = [{'provider': 'openai', 'model': model} for model in (first, second)]
+        probes, choices = self.root / 'probes.json', self.root / 'choices.json'
+        cli.write(probes, {'schema': cli.SCHEMA, 'seconds': 60, 'engines': [
+            {**engine, 'efforts': ['low']} for engine in (*candidates, *reviewers)]})
+        cli.write(choices, {'schema': cli.SCHEMA, 'budget': 'small', 'parent': candidates[0],
+                            'roles': {'arena-runners': candidates, 'arena-cross-judge-pool': reviewers}})
+
+        def editor(workspace, prompt, timeout, *, requested_model, requested_effort, read_only=False, **options):
+            if prompt == model_profiles.PROBE:
+                reply = {'exit_code': 0, 'stdout': '{"available":true}'}
+            elif read_only:
+                reply = {'exit_code': 0, 'stdout': json.dumps(self.score(prompt))}
+            else:
+                reply = self.edit(workspace, prompt, timeout, **options)
+            return {**reply, 'trace_completed': True, 'requested_effort': requested_effort, 'model': requested_model}
+
+        inventory = model_profiles.probe(probes, self.root / 'inventory.json', editor=editor,
+                                         reviewer=lambda *args, **kwargs: {'available': True})
+        profile = model_profiles.draft(inventory['path'], inventory['sha256'], choices, self.root / 'profile.json')
+        settings = self.approval['arena']
+        del settings['runners'], settings['judge_model']
+        settings['model_profile'] = {'path': 'profile.json', 'sha256': profile['sha256']}
+        self.approval['review_model'] = first
+        observed = []
+
+        def judge(prompt, model, timeout, *, effort):
+            final = prompt.startswith('Independently verify the selected')
+            observed.append((final, model, effort))
+            if final and model == first:
+                raise codex_review.ModelUnavailable('The exact approved model is unavailable for this invocation')
+            return self.judge(prompt, model, timeout)
+
+        def run(manifest, out):
+            return arena.run(manifest, out, editor=editor, judge=judge, sandbox=self.sandbox)
+
+        result = self.resolve(expected_model_profile=profile['sha256'], run=run)
+        self.assertEqual(result['status'], 'resolved', result.get('reason'))
+        self.assertEqual(result['selected_design'], 'B')
+        self.assertEqual(observed, [(False, first, 'low'), (True, first, 'low'), (True, second, 'low')])
+
+        native = cli.read(self.out / 'arena' / 'result.json')
+        scorecard = native['scorecards']['openai']
+        review = cli.read(Path(native['independent_review']['report']))
+        self.assertEqual(scorecard['model'], first)
+        self.assertEqual((review['model'], review['verdict']), (second, 'PASS'))
+        self.assertNotEqual(scorecard['model_invocation'], review['model_invocation'])
+        calls = [cli.read(Path(item['path'])) for item in native['model_calls']]
+        final_calls = [call for call in calls if call['purpose'] == 'independent-review']
+        self.assertEqual([(call['route']['model'], call['status']) for call in final_calls],
+                         [(first, 'unavailable'), (second, 'completed')])
+        self.assertEqual(final_calls[0]['reason'], 'model_not_found')
+        self.assertEqual(final_calls[0]['prompt_sha256'], final_calls[1]['prompt_sha256'])
+        handoff = json.loads(Path(result['handoff']).read_text())
+        design = cli.read(Path(handoff['design']['path']))
+        self.assertEqual(self.validate(result, design)['candidate'], native['head'])
+        context = feature_context.load_input(result['handoff'], result['handoff_sha256'], self.repo)
+        self.assertEqual(context['arena']['candidate'], native['head'])
 
     def test_failed_independent_review_withholds_the_design_handoff(self):
         def reject_final(prompt, model, timeout):

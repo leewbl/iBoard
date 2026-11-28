@@ -20,8 +20,44 @@ class ReviewError(Exception):
     pass
 
 
+class ModelUnavailable(ReviewError):
+    """The CLI reported the requested model as unavailable."""
+
+
+def _model_unavailable(stdout):
+    unavailable = False
+    try:
+        for line in stdout.splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                return False
+            kind = event.get('type')
+            if kind == 'turn.completed':
+                return False
+            if kind == 'error':
+                message = event.get('message')
+            elif kind == 'turn.failed':
+                error = event.get('error')
+                message = error.get('message') if isinstance(error, dict) else None
+            else:
+                continue
+            body = json.loads(message) if isinstance(message, str) else message
+            if (not isinstance(body, dict) or body.get('type') != 'error'
+                    or type(body.get('status')) is not int or body['status'] not in (400, 404)
+                    or not isinstance(body.get('error'), dict) or body['error'].get('code') != 'model_not_found'):
+                return False
+            unavailable = True
+    except (ValueError, TypeError):
+        return False
+    return unavailable
+
+
 def _result(stdout, status, *, search=False):
     if status != 0:
+        if _model_unavailable(stdout):
+            raise ModelUnavailable('Codex reported that the requested model is unavailable')
         raise ReviewError(f'Codex reviewer exited with status {status}')
     answer, completed, searches = None, False, []
     for line in stdout.splitlines():

@@ -37,8 +37,14 @@ python3 -m workbench.arena --manifest arena.json --out /path/outside/checkout/ar
 To use a [role profile](../setup-pstack/SKILL.md), replace the explicit
 `runners` and `judge_model` fields with
 `"model_profile":{"path":"/path/to/profile.json","sha256":"APPROVED_DIGEST"}`.
-Freeze the Arena seats and the first confirmed judge outside the parent
-vendor. The parent model scores alongside that judge. The selected
+Freeze the Arena seats and the ordered confirmed cross-judge pool outside
+the parent vendor. The parent model scores alongside the first available
+judge. A failed Codex invocation with a structured `model_not_found` can
+advance to the next approved model with the same prompt. The rejected
+model is skipped in later review phases. Audit checks the order, failure
+code, prompt digest and the model recorded on each resulting review.
+Quota, authentication, ambiguous failures and a negative verdict keep
+the original blocking behavior. The selected
 feature/refactoring route synthesizes when synthesis is required. Each
 invocation records the role route, requested effort and any CLI-observed
 model ID. Failed provider calls block new calls to that provider. A
@@ -63,5 +69,5 @@ from a separate clean checkout. The independent reviewer receives the frozen
 script, exact patch, changed paths and all three sandbox results. Its verdict
 gates the exported patch. The report
 links to candidate patches, raw checks, scorecards, synthesis notes and final
-verification. The command currently supports text code patches. A missing
-judge or a failed review blocks export.
+verification. The command currently supports text code patches. Export
+requires a successful cross-scorecard and an independent semantic review.

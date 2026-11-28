@@ -18,6 +18,7 @@ from workbench import autopilot, cli, model_profiles, verify_pr, workflow
 
 
 PSTACK_SOURCE = 'skills/arena/SKILL.md'
+CROSS_REVIEW = ('cross-scorecard', 'independent-review')
 
 
 class ArenaError(Exception):
@@ -91,14 +92,24 @@ def _profile_settings(config, directory):
     profile = bound['profile']
     parent = profile['choices']['parent']
     runners = profile['routes']['arena-runners']
-    cross = model_profiles.select(profile, 'arena-cross-judge-pool', other_than=parent['provider'])
-    if len(runners) < 2 or cross is None:
+    pool = {}
+    for item in profile['routes']['arena-cross-judge-pool']:
+        if item['provider'] != parent['provider']:
+            pool.setdefault((item['provider'], item['model']), model_profiles.invocation(item))
+    cross = list(pool.values())
+    if len(runners) < 2 or not cross:
         raise ArenaError('Arena needs at least two confirmed runners and a judge outside the parent vendor')
     routes = {'primary': model_profiles.resolve(profile, 'judgment-prose', parent),
-              'cross': model_profiles.invocation(cross),
+              'cross': cross[0],
               'synthesis': model_profiles.resolve(profile, 'feature-refactoring')}
+    if len(cross) > 1:
+        routes['cross_fallbacks'] = cross[1:]
     config.update(model_profile=bound, model_routes=routes,
-                  runners=[model_profiles.invocation(item) for item in runners], judge_model=cross['model'])
+                  runners=[model_profiles.invocation(item) for item in runners], judge_model=cross[0]['model'])
+
+
+def _cross_routes(routes):
+    return [routes['cross'], *routes.get('cross_fallbacks', [])]
 
 
 def _settings(path):
@@ -161,6 +172,7 @@ class Arena:
                       'candidates':[],'dropouts':[]}
         self.model_lock = Lock()
         self.model_stopped = set()
+        self.cross_unavailable = set()
         if 'model_profile' in config:
             self.state.update(model_profile_sha256=config['model_profile']['sha256'], model_calls=[])
 
@@ -211,6 +223,12 @@ class Arena:
             receipt.update(status='completed', observed_model=reply['observed_model'],
                            requested_effort=reply['requested_effort'])
         except (*ERRORS, AttributeError) as error:
+            if (purpose in CROSS_REVIEW and route['provider'] == 'openai'
+                    and isinstance(error, codex_review.ModelUnavailable)):
+                with self.model_lock:
+                    self.cross_unavailable.add(route['model'])
+                receipt.update(status='unavailable', reason='model_not_found')
+                raise
             with self.model_lock:
                 self.model_stopped.add(vendor)
             receipt['reason'] = type(error).__name__
@@ -226,8 +244,16 @@ class Arena:
 
     def cross_review(self, purpose, prompt):
         if 'model_routes' in self.config:
-            return self.request(purpose, self.config['model_routes']['cross'], prompt)
-        return self.judge(prompt, self.config['judge_model'], min(300, self.remaining())), None
+            for route in _cross_routes(self.config['model_routes']):
+                if route['model'] in self.cross_unavailable:
+                    continue
+                try:
+                    answer, receipt = self.request(purpose, route, prompt)
+                except codex_review.ModelUnavailable:
+                    continue
+                return answer, receipt, route
+            raise ArenaError('all approved Arena cross-judge models are unavailable')
+        return self.judge(prompt, self.config['judge_model'], min(300, self.remaining())), None, None
 
     def grounding(self):
         entry = self.git(self.repo,'ls-tree',self.base,'--',self.config['entry']).split()
@@ -479,7 +505,7 @@ def _verify_final(arena, head, patch, proof, baseline_proof, *, design=None):
     if design is not None:
         context['approved_design'] = design
         design_instruction = 'Check that the selected patch follows its approved design boundaries. '
-    answer, model_receipt = arena.cross_review('independent-review',
+    answer, model_receipt, route = arena.cross_review('independent-review',
                          f'Independently verify the {artifact} patch against the request and actual sandbox '
                          'evidence. iBoard checked the changed paths from Git and reran the frozen script offline '
                          f'from a separate clean checkout of the exact commit. {design_instruction}'
@@ -497,7 +523,6 @@ def _verify_final(arena, head, patch, proof, baseline_proof, *, design=None):
     directory = arena.output/('synthesis' if design is None else 'selection')
     directory.mkdir(mode=0o700,exist_ok=True)
     path = directory/'independent-review.json'
-    route = arena.config.get('model_routes', {}).get('cross')
     model_fields = ({'model_invocation': model_receipt, 'provider': route['provider'], 'model': route['model']}
                     if route else {'provider': 'openai', 'model': arena.config['judge_model']})
     cli.write(path,{'schema':cli.SCHEMA,'head':head,'sandbox_sha256':proof['sha256'],
@@ -519,25 +544,36 @@ def verify_model_calls(directory, config, result):
     candidates = {item['id']: item['provider'] for item in result['candidates']}
     if len(candidates) != len(result['candidates']) or any(route not in config['runners'] for route in candidates.values()):
         raise ArenaError('Arena candidates do not match the approved runner seats')
-    purposes = {'scorecard': routes['primary'], 'arbitration': routes['primary'],
-                'cross-scorecard': routes['cross'], 'independent-review': routes['cross'],
-                'edit-synthesis': routes['synthesis']}
+    purposes = {'scorecard': routes['primary'], 'arbitration': routes['primary'], 'edit-synthesis': routes['synthesis']}
     purposes.update({f'edit-{key}': value for key, value in candidates.items()})
     complete = {}
+    cross_choices, cross_prompts, unavailable = {}, {}, set()
     for index, reference in enumerate(result['model_calls'], 1):
         path = directory / 'model-calls' / f'{index:03d}.json'
         if path.is_symlink() or path.resolve() != path or reference != {'path': str(path), 'sha256': cli.digest(path)}:
             raise ArenaError('Arena model invocation receipt changed')
         row = verify_pr._bounded_json(path, 12_000)
         purpose, route = row['purpose'], row['route']
+        cross = purpose in CROSS_REVIEW
+        if cross:
+            expected = next((item for item in _cross_routes(routes) if item['model'] not in unavailable), None)
+            if (route != expected or purpose in cross_choices or row['access'] != 'read-only'
+                    or (purpose == 'independent-review' and 'cross-scorecard' not in cross_choices)
+                    or row['prompt_sha256'] != cross_prompts.setdefault(purpose, row['prompt_sha256'])):
+                raise ArenaError('Arena cross review did not follow the frozen model order and evidence')
+        route_approved = (cross or (route == purposes[purpose] if purpose in purposes
+                                   else re.fullmatch(r'edit-A[1-5]', purpose) and route in config['runners']))
         if (row.get('schema') != cli.SCHEMA or row['profile_sha256'] != approved
-                or (purpose in purposes and route != purposes[purpose])
-                or (purpose not in purposes and (not re.fullmatch(r'edit-A[1-5]', purpose)
-                                                 or route not in config['runners']))
-                or row['status'] not in ('completed', 'blocked')
+                or not route_approved or row['status'] not in ('completed', 'blocked', 'unavailable')
                 or row['access'] not in ('edit', 'read-only')
                 or not re.fullmatch(r'[0-9a-f]{64}', row['prompt_sha256'])):
             raise ArenaError('Arena receipt does not match its approved model role')
+        if row['status'] == 'unavailable':
+            if not cross or route['provider'] != 'openai' or row.get('reason') != 'model_not_found':
+                raise ArenaError('Arena fallback lacks an explicit model availability rejection')
+            unavailable.add(route['model'])
+        if cross and row['status'] == 'blocked':
+            raise ArenaError('Arena cannot continue after a blocked cross review')
         if row['status'] == 'completed':
             observed = row['observed_model']
             if (row.get('requested_effort') != route['effort']
@@ -545,20 +581,27 @@ def verify_model_calls(directory, config, result):
                         not isinstance(observed, str) or claude_glm.reported_model_id(observed) != route['model']))):
                 raise ArenaError('Arena invocation does not confirm its approved model')
             complete.setdefault(purpose, []).append(reference)
+            if cross:
+                cross_choices[purpose] = route
     required = {'scorecard', 'cross-scorecard', 'independent-review', *(f'edit-{key}' for key in candidates)}
     if 'design_alternatives' not in config:
         required.add('edit-synthesis')
     if not required <= complete.keys():
         raise ArenaError('Arena result lacks a completed model invocation for an accepted phase')
-    cross = result['scorecards'][routes['cross']['provider']]
+    scorecard_route = cross_choices['cross-scorecard']
+    review_route = cross_choices['independent-review']
+    cross = result['scorecards'][scorecard_route['provider']]
     independent = result['independent_review']
     semantic_path = Path(independent['report'])
     if semantic_path.is_symlink() or cli.digest(semantic_path) != independent['sha256']:
         raise ArenaError('Arena independent review changed')
     semantic = verify_pr._bounded_json(semantic_path, 60_000)
     if (cross.get('model_invocation') not in complete['cross-scorecard']
-            or semantic.get('model_invocation') not in complete['independent-review']):
+            or cross.get('model') != scorecard_route['model']
+            or semantic.get('model_invocation') not in complete['independent-review']
+            or any(semantic.get(key) != review_route[key] for key in ('provider', 'model'))):
         raise ArenaError('Arena review does not cite its approved model invocation')
+    return cross_choices
 
 
 def run(manifest, destination, *, editor=claude_glm.execute, judge=codex_review.review,
@@ -627,11 +670,11 @@ def run(manifest, destination, *, editor=claude_glm.execute, judge=codex_review.
             external = pool.submit(arena.cross_review, 'cross-scorecard', prompt+'\n'+shared)
             primary = pool.submit(_pick_json,arena,prompt,shared,'scorecard',
                                   validate=lambda answer: _scores(answer,candidates,config['rubric']))
-            cross, cross_receipt = external.result()
+            cross, cross_receipt, cross_route = external.result()
             local = primary.result()
         cross = _review_object(cross)
         routes = config.get('model_routes')
-        cross_vendor = routes['cross']['provider'] if routes else 'openai'
+        cross_vendor = cross_route['provider'] if cross_route else 'openai'
         local_vendor = routes['primary']['provider'] if routes else 'glm'
         cli.write(output/'blind-scorecards.json',{'schema':cli.SCHEMA,cross_vendor:cross,local_vendor:local})
         cross_base, cross_totals = _scores(cross,candidates,config['rubric'])
@@ -639,7 +682,8 @@ def run(manifest, destination, *, editor=claude_glm.execute, judge=codex_review.
         model_fields = {'model_invocation': cross_receipt} if routes else {}
         arena.phase('pick',blind_candidates=[item['id'] for item in anonymized],
                     scorecards={local_vendor:{'answer':local,'totals':local_totals},
-                                cross_vendor:{'model':config['judge_model'],'answer':cross,'totals':cross_totals,
+                                cross_vendor:{'model':cross_route['model'] if cross_route else config['judge_model'],
+                                              'answer':cross,'totals':cross_totals,
                                               **model_fields}})
         choice = local_base
         reason = 'Both scorecards recommended this base.'

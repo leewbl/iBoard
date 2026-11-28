@@ -194,7 +194,7 @@ def _selection(directory, repo, config, result):
     if 'model_routes' in config:
         _require(all(item['provider'] == config['runners']['AB'.index(item['design'])] for item in candidates),
                  'Feature Arena candidate changed its approved model seat')
-    arena.verify_model_calls(directory, config, result)
+    reviews = arena.verify_model_calls(directory, config, result)
     winner = next(item for item in candidates if item['id'] == label)
     _require(winner['design'] == choice and winner['head'] == result['head']
              and winner['verification'] == result['verification'],
@@ -220,8 +220,10 @@ def _selection(directory, repo, config, result):
         recommendation, totals = arena._scores(scorecard['answer'], candidates, config['rubric'])
         _require(scorecard['totals'] == totals, 'Feature Arena scorecard totals changed')
         recommendations.add(recommendation)
-    cross = config.get('model_routes', {}).get('cross', {'provider': 'openai'})
-    _require(label in recommendations and result['scorecards'][cross['provider']]['model'] == config['judge_model'],
+    legacy = {'provider': 'openai', 'model': config['judge_model']}
+    score_route = reviews['cross-scorecard'] if reviews else legacy
+    review_route = reviews['independent-review'] if reviews else legacy
+    _require(label in recommendations and result['scorecards'][score_route['provider']]['model'] == score_route['model'],
              'Feature Arena selection disagrees with both independent scorecards')
     baseline_proof = result['baseline_verification']
     _sandbox(directory, 'baseline', baseline_proof, config, baseline)
@@ -231,7 +233,7 @@ def _selection(directory, repo, config, result):
     entry = feature_context._git(repo, 'cat-file', 'blob', f"{baseline}:{config['entry']}")
     _require(semantic.get('verdict') == 'PASS' and review.get('verdict') == 'PASS'
              and review.get('schema') == cli.SCHEMA and review.get('head') == winner['head']
-             and review.get('model') == config['judge_model'] and review.get('provider') == cross['provider']
+             and review.get('model') == review_route['model'] and review.get('provider') == review_route['provider']
              and review.get('sandbox_sha256') == winner['verification']['sha256']
              and review.get('baseline_sandbox_sha256') == baseline_proof['sha256']
              and review.get('acceptance_sha256') == hashlib.sha256(entry).hexdigest(),
@@ -262,6 +264,10 @@ def _validate(receipt_path, receipt, repo, baseline, design, design_sha256):
     config = arena._settings(input_path)
     observed = _local_evidence(directory / 'arena' / 'contract.json',
                                receipt['contract']['path'], receipt['contract']['sha256'])
+    if ('cross_fallbacks' in config.get('model_routes', {})
+            and 'cross_fallbacks' not in observed.get('model_routes', {})):
+        # Older Arena contracts froze just the first cross-judge model.
+        config['model_routes'].pop('cross_fallbacks')
     _require(observed == {**config, 'baseline': baseline},
              'Feature Arena retained contract does not match the frozen input')
     result = _local_evidence(directory / 'arena' / 'result.json',

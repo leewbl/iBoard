@@ -72,6 +72,49 @@ class DecisionReviewTests(unittest.TestCase):
                              {'row':4, 'verdict':'supported', 'reason':'Review claims pass.', 'citations':['E4','T1']}],
                 'gaps':[]}, data)
 
+    def test_model_unavailable_requires_failed_structured_cli_error(self):
+        body = {'type': 'error', 'status': 400, 'error': {'type': 'invalid_request_error',
+                'message': 'The model is not supported with this account.', 'code': 'model_not_found'}}
+        for kind in ('error', 'turn.failed'):
+            for status in (400, 404):
+                payload = {**body, 'status': status}
+                event = ({'type': 'error', 'message': json.dumps(payload)} if kind == 'error' else
+                         {'type': 'turn.failed', 'error': {'message': json.dumps(payload)}})
+                with self.subTest(kind=kind, status=status):
+                    with self.assertRaises(codex_review.ModelUnavailable):
+                        codex_review._result(json.dumps(event), 1)
+                    with self.assertRaises(codex_review.ReviewError) as success:
+                        codex_review._result(json.dumps(event), 0)
+                    self.assertNotIsInstance(success.exception, codex_review.ModelUnavailable)
+                    with self.assertRaises(codex_review.ReviewError) as completed:
+                        codex_review._result(json.dumps(event) + '\n' + json.dumps({'type': 'turn.completed'}), 1)
+                    self.assertNotIsInstance(completed.exception, codex_review.ModelUnavailable)
+
+    def test_other_cli_failures_do_not_signal_model_fallback(self):
+        messages = [
+            {'type': 'error', 'status': 429, 'error': {'code': 'model_not_found'}},
+            {'type': 'error', 'status': 401, 'error': {'code': 'model_not_found'}},
+            {'type': 'error', 'status': 400, 'error': {'code': 'invalid_api_key'}},
+            {'type': 'error', 'status': '400', 'error': {'code': 'model_not_found'}},
+        ]
+        events = [{'type': 'error', 'message': json.dumps(value)} for value in messages]
+        events.extend([{'type': 'error', 'message': 'model_not_found'},
+                       {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(messages[0])}},
+                       {'type': 'turn.failed', 'error': {'message': 'timeout'}},
+                       'not-json'])
+        for event in events:
+            with self.subTest(event=event):
+                raw = event if isinstance(event, str) else json.dumps(event)
+                with self.assertRaises(codex_review.ReviewError) as raised:
+                    codex_review._result(raw, 1)
+                self.assertNotIsInstance(raised.exception, codex_review.ModelUnavailable)
+        unavailable = {'type': 'error', 'message': {'type': 'error', 'status': 404,
+                       'error': {'code': 'model_not_found'}}}
+        conflicting = '\n'.join(json.dumps(event) for event in (unavailable, events[0]))
+        with self.assertRaises(codex_review.ReviewError) as raised:
+            codex_review._result(conflicting, 1)
+        self.assertNotIsInstance(raised.exception, codex_review.ModelUnavailable)
+
     def test_codex_rejects_tool_items_or_incomplete_turn(self):
         message = {'type':'item.completed', 'item':{'type':'agent_message','text':'{"ok":true}'}}
         done = {'type':'turn.completed'}
