@@ -179,6 +179,21 @@ def _chunk(kind, payload):
     return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload))
 
 
+def normalize(data: bytes, *, max_pixels: int):
+    """Encode the decoded samples as a static RGBA PNG without ancillary chunks."""
+    image = _read(data)
+    if image.width * image.height > max_pixels:
+        raise VisualPixelError('PNG exceeds the pixel budget')
+    encoder = zlib.compressobj()
+    chunks = [encoder.compress(b'\0' + row) for row in image.rows()]
+    chunks.append(encoder.flush())
+    header = struct.pack('>IIBBBBB', image.width, image.height, 8, 6, 0, 0, 0)
+    png = _SIGNATURE + _chunk(b'IHDR', header) + _chunk(b'IDAT', b''.join(chunks)) + _chunk(b'IEND', b'')
+    if len(png) > MAX_SCREENSHOT:
+        raise VisualPixelError('normalized PNG exceeds the screenshot size limit')
+    return png
+
+
 def _write_mask(path, width, height, compressed):
     header = struct.pack('>IIBBBBB', width, height, 1, 0, 0, 0, 0)
     png = _SIGNATURE + _chunk(b'IHDR', header) + _chunk(b'IDAT', compressed) + _chunk(b'IEND', b'')

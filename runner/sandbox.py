@@ -274,7 +274,8 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
             or screenshot_output is not None or profile_output is not None or regression
             or list(command[:2]) != ['node', '/workspace/run-statechart.mjs']):
         raise SandboxError("invalid scoped statechart input")
-    if regression and (not workspace_read_only or screenshot_output is not None):
+    if regression and (not workspace_read_only or (screenshot_output is not None
+            and (regression_file is not None or source_root != '/workspace'))):
         raise SandboxError("invalid read-only focused regression input")
     if regression_source is not None and (
             not isinstance(regression_source, bytes) or not 0 < len(regression_source) <= 16_384):
@@ -367,6 +368,7 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                       regression_input='isolated-input' if regression_source is not None else 'verified-image')
     created = False
     with tempfile.TemporaryDirectory(prefix='workbench-artifact-') as artifact_dir, \
+            tempfile.TemporaryDirectory(prefix='workbench-regression-') as regression_dir, \
             tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr, \
             tempfile.TemporaryFile() as create_stdout, tempfile.TemporaryFile() as create_stderr:
         try:
@@ -378,9 +380,9 @@ def run_sandbox(workspace, image, command, timeout, workdir=".", *, memory_mb=20
                     mount.extend(['--env', 'WORKBENCH_RECORDING_PATH=/artifacts/recording.jsonl'])
                 create[create.index('--workdir'):create.index('--workdir')] = mount
             if regression_source is not None:
-                asset = Path(artifact_dir) / ('check.mjs' if regression_file is None else 'check.ts')
+                asset = Path(regression_dir) / ('check.mjs' if regression_file is None else 'check.ts')
                 asset.write_bytes(regression_source)
-                mount = (f'type=bind,src={artifact_dir},dst=/workbench-regression,readonly'
+                mount = (f'type=bind,src={regression_dir},dst=/workbench-regression,readonly'
                          if regression_file is None else f'type=bind,src={asset},dst=/app/{regression_file},readonly')
                 create[create.index('--workdir'):create.index('--workdir')] = [
                     '--mount', mount]

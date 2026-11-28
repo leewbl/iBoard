@@ -98,6 +98,55 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(len(artifact_paths), 1)
         self.assertFalse(artifact_paths[0].exists())
 
+    def test_focused_regression_captures_screenshot_without_writable_driver_alias(self):
+        source = b"console.log('visual regression');\n"
+        for exit_code, capture in ((0, False), (1, True), (1, False)):
+            with self.subTest(exit_code=exit_code, capture=capture):
+                paths = []
+                def invoke(args, **kwargs):
+                    if args[1:3] == ['image', 'inspect']:
+                        return subprocess.CompletedProcess(args, 0, stdout='sha256:' + 'a' * 64 + '\nnull\n', stderr='')
+                    if args[1] == 'create':
+                        self.assertIn('--network=none', args)
+                        self.assertIn(f'type=bind,src={self.workspace.resolve()},dst=/workspace,readonly', args)
+                        driver = next(arg for arg in args if arg.endswith(',dst=/workbench-regression,readonly'))
+                        artifacts = next(arg for arg in args if arg.endswith(',dst=/artifacts'))
+                        driver_dir = Path(driver.split(',')[1].removeprefix('src='))
+                        artifact_dir = Path(artifacts.split(',')[1].removeprefix('src='))
+                        self.assertNotEqual(driver_dir, artifact_dir)
+                        self.assertFalse(driver_dir.is_relative_to(artifact_dir))
+                        self.assertFalse(artifact_dir.is_relative_to(driver_dir))
+                        self.assertEqual((driver_dir / 'check.mjs').read_bytes(), source)
+                        self.assertFalse((artifact_dir / 'check.mjs').exists())
+                        self.assertIn('WORKBENCH_SCREENSHOT_PATH=/artifacts/screenshot.png', args)
+                        (artifact_dir / 'screenshot.png').write_bytes(tiny_png())
+                        paths.extend([driver_dir, artifact_dir])
+                    if args[1] == 'start':
+                        return subprocess.CompletedProcess(args, exit_code)
+                    return self.fake(args, **kwargs)
+                dest = self.workspace / f'regression-{exit_code}-{capture}.png'
+                report = run_sandbox(self.workspace, 'example:latest', ['node', '/workbench-regression/check.mjs'],
+                                     10, invoke=invoke, find_executable=lambda _: '/usr/bin/docker',
+                                     workspace_read_only=True, regression_source=source,
+                                     screenshot_output=dest, capture_failure_screenshot=capture)
+                self.assertEqual(report['regression_sha256'], hashlib.sha256(source).hexdigest())
+                self.assertEqual(report['exit_code'], exit_code)
+                self.assertEqual(dest.exists(), exit_code == 0 or capture)
+                if dest.exists():
+                    self.assertEqual(report['screenshot_sha256'], hashlib.sha256(tiny_png()).hexdigest())
+                self.assertTrue(report['cleanup_confirmed'])
+                self.assertEqual(len(paths), 2)
+                self.assertTrue(all(not path.exists() for path in paths))
+
+    def test_native_regression_rejects_screenshot(self):
+        path = 'src/agents/prompt.regression.test.ts'
+        with self.assertRaisesRegex(SandboxError, 'invalid read-only focused regression'):
+            run_sandbox(self.workspace, 'example:latest', ['node', '/app/node_modules/vitest/vitest.mjs',
+                        'run', path], 10, invoke=self.fake, find_executable=lambda _: '/usr/bin/docker',
+                        source_root='/app', workspace_read_only=True, regression_file=path,
+                        screenshot_output=self.workspace / 'out.png')
+        self.assertFalse(any(args[1] == 'create' for args, _ in self.calls))
+
     def test_native_focused_regression_mounts_only_the_baseline_test(self):
         path = 'src/agents/prompt.regression.test.ts'
         command = ['node', '/app/node_modules/vitest/vitest.mjs', 'run', path]

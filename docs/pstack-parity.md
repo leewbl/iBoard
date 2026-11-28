@@ -139,7 +139,7 @@ Claude Code 执行时会为该次运行保留可见回复、工具调用名称�
 
 [包管理器缓存维护](../skills/worktree-cleanup/SKILL.md#package-caches) 需要确认具体路径，再记录操作前后的缓存大小和磁盘可用空间。临时目录验证覆盖 uv 原生修剪、pnpm 同时绑定存储与元数据缓存、Homebrew 单个已下载文件，以及 Yarn Classic 和现代 Yarn 的全局缓存。各场景都检查了范围外的文件仍然存在。
 
-[`workbench.blind_eval`](../skills/blind-eval/SKILL.md) 给各方案同一个任务，在独立目录运行 Claude Code + GLM。评审通过匿名代码、成功的实际文件读取和断网 Docker 运行结果给分。两个独立 OpenAI 会话使用同一份评分标准。审计可离线重建评审输入并核对回执。此入口已支持固定文本源文件的对比，其他宿主轨迹和媒体产物待接入。
+[`workbench.blind_eval`](../skills/blind-eval/SKILL.md) 给各方案同一个任务，在独立目录运行 Claude Code + GLM。两个独立 OpenAI 会话根据相同的评分标准查看匿名代码、实际文件读取和断网 Docker 运行结果。视觉评分可选，启用后会在两个容器中重复采集候选界面，将像素一致的截图去掉 PNG 元数据后，作为匿名附件发送给两位评审。离线审计会重新计算截图摘要并核对两份回执。其他宿主轨迹、视频和其他媒体产物待接入。
 
 [`workbench.correct`](../skills/correct/SKILL.md) 将重复错误对应到实际历史提交与所选防护层级。在断网 Docker 中，用同一探针核对每次错误、对应修复和当前实现。iBoard 的 OpenClaw 发布门禁现在为每条必测路径核对两个独立 Docker 容器；历史回放还检验了未登记回执和缺失 Gateway 重启两类防护。
 

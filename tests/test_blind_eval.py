@@ -1,11 +1,21 @@
 import json
 from pathlib import Path
+import struct
 import tempfile
 import threading
 import unittest
+import zlib
 
 from model.claude_glm import _trace
-from workbench import blind_eval, cli
+from workbench import blind_eval, cli, visual_pixels
+
+
+def _sample_png(red, metadata):
+    return (visual_pixels._SIGNATURE
+            + visual_pixels._chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0))
+            + visual_pixels._chunk(b'tEXt', b'Author\0' + metadata)
+            + visual_pixels._chunk(b'IDAT', zlib.compress(bytes([0, red, 40, 70])))
+            + visual_pixels._chunk(b'IEND', b''))
 
 
 class BlindEvalTests(unittest.TestCase):
@@ -41,6 +51,8 @@ class BlindEvalTests(unittest.TestCase):
         self.barrier = threading.Barrier(2)
         self.witnessed_inputs = []
         self.witnessed_reviews = []
+        self.witnessed_images = []
+        self.diverge = False
 
     def commit(self):
         cli.git(self.repo, 'add', '.')
@@ -69,18 +81,32 @@ class BlindEvalTests(unittest.TestCase):
     def run_sandbox(self, work, image, command, seconds, **kwargs):
         self.assertNotIn('private.mjs', {p.name for p in work.iterdir()})
         self.assertIn(b'console.log("READY")', kwargs['regression_source'])
+        self.assertEqual(kwargs['memory_mb'], 1024 if self.spec['check'].get('screenshot') else 512)
         passed = 'compact' in (work / 'src' / 'name.mjs').read_text()
-        return {'workspace': str(work), 'image': image, 'command': command,
-                'workspace_read_only': kwargs['workspace_read_only'],
-                'container_created': True, 'cleanup_confirmed': True,
-                'regression_sha256': blind_eval._sha(kwargs['regression_source']),
-                'exit_code': 0 if passed else 1, 'stdout': 'READY\n' if passed else ''}
+        result = {'workspace': str(work), 'image': image, 'command': command,
+                  'workspace_read_only': kwargs['workspace_read_only'],
+                  'container_created': True, 'cleanup_confirmed': True,
+                  'regression_sha256': blind_eval._sha(kwargs['regression_source']),
+                  'exit_code': 0 if passed else 1, 'stdout': 'READY\n' if passed else ''}
+        if path := kwargs.get('screenshot_output'):
+            self.assertTrue(kwargs['capture_failure_screenshot'])
+            red = (20 if passed else 80) + int(self.diverge and 'replay' in path.name)
+            raw = _sample_png(red, b'glm-5.3 ' + path.name.encode())
+            path.write_bytes(raw)
+            result['screenshot_sha256'] = blind_eval._sha(raw)
+        return result
 
-    def review(self, prompt, model, seconds):
+    def review(self, prompt, model, seconds, *, images=()):
         self.witnessed_reviews.append(prompt)
         for forbidden in ('glm-5.3', 'plain-context', 'rich-context', str(self.repo), 'private.mjs', 'self-report'):
             self.assertNotIn(forbidden, prompt)
-        spec = json.loads(prompt.removeprefix(blind_eval.JUDGE))
+        spec = json.loads(prompt.removeprefix(blind_eval.JUDGE).removeprefix(blind_eval.VISUAL_JUDGE))
+        if images:
+            self.assertEqual([path.name for path in images], ['attachment-1.png', 'attachment-2.png'])
+            captured = [path.read_bytes() for path in images]
+            self.assertTrue(all(b'glm-5.3' not in raw and b'tEXt' not in raw for raw in captured))
+            self.assertNotEqual(*captured)
+            self.witnessed_images.append(captured)
         rows = []
         for label, evidence in spec['options'].items():
             file, body = next(iter(evidence['artifact'].items()))
@@ -89,7 +115,15 @@ class BlindEvalTests(unittest.TestCase):
                 'use': {'why': 'Observed file read', 'score': 4 if evidence['reading'] else 0},
                 'shape': {'why': 'Implementation uses an export', 'score': 3, 'file': file, 'quote': body.strip()},
             }})
+            if images:
+                number = evidence['visual']['attachment']
+                self.assertEqual(evidence['visual']['sha256'], blind_eval._sha(captured[number - 1]))
+                rows[-1]['scores']['appearance'] = {'attachment': number, 'score': 3, 'why': 'Visible contrast'}
         return {'rows': rows}
+
+    def enable_visual(self):
+        self.spec['check']['screenshot'] = True
+        self.spec['criteria'].append({'id': 'appearance', 'basis': 'visual', 'description': 'The label is legible.'})
 
     def run_pilot(self, approval, **kwargs):
         return blind_eval.run(**approval, out=self.root / 'proof', editor=kwargs.get('edit', self.edit),
@@ -119,6 +153,51 @@ class BlindEvalTests(unittest.TestCase):
             self.freeze()
         self.spec['request'] = request + ' Use the plain-context approach.'
         with self.assertRaisesRegex(blind_eval.EvalError, 'identity leaked'):
+            self.freeze()
+
+    def test_visual_reviews_use_the_same_anonymous_pixels_and_audit_refuses_tampering(self):
+        self.enable_visual()
+        approval = self.freeze()
+        result = self.run_pilot(approval)
+        self.assertEqual(result['status'], 'recommended', result)
+        self.assertEqual(*self.witnessed_images)
+        self.assertEqual(*self.witnessed_reviews)
+        self.assertEqual(blind_eval.audit(**approval, report=result['report'],
+                                         report_sha256=result['sha256'])['promotion'], 'rich-context')
+        replay = self.root / 'proof' / 'capture-1-replay.png'
+        replay.write_bytes(replay.read_bytes() + b'again')
+        with self.assertRaisesRegex(ValueError, 'screenshot digest changed'):
+            blind_eval.audit(**approval, report=result['report'], report_sha256=result['sha256'])
+
+    def test_different_replay_pixels_block_before_review(self):
+        self.enable_visual()
+        self.diverge = True
+        result = self.run_pilot(self.freeze())
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIn('screenshot pixels disagreed', result['error'])
+        self.assertEqual(self.witnessed_reviews, [])
+
+    def test_visual_review_must_reference_the_option_attachment(self):
+        self.enable_visual()
+
+        def review(prompt, model, seconds, **kwargs):
+            result = self.review(prompt, model, seconds, **kwargs)
+            score = result['rows'][0]['scores']['appearance']
+            score['attachment'] = 3 - score['attachment']
+            return result
+
+        result = self.run_pilot(self.freeze(), review=review)
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIn('different screenshot', result['error'])
+
+    def test_visual_criterion_and_screenshot_capture_must_be_declared_together(self):
+        self.enable_visual()
+        del self.spec['check']['screenshot']
+        with self.assertRaisesRegex(blind_eval.EvalError, 'visual criteria require screenshot capture'):
+            self.freeze()
+        self.spec['check']['screenshot'] = True
+        self.spec['criteria'].pop()
+        with self.assertRaisesRegex(blind_eval.EvalError, 'capture requires a visual criterion'):
             self.freeze()
 
     def test_refuses_metadata_in_generated_code_before_any_review(self):
