@@ -10,12 +10,14 @@ from tempfile import TemporaryDirectory
 import time
 
 from model import claude_glm, codex_catalog, codex_review
-from workbench import cli
+from workbench import cli, pstack_model_rules
+from workbench.prompt_profiles import PSTACK_COMMIT
 from workbench.task_lock import task_lock
 
 
 SOURCE = 'skills/setup-pstack/SKILL.md'
 FILE = 'model-profile.json'
+MAX_PROFILE_BYTES = 120_000
 EFFORTS = ('low', 'medium', 'high', 'xhigh')
 BUDGETS = {'large': 0, 'medium': 1, 'small': 2}
 ROLES = {
@@ -37,6 +39,17 @@ PANELS = {'arena-runners', 'arena-cross-judge-pool', 'interrogate-reviewers'}
 TASK_ROLES = {'planning', 'feature-refactoring', 'bug-fix', 'repair', 'baseline-review', 'final-review'}
 ALIASES = ('inherit-parent', 'auto')
 MODELS = {'glm': r'glm-[a-z0-9][a-z0-9.-]{0,64}', 'openai': r'gpt-[a-z0-9][a-z0-9.-]{0,64}'}
+PSTACK_ROLES = {
+    'feature, refactoring': 'feature-refactoring',
+    'bug-fix': 'bug-fix',
+    'perf-issue': 'perf-issue',
+    'hillclimb': 'hillclimb',
+    'judgment and prose': 'judgment-prose',
+    'arena runners': 'arena-runners',
+    'arena cross-judge pool': 'arena-cross-judge-pool',
+    'swarm workers': 'swarm-workers',
+    'interrogate reviewers': 'interrogate-reviewers',
+}
 PROBE = 'Return the JSON object {"available":true} and no other content. Do not use tools.'
 ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, cli.WorkbenchError, codex_review.ReviewError)
 
@@ -61,8 +74,8 @@ def _reading(path, sha256=None):
     path = Path(path).expanduser()
     _require(not path.is_symlink() and path.is_file(), 'use a regular profile input file')
     with path.open('rb') as source:
-        raw = source.read(120_001)
-    _require(len(raw) <= 120_000 and (sha256 is None or hashlib.sha256(raw).hexdigest() == sha256),
+        raw = source.read(MAX_PROFILE_BYTES + 1)
+    _require(len(raw) <= MAX_PROFILE_BYTES and (sha256 is None or hashlib.sha256(raw).hexdigest() == sha256),
              'profile input size or digest changed')
     value = json.loads(raw)
     _require(isinstance(value, dict) and value.get('schema') == cli.SCHEMA, 'invalid model profile schema')
@@ -216,17 +229,90 @@ def _routes(spec, available):
 
 
 def _profile(value):
-    _require(set(value) == {'schema', 'source', 'kind', 'inventory_sha256', 'inventory', 'choices', 'routes'}
+    _require(set(value) - {'migration'} == {'schema', 'source', 'kind', 'inventory_sha256', 'inventory', 'choices', 'routes'}
              and value['source'] == SOURCE and value['kind'] == 'profile'
              and re.fullmatch(r'[0-9a-f]{64}', value['inventory_sha256'])
              and hashlib.sha256(_serialized(value['inventory'])).hexdigest() == value['inventory_sha256']
              and _routes(value['choices'], _available(value['inventory'])) == value['routes'],
              'saved model profile no longer matches the confirmed capabilities')
+    if 'migration' in value:
+        migration = value['migration']
+        _require(isinstance(migration, dict) and set(migration) == {'plan', 'plan_sha256', 'mapping', 'mapping_sha256'}
+                 and _canonical_digest(migration['plan']) == migration['plan_sha256']
+                 and _canonical_digest(migration['mapping']) == migration['mapping_sha256']
+                 and _migrated_choices(migration['plan'], migration['mapping']) == value['choices'],
+                 'saved model profile no longer matches its approved rule migration')
     return value
 
 
 def _serialized(value):
     return (json.dumps(value, indent=2, ensure_ascii=False) + '\n').encode()
+
+
+def _canonical_digest(value):
+    return hashlib.sha256(_serialized(value)).hexdigest()
+
+
+def inspect_rule(rule, out):
+    path = Path(rule).expanduser()
+    _require(path.is_file() and not path.is_symlink(), 'use a regular pstack rule file')
+    with path.open('rb') as stream:
+        raw = stream.read(pstack_model_rules.MAX_BYTES + 1)
+    plan = {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': 'rule-migration', 'pstack_commit': PSTACK_COMMIT,
+            'rule_sha256': hashlib.sha256(raw).hexdigest(), **pstack_model_rules.parse(raw)}
+    return {**_save(out, plan), 'budget': plan['budget'], 'roles': plan['roles'], 'changes': plan['changes']}
+
+
+def _migrated_choices(plan, mapping):
+    _require(isinstance(plan, dict) and set(plan) == {
+                 'schema', 'source', 'kind', 'pstack_commit', 'rule_sha256', 'defaults_version',
+                 'budget', 'roles', 'changes'}
+             and plan['schema'] == cli.SCHEMA and plan['source'] == SOURCE and plan['kind'] == 'rule-migration'
+             and plan['pstack_commit'] == PSTACK_COMMIT and re.fullmatch(r'[0-9a-f]{64}', plan['rule_sha256'])
+             and type(plan['defaults_version']) is int and plan['defaults_version'] in (1, 2, 3)
+             and plan['budget'] in BUDGETS and isinstance(plan['roles'], dict) and set(plan['roles']) == set(PSTACK_ROLES)
+             and isinstance(plan['changes'], list),
+             'use a plan from the pinned pstack rule inspector')
+    _require(isinstance(mapping, dict) and set(mapping) == {'schema', 'parent', 'models'}
+             and mapping['schema'] == cli.SCHEMA and isinstance(mapping['models'], dict),
+             'provide an exact parent and explicit model mappings')
+    parent = _model(mapping['parent'])
+    substitutions = {slug: _model(item) for slug, item in mapping['models'].items()}
+    missing = set()
+
+    def translate(slug):
+        _require(isinstance(slug, str) and pstack_model_rules.SLUG.fullmatch(slug),
+                 'rule migration contains an invalid model ID')
+        if slug in ALIASES:
+            return slug
+        if slug in substitutions:
+            return substitutions[slug]
+        for vendor, pattern in MODELS.items():
+            if re.fullmatch(pattern, slug):
+                return {'provider': vendor, 'model': slug}
+        missing.add(slug)
+        return None
+
+    roles = {}
+    for original, role in PSTACK_ROLES.items():
+        value = plan['roles'][original]
+        if role in PANELS:
+            _require(isinstance(value, list) and 1 <= len(value) <= 5, 'rule migration has an invalid panel')
+            roles[role] = [translate(entry) for entry in value]
+        else:
+            roles[role] = translate(value)
+    _require(not missing, 'provide explicit mappings for: ' + ', '.join(sorted(missing)))
+    return {'schema': cli.SCHEMA, 'budget': plan['budget'], 'parent': parent, 'roles': roles}
+
+
+def _draft_profile(current, spec, out, *, migration=None):
+    selection = _routes(spec, _available(current))
+    profile = {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': 'profile', 'inventory_sha256': _canonical_digest(current),
+               'inventory': current, 'choices': spec, 'routes': selection}
+    if migration is not None:
+        profile['migration'] = migration
+        _require(len(_serialized(profile)) <= MAX_PROFILE_BYTES, 'migrated profile exceeds the profile size limit')
+    return {**_save(out, _profile(profile)), 'routes': selection}
 
 
 def draft(inventory, inventory_sha256, choices, out, *, previous=None, previous_sha256=None):
@@ -235,13 +321,17 @@ def draft(inventory, inventory_sha256, choices, out, *, previous=None, previous_
     if previous is not None or previous_sha256 is not None:
         before = load(previous, previous_sha256)['choices']
         spec = {**spec, 'roles': {**before['roles'], **spec['roles']}}
-    selection = _routes(spec, _available(current))
-    # Keep the complete probe inventory with its canonical digest so tasks can start
-    # after the setup workspace and its temporary files are gone.
-    canonical = hashlib.sha256(_serialized(current)).hexdigest()
-    profile = {'schema': cli.SCHEMA, 'source': SOURCE, 'kind': 'profile', 'inventory_sha256': canonical,
-               'inventory': current, 'choices': spec, 'routes': selection}
-    return {**_save(out, _profile(profile)), 'routes': selection}
+    return _draft_profile(current, spec, out)
+
+
+def draft_rule(plan, plan_sha256, mapping, mapping_sha256, inventory, inventory_sha256, out):
+    _, preview = _exact(plan, plan_sha256)
+    _, routes = _exact(mapping, mapping_sha256)
+    _, current = _exact(inventory, inventory_sha256)
+    spec = _migrated_choices(preview, routes)
+    migration = {'plan': preview, 'plan_sha256': _canonical_digest(preview),
+                 'mapping': routes, 'mapping_sha256': _canonical_digest(routes)}
+    return _draft_profile(current, spec, out, migration=migration)
 
 
 def load(profile, sha256):
@@ -358,6 +448,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     for action, fields in [('discover', ('out',)), ('probe', ('manifest', 'out')),
+                           ('inspect-rule', ('rule', 'out')),
+                           ('draft-rule', ('plan', 'plan-sha256', 'mapping', 'mapping-sha256',
+                                           'inventory', 'inventory-sha256', 'out')),
                            ('draft', ('inventory', 'inventory-sha256', 'choices', 'out')),
                            ('install', ('profile', 'sha256', 'out')), ('show', ('profile', 'sha256'))]:
         child = sub.add_parser(action)
@@ -383,7 +476,8 @@ def main(argv=None):
             result = {'budget': data['choices']['budget'], 'routes': data['routes']} if role is None else {
                 'role': role, 'route': select(data, role, other_than=other)}
         else:
-            result = {'discover': discover, 'probe': probe, 'draft': draft, 'install': install}[action](**args)
+            result = {'discover': discover, 'probe': probe, 'inspect-rule': inspect_rule,
+                      'draft-rule': draft_rule, 'draft': draft, 'install': install}[action](**args)
     except ERRORS as error:
         parser.error(str(error))
     print(json.dumps(result, ensure_ascii=False, indent=2))

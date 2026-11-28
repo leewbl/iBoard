@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 import tempfile
 import unittest
@@ -134,6 +135,73 @@ class ModelProfileTests(unittest.TestCase):
         result = model_profiles.probe(self.probes, self.root/'inventory.json', editor=self.editor, reviewer=judge)
         self.assertEqual([item['status'] for item in result['probes']], ['unverified', 'unverified', 'confirmed'])
         self.assertEqual([item[1] for item in self.calls], [RETIRED['model'], GLM['model']])
+
+    def legacy_rule(self):
+        path = self.root/'pstack-models.mdc'
+        path.write_text(
+            '---\ndescription: Legacy fixture model roles\nalwaysApply: true\n---\n'
+            '# defaults: 2\n# budget: small (medium)\n'
+            'feature, refactoring: auto\nbug-fix: glm-profile\nperf-issue: inherit-parent\n'
+            'hillclimb: glm-profile\njudgment and prose: glm-profile\n'
+            'arena runners: auto, gpt-review\n'
+            'arena cross-judge pool: claude-fable-old, claude-opus-old, gemini-4-old\n'
+            'swarm workers: inherit-parent\ninterrogate reviewers: gpt-review, auto\n'
+            'architect runners: glm-profile\n')
+        return path
+
+    def test_rule_migration_uses_verified_mappings_and_keeps_its_audit_snapshot(self):
+        path = self.legacy_rule()
+        original = path.read_bytes()
+        preview = model_profiles.inspect_rule(path, self.root/'rule-plan.json')
+        plan = cli.read(Path(preview['path']))
+        self.assertEqual(plan['rule_sha256'], sha256(original).hexdigest())
+        self.assertEqual(preview['budget'], 'small')
+        self.assertTrue(any(change['role'] == 'architect runners' and change['after'] is None
+                            for change in preview['changes']))
+        mapping = self.root/'mapping.json'
+        cli.write(mapping, {'schema': 1, 'parent': GLM, 'models': {
+            'claude-opus-5-5-high-fast': GLM, 'gemini-4-neon-xhigh': OPENAI}})
+        inventory = self.inventory()
+        draft = model_profiles.draft_rule(preview['path'], preview['sha256'], mapping, cli.digest(mapping),
+                                          inventory['path'], inventory['sha256'], self.root/'draft.json')
+        installed = model_profiles.install(draft['path'], draft['sha256'], self.root/'installed.json')
+        path_approved = Path(installed['path'])
+        Path(preview['path']).unlink()
+        Path(inventory['path']).unlink()
+        mapping.unlink()
+        saved = model_profiles.load(path_approved, installed['sha256'])
+        self.assertEqual(saved['choices']['roles']['arena-runners'], ['auto', OPENAI])
+        self.assertEqual(saved['choices']['roles']['interrogate-reviewers'], [OPENAI, 'auto'])
+        self.assertEqual(model_profiles.select(saved, 'arena-cross-judge-pool', other_than='glm')['model'],
+                         OPENAI['model'])
+        self.assertEqual(saved['migration']['plan_sha256'], preview['sha256'])
+        self.assertEqual(path.read_bytes(), original)
+        saved['migration']['plan']['roles']['feature, refactoring'] = 'inherit-parent'
+        saved['migration']['plan_sha256'] = model_profiles._canonical_digest(saved['migration']['plan'])
+        cli.write(path_approved, saved)
+        with self.assertRaisesRegex(ValueError, 'approved rule migration'):
+            model_profiles.load(path_approved, cli.digest(path_approved))
+
+    def test_migration_requires_explicit_mapping_and_confirmed_model_for_each_role(self):
+        rule = self.legacy_rule()
+        preview = model_profiles.inspect_rule(rule, self.root/'rule-plan.json')
+        inventory = self.inventory()
+        mapping = self.root/'mapping.json'
+        choices = {'schema': 1, 'parent': GLM, 'models': {}}
+        cli.write(mapping, choices)
+        out = self.root/'draft.json'
+
+        def draft():
+            return model_profiles.draft_rule(preview['path'], preview['sha256'], mapping, cli.digest(mapping),
+                                             inventory['path'], inventory['sha256'], out)
+
+        with self.assertRaisesRegex(ValueError, 'explicit mappings for: claude-opus.*gemini'):
+            draft()
+        choices['models'] = {'claude-opus-5-5-high-fast': GLM, 'gemini-4-neon-xhigh': RETIRED}
+        cli.write(mapping, choices)
+        with self.assertRaisesRegex(ValueError, 'needs a confirmed openai/gpt-retired'):
+            draft()
+        self.assertFalse(out.exists())
 
     def test_context_window_suffix_preserves_exact_model_identity(self):
         route = {**GLM, 'effort': 'low'}

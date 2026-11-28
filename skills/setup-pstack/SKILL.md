@@ -29,6 +29,21 @@ The [Codex catalog semantics](https://developers.openai.com/siwc/token-sharing-o
 
 Use `draft --previous "$PROFILE" --previous-sha256 "$PROFILE_SHA"` to keep role selections that the new choices omit. To replace the installed file, provide its expected digest with `install --previous-sha256`. Changes affect tasks that select the new profile. Existing tasks stay bound to the original snapshot.
 
+## Import a pstack rule
+
+Inspect an existing `pstack-models.mdc` to see the budget, effective roles, ordered panels and each legacy replacement or dropped role. The preview records the source digest and pinned pstack version. It preserves explicit choices and aliases, and applies the pinned defaults to omitted roles.
+
+Prepare mapping JSON with `schema: 1`, an explicit iBoard `parent` provider/model pair, and a `models` object that maps normalized Cursor slugs to provider/model pairs from the actual probe inventory. For example, `"gemini-4-neon-xhigh": {"provider": "openai", "model": "gpt-6-luna"}` would explicitly choose that tested iBoard route for the seat. A recognized exact iBoard model ID can be carried over directly. The normal iBoard role budgets determine the effective confirmed effort.
+
+```sh
+python3 -m workbench.model_profiles inspect-rule --rule "$PSTACK_RULE" --out "$RULE_PLAN"
+python3 -m workbench.model_profiles draft-rule --plan "$RULE_PLAN" --plan-sha256 "$RULE_PLAN_SHA" \
+  --mapping "$MAPPING" --mapping-sha256 "$MAPPING_SHA" \
+  --inventory "$INVENTORY" --inventory-sha256 "$INVENTORY_SHA" --out "$DRAFT"
+```
+
+Review the preview, mapping and resulting roles before installing the draft with its digest. The installed profile includes the inspected plan, mapping and probe snapshot for later audit. The importer reads the source rule as data.
+
 ## Use it on a task
 
 Append `--model-profile "$PROFILE" --model-profile-sha256 "$PROFILE_SHA"` to [`workbench.start`](../optimize/SKILL.md). Task intake pins the file and embeds the same reference in the workflow state. The task's planning, implementation, baseline review, repair, and final review use the selected Claude Code + GLM routes. Baseline and final review retain read-only access to the existing evidence. Resume and baseline replay use the snapshot.
