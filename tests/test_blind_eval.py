@@ -98,7 +98,8 @@ class BlindEvalTests(unittest.TestCase):
 
     def review(self, prompt, model, seconds, *, images=()):
         self.witnessed_reviews.append(prompt)
-        for forbidden in ('glm-5.3', 'plain-context', 'rich-context', str(self.repo), 'private.mjs', 'self-report'):
+        for forbidden in ('glm-5.3', 'gpt-worker', 'plain-context', 'rich-context', str(self.repo),
+                          'private.mjs', 'self-report', 'codex'):
             self.assertNotIn(forbidden, prompt)
         spec = json.loads(prompt.removeprefix(blind_eval.JUDGE).removeprefix(blind_eval.VISUAL_JUDGE))
         if images:
@@ -127,7 +128,19 @@ class BlindEvalTests(unittest.TestCase):
 
     def run_pilot(self, approval, **kwargs):
         return blind_eval.run(**approval, out=self.root / 'proof', editor=kwargs.get('edit', self.edit),
+                              codex_editor=kwargs.get('codex_editor', self.edit_codex),
                               reviewer=kwargs.get('review', self.review), sandbox=self.run_sandbox)
+
+    def edit_codex(self, work, prompt, seconds, *, requested_model, files, editable):
+        self.assertEqual(files, self.spec['files'])
+        self.assertEqual(editable, self.spec['editable'])
+        reply = self.edit(work, prompt, seconds, private_workspace=True, requested_model=requested_model)
+        reply['host'] = 'codex'
+        reply['trace'].extend((
+            {'type': 'tool_use', 'id': 'write-1', 'tool': 'Write', 'path': 'src/name.mjs'},
+            {'type': 'tool_result', 'id': 'write-1', 'error': False},
+        ))
+        return reply
 
     def test_both_blind_reviews_use_same_material_and_audit_refuses_tampering(self):
         approval = self.freeze()
@@ -198,6 +211,38 @@ class BlindEvalTests(unittest.TestCase):
         self.spec['check']['screenshot'] = True
         self.spec['criteria'].pop()
         with self.assertRaisesRegex(blind_eval.EvalError, 'capture requires a visual criterion'):
+            self.freeze()
+
+    def test_mixed_hosts_share_anonymous_review_packet_and_audit(self):
+        self.spec['arms'][1].update(host='codex', model='gpt-worker')
+        approval = self.freeze()
+        result = self.run_pilot(approval)
+        self.assertEqual(result['status'], 'recommended', result)
+        self.assertEqual(*self.witnessed_reviews)
+        lane = cli.read(self.root / 'proof' / result['lanes']['rich-context']['file'])
+        self.assertEqual(lane['host'], 'codex')
+        self.assertEqual(lane['model'], 'gpt-worker')
+        self.assertEqual(blind_eval.audit(**approval, report=result['report'],
+                                         report_sha256=result['sha256'])['promotion'], 'rich-context')
+
+    def test_codex_candidate_with_unobserved_write_is_blocked(self):
+        self.spec['arms'][1].update(host='codex', model='gpt-worker')
+
+        def editor(*args, **kwargs):
+            reply = self.edit_codex(*args, **kwargs)
+            return {**reply, 'trace': reply['trace'][:2]}
+
+        result = self.run_pilot(self.freeze(), codex_editor=editor)
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIn('missing successful file receipts', result['failures']['rich-context'])
+        self.assertEqual(self.witnessed_reviews, [])
+
+    def test_model_route_must_match_host_and_be_distinct_from_reviewers(self):
+        self.spec['arms'][1].update(host='codex')
+        with self.assertRaisesRegex(blind_eval.EvalError, 'compatible host and model'):
+            self.freeze()
+        self.spec['arms'][1]['model'] = self.spec['auditor']
+        with self.assertRaisesRegex(blind_eval.EvalError, 'outside the candidate routes'):
             self.freeze()
 
     def test_refuses_metadata_in_generated_code_before_any_review(self):

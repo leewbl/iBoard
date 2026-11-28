@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from threading import Lock
 import time
 
-from model import claude_glm, codex_review
+from model import claude_glm, codex_edit, codex_review
 from runner.sandbox import MAX_SCREENSHOT, run_sandbox
 from workbench import autopilot, cli, stack_rebase, swarm, visual_pixels
 
@@ -92,13 +92,15 @@ def _contract(data):
     _require(isinstance(arms, list) and 2 <= len(arms) <= 4, 'provide two to four variants')
     names = set()
     for arm in arms:
-        _require(set(arm) == {'name', 'revision', 'model', 'observe'}
+        host = arm.get('host', 'claude-code')
+        _require(set(arm) - {'host'} == {'name', 'revision', 'model', 'observe'}
                  and re.fullmatch(r'[a-z][a-z0-9-]{3,47}', arm['name']) and arm['name'] not in names
                  and swarm.SHA.fullmatch(arm['revision'])
-                 and re.fullmatch(r'glm-[a-z0-9][a-z0-9.-]{0,64}', arm['model'])
+                 and ((host == 'claude-code' and re.fullmatch(r'glm-[a-z0-9][a-z0-9.-]{0,64}', arm['model']))
+                      or (host == 'codex' and codex_edit.MODEL.fullmatch(arm['model'])))
                  and isinstance(arm['observe'], list) and 1 <= len(arm['observe']) <= 10
                  and len(set(arm['observe'])) == len(arm['observe']) and set(arm['observe']) <= set(files),
-                 'each arm needs an exact revision, GLM model, and observable project files')
+                 'each arm needs an exact revision, a compatible host and model, and observable project files')
         names.add(arm['name'])
     _require(len({(row['revision'], row['model']) for row in arms}) == len(arms),
              'vary a model or the committed project context for each arm')
@@ -112,7 +114,8 @@ def _contract(data):
         kinds.append(row['basis'])
     _require(kinds.count('runtime') == kinds.count('reading') == 1, 'freeze one runtime and one reading criterion')
     for key in ('judge', 'auditor'):
-        _require(re.fullmatch(r'gpt-[a-z0-9][a-z0-9.-]{0,64}', data[key]), 'use an OpenAI reviewing model')
+        _require(codex_edit.MODEL.fullmatch(data[key]) and all(row['model'] != data[key] for row in arms),
+                 'use an OpenAI reviewing model outside the candidate routes')
     check = data['check']
     capture = check.get('screenshot', False)
     _require(type(capture) is bool and capture == ('visual' in kinds),
@@ -142,7 +145,9 @@ def _bound(repo, data):
 
 
 def _identity_pattern(data, repo, paths=()):
-    names = [x['name'] for x in data['arms']] + [x['revision'] for x in data['arms']]
+    names = [arm[key] for arm in data['arms'] for key in ('name', 'revision', 'model')]
+    if any(arm.get('host') == 'codex' for arm in data['arms']):
+        names.extend(('Codex', 'Claude Code', 'Claude-Code'))
     names += [str(repo), *map(str, paths)]
     return re.compile('|'.join(r'(?<![a-z0-9])' + re.escape(name) + r'(?![a-z0-9])' for name in names), re.I)
 
@@ -208,14 +213,14 @@ def _collect(work, original, editable):
     return files
 
 
-def _reads(trace, allowed):
+def _reads(trace, allowed, *, tool='Read'):
     _require(isinstance(trace, list) and len(trace) <= 80, 'bounded invocation trace required')
     seen, read = {}, set()
     for item in trace:
         if item.get('type') == 'tool_use':
             ident = item.get('id')
             _require(isinstance(ident, str) and ident not in seen, 'ambiguous trace of tool calls')
-            seen[ident] = item.get('path') if item.get('tool') == 'Read' else None
+            seen[ident] = item.get('path') if item.get('tool') == tool else None
         elif item.get('type') == 'tool_result':
             name = seen.pop(item.get('id'), None)
             if name in allowed and item.get('error') is False:
@@ -261,24 +266,38 @@ def _captures(output, index):
     return (output / f'capture-{index}-primary.png', output / f'capture-{index}-replay.png')
 
 
-def _lane(arm, data, original, driver, deadline, editor, sandbox, captures, proof_lock):
+def _codex_writes(trace, files, original):
+    writes = set(_reads(trace, files, tool='Write'))
+    _require({path for path in files if files[path] != original[path]} <= writes,
+             'Codex candidate changes are missing successful file receipts')
+
+
+def _lane(arm, data, original, driver, deadline, editor, codex_editor, sandbox, captures, proof_lock):
+    host = arm.get('host', 'claude-code')
     with TemporaryDirectory(prefix='studio-') as folder:
         work = Path(folder).resolve()
         _require(not META.search(str(work)), 'temporary project root reveals the experiment')
         _materialize(work, original)
-        reply = editor(work, data['request'], _remaining(deadline), file_tools_only=True, capture_trace=True,
-                       requested_model=arm['model'], private_workspace=True)
+        if host == 'codex':
+            reply = codex_editor(work, data['request'], _remaining(deadline), requested_model=arm['model'],
+                                 files=data['files'], editable=data['editable'])
+        else:
+            reply = editor(work, data['request'], _remaining(deadline), file_tools_only=True, capture_trace=True,
+                           requested_model=arm['model'], private_workspace=True)
         _require(reply.get('exit_code') == 0 and not reply.get('timed_out') and reply.get('trace_completed') is True
                  and not reply.get('trace_truncated') and isinstance(reply.get('model'), str)
+                 and reply.get('host', 'claude-code') == host
                  and claude_glm.reported_model_id(reply['model']) == arm['model'], 'model run failed or trace is incomplete')
         files = _collect(work, original, data['editable'])
     trace = [{k: v for k, v in item.items() if k in ('type', 'tool', 'id', 'path', 'error')}
              for item in reply['trace'] if item.get('type') in ('tool_use', 'tool_result')]
     _reads(trace, original)
+    if host == 'codex':
+        _codex_writes(trace, files, original)
     with proof_lock:
         checks = [_check(original, data, driver, deadline, sandbox)]
         checks.extend(_check(files, data, driver, deadline, sandbox, path) for path in captures)
-    return {'schema': cli.SCHEMA, 'model': reply['model'], 'request_sha256': _sha(data['request']),
+    return {'schema': cli.SCHEMA, 'host': host, 'model': reply['model'], 'request_sha256': _sha(data['request']),
             'project': str(work), 'removed': not work.exists(), 'trace': trace, 'artifact': files, 'checks': checks}
 
 
@@ -300,11 +319,15 @@ def _blind(record, data, repo, projects, driver, lanes, output):
     for index, name in enumerate(record['order'], 1):
         lane, arm, original = lanes[name], arms[name], projects[name]
         files = lane['artifact']
+        host = arm.get('host', 'claude-code')
         _require(claude_glm.reported_model_id(lane['model']) == arm['model'] and lane['request_sha256'] == _sha(data['request'])
+                 and lane.get('host', 'claude-code') == host
                  and lane['removed'] is True and set(files) == set(original)
                  and all(isinstance(v, str) and len(v.encode()) <= MAX_FILE and '\0' not in v for v in files.values())
                  and all(files[p] == original[p] for p in files if p not in data['editable'])
                  and any(files[p] != original[p] for p in data['editable']), 'worker evidence changed')
+        if host == 'codex':
+            _codex_writes(lane['trace'], files, original)
         raw_checks = lane['checks']
         _require(len(raw_checks) == 3 and len({run['workspace'] for run in raw_checks}) == 3
                  and lane['project'] not in {run['workspace'] for run in raw_checks},
@@ -370,7 +393,8 @@ def _summary(record, scores):
     return {'status': 'recommended', 'promotion': record['order'][int(first[0].split()[-1]) - 1]}
 
 
-def run(plan, sha256, out, *, editor=claude_glm.execute, reviewer=codex_review.review, sandbox=run_sandbox):
+def run(plan, sha256, out, *, editor=claude_glm.execute, codex_editor=codex_edit.execute,
+        reviewer=codex_review.review, sandbox=run_sandbox):
     record, data, repo, projects, driver = _load(plan, sha256)
     deadline = time.monotonic() + data['seconds']
     output = Path(out).expanduser().resolve()
@@ -384,7 +408,7 @@ def run(plan, sha256, out, *, editor=claude_glm.execute, reviewer=codex_review.r
         visual = data['check'].get('screenshot', False)
         proof_lock = Lock() if visual else nullcontext()
         with ThreadPoolExecutor(max_workers=len(data['arms'])) as pool:
-            work = {pool.submit(_lane, arm, data, projects[arm['name']], driver, deadline, editor, sandbox,
+            work = {pool.submit(_lane, arm, data, projects[arm['name']], driver, deadline, editor, codex_editor, sandbox,
                                 _captures(output, record['order'].index(arm['name']) + 1) if visual else (None, None),
                                 proof_lock): arm['name']
                     for arm in data['arms']}
