@@ -1,13 +1,14 @@
 import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from workbench import cli, tdd, workflow
+from workbench import bug_cause, cli, tdd, workflow
 from test_runner import tiny_png
 
 
@@ -142,6 +143,29 @@ class WorkflowTests(unittest.TestCase):
         record = cli.read(task)
         cli.criterion_add(argparse.Namespace(id='a', text='repair behavior', reason='issue'), record)
         cli.write(Path(task), record)
+
+    def test_causal_workflow_retains_ambiguous_output_without_registering_evidence(self):
+        task = Path(self.prepare()['task'])
+        self.criterion(task)
+        record = cli.read(task)
+        record['root_cause'] = bug_cause.MODE
+        cli.write(task, record)
+        outcomes = {'first': {'marker': 'FIRST STATE', 'exit_code': 0},
+                    'second': {'marker': 'SECOND STATE', 'exit_code': 0}}
+        output = 'FIRST STATE\nSECOND STATE\n'
+
+        def runner(*_args, **_kwargs):
+            return {'exit_code': 0, 'stdout': output, 'cleanup_confirmed': True}
+
+        with self.assertRaisesRegex(workflow.WorkflowError, 'causal observation was missing or ambiguous'):
+            workflow.run_check(task=task, kind='runtime-log', image='image', command=['/workspace/test'],
+                               timeout=30, expect_exit=None, marker=None, actor='implementer', description='Observe',
+                               runner=runner, observations=outcomes)
+        raw, = task.parent.glob('runtime-log-*.json')
+        report = json.loads(raw.read_bytes())
+        self.assertEqual(report['stdout'], output)
+        self.assertIsNone(report['observed_outcome'])
+        self.assertEqual(cli.read(task)['evidence'], [])
 
     def test_prepare_creates_independent_worktree_without_touching_original(self):
         result = self.prepare()

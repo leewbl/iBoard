@@ -358,9 +358,16 @@ def prepare(*, task_id, repo, tasks_root, workspaces_root, source, kind, surface
             'branch': branch, 'base_commit': base}
 
 
+def matching_observation(options, report):
+    output = str(report.get('stdout', '')) + '\n' + str(report.get('stderr', ''))
+    matches = [name for name, spec in options.items()
+               if report.get('exit_code') == spec['exit_code'] and spec['marker'] in output]
+    return matches[0] if len(matches) == 1 else None
+
+
 @locked_task('task')
 def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor,
-              description, runner=run_sandbox, memory_mb=2048, source_mode='workspace'):
+              description, runner=run_sandbox, memory_mb=2048, source_mode='workspace', observations=None):
     """Run and archive a real test result; success does not establish semantics.
 
     Reproduction must run on the baseline and assert an explicit observable
@@ -378,6 +385,9 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
     if not command or timeout <= 0 or not description.strip() or not actor.strip():
         raise WorkflowError('command, actor, description and positive timeout are required')
     head = cli.sha(data['repo'], 'HEAD')
+    if observations is not None and (kind != 'runtime-log' or data['kind'] != 'bug' or not data.get('root_cause')
+                                     or head != data['base_commit'] or expect_exit is not None or marker is not None):
+        raise WorkflowError('multiple observations require a causal baseline runtime check')
     if cli.git(data['repo'], 'status', '--porcelain', '--untracked-files=all'):
         raise WorkflowError('source worktree must be clean before the check')
     regression = None
@@ -436,6 +446,12 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         report = {'error': str(exc), 'exit_code': None, 'cleanup_confirmed': False}
     if native and kind == 'tdd-green' and report.get('regression_input') == 'verified-image':
         report['regression_sha256'] = tdd.digest(regression)
+    observation = None
+    if observations is not None:
+        observation = matching_observation(observations, report)
+        report['observed_outcome'] = observation
+        if observation is not None:
+            expect_exit, marker = observations[observation]['exit_code'], observations[observation]['marker']
     # Always save actual result, including failures, before enforcing any gate.
     report.update({'schema': cli.SCHEMA, 'kind': kind, 'commit': head, 'actor': actor, 'description': description,
                    'expected_exit': expect_exit, 'expected_marker': marker, 'source_mode': source_mode,
@@ -444,6 +460,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
                    'source_limit': 'Image /app matched every tracked Git blob before execution' if source_mode == 'image'
                      else 'Entry script is in /workspace; downstream execution still requires semantic review'})
     cli.write(report_path, report)
+    if observations is not None and (observation is None or report.get('stdout_truncated') or report.get('stderr_truncated')):
+        raise WorkflowError(f'causal observation was missing or ambiguous; raw report saved at {report_path}')
     output = str(report.get('stdout', '')) + '\n' + str(report.get('stderr', ''))
     if (report.get('error') or report.get('timed_out') or not report.get('cleanup_confirmed')
             or docker_oom(report)
@@ -465,6 +483,8 @@ def run_check(*, task, kind, image, command, timeout, expect_exit, marker, actor
         data['evidence'][-1]['execution_report_sha256'] = cli.digest(report_path)
     cli.write(task, data)
     result = {'report': str(report_path), 'commit': head, 'kind': kind}
+    if observations is not None:
+        result['observed_outcome'] = observation
     if screenshot_path is not None:
         result['screenshot'] = str(screenshot_path)
     return result

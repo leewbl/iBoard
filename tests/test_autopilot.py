@@ -514,6 +514,100 @@ class AutopilotTests(unittest.TestCase):
         self.assertNotIn('implement', self.calls)
         self.assertEqual(cli.read(self.task)['iterations'], 0)
 
+    def _run_cause_search(self, group, *, conflicting=False):
+        self._causal_plan()
+        self.plan['root_cause'] = {
+            'hypotheses': [{'id': name, 'claim': f'Mechanism {name} explains the fault.',
+                            'path': 'code.txt', 'line': 1} for name in ('a', 'b', 'c', 'd')],
+            'investigation': [
+                {'id': name, 'command': ['node', '/workspace/repro.js', name],
+                 'outcomes': {'low': {'marker': f'{name} LOW', 'exit_code': 0},
+                              'high': {'marker': f'{name} HIGH', 'exit_code': 3}},
+                 'predictions': dict(zip(('a', 'b', 'c', 'd'), predictions.split())),
+                 'candidate': {'marker': f'{name} HEALTHY', 'exit_code': 0}}
+                for name, predictions in [('left', 'low high high high'), ('group', 'low low high high'),
+                                          ('right', 'high high low high')]]}
+        expected = ['group', 'left' if group == 'low' else 'right']
+        surviving = 'a' if group == 'low' else 'c'
+        checks = []
+        review_prompts = []
+
+        def check(**kwargs):
+            self.calls.append(f'{kwargs["kind"]}:{kwargs["actor"]}')
+            command = kwargs['command']
+            case = command[-1]
+            evidence_group = group
+            if conflicting and kwargs['actor'] == 'independent-verifier':
+                evidence_group = 'high' if group == 'low' else 'low'
+
+            def runner(repo, image, command, timeout, **_):
+                fixed = (Path(repo) / 'code.txt').read_text() == 'fixed'
+                if 'observations' in kwargs:
+                    checks.append((case, fixed))
+                    observation = evidence_group if case == 'group' else 'low'
+                    selected = kwargs['observations'][observation]
+                    exit_code, stdout = selected['exit_code'], selected['marker']
+                else:
+                    if case in expected and kwargs['kind'] == 'runtime-log':
+                        checks.append((case, fixed))
+                    exit_code, stdout = kwargs['expect_exit'], kwargs['marker']
+                return {'workspace': str(self.workspace), 'image': image, 'command': command, 'exit_code': exit_code,
+                        'stdout': stdout, 'stderr': '', 'container_created': True, 'workspace_read_only': True,
+                        'create_stdout': f'{len(self.calls):064x}', 'create_stdout_truncated': False,
+                        'cleanup_confirmed': True, 'timed_out': False}
+
+            return workflow.run_check(**kwargs, runner=runner)
+
+        def model(workspace, prompt, timeout, *, read_only):
+            result = self.model(workspace, prompt, timeout, read_only=read_only)
+            if 'actual baseline run' in prompt:
+                review_prompts.append(prompt)
+                self.assertIn('CAUSAL SEARCH TRACE', prompt)
+                self.assertNotIn('BASELINE_' + ('right' if group == 'low' else 'left'), prompt)
+                excluded = ['c', 'd'] if group == 'low' else ['a', 'b']
+                verdict = {'mechanism': 'supported', 'trigger_quote': 'BROKEN', 'survivor': surviving, 'probes': {
+                    'group': {'verdict': 'ruled-out', 'reason': 'The group observation excludes the opposite branch.',
+                              'quote': f'group {group.upper()}', 'eliminated': excluded},
+                    expected[1]: {'verdict': 'ruled-out', 'reason': 'Only one hypothesis predicts this result.',
+                                  'quote': expected[1] + ' LOW', 'eliminated': ['b' if group == 'low' else 'd']}}}
+                if group == 'low' and len(review_prompts) == 1:
+                    verdict['trigger_quote'] += ' (exit zero)'
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_verdict': verdict})
+            elif 'CAUSAL CONTRACT AND VERDICT' in prompt:
+                result['stdout'] = json.dumps({**json.loads(result['stdout']), 'cause_fixed': True,
+                                               'causal_explanation': 'The exact trigger and selected controls pass.'})
+            return result
+
+        image = 'sha256:' + 'b' * 64
+        if conflicting:
+            with self.assertRaisesRegex(autopilot.AutopilotError, 'baseline runs disagree on causal observation group'):
+                autopilot.run(self.task, self.issue, image, model=model, check=check, local_handoff=True)
+            self.assertNotIn('implement', self.calls)
+            self.assertEqual(checks, [('group', False), ('group', False)])
+            return
+        result = autopilot.run(self.task, self.issue, image, model=model, check=check, local_handoff=True)
+        self.assertEqual(checks, [(name, fixed) for fixed in (False, True) for name in expected for _ in range(2)])
+        if group == 'low':
+            self.assertEqual(len(review_prompts), 2)
+            self.assertTrue(review_prompts[1].startswith(review_prompts[0] + '\nThe previous response failed'))
+        data = cli.read(self.task)
+        head = result['candidate_commit']
+        receipt = delivery._independent_verification(data, head)
+        causal = json.loads(Path(receipt['path']).read_bytes())['causal_verification']
+        self.assertEqual(causal['baseline']['verdict']['survivor'], surviving)
+        with self.assertRaisesRegex(bug_cause.CauseError, 'strongest available split'):
+            causal['baseline']['search_trace'].reverse()
+            bug_cause.validate(data, head, causal, 'independent-verifier')
+
+    def test_cause_search_follows_the_low_branch_and_skips_unused_probe(self):
+        self._run_cause_search('low')
+
+    def test_cause_search_follows_the_high_branch_and_skips_unused_probe(self):
+        self._run_cause_search('high')
+
+    def test_cause_search_stops_on_disagreement_before_editing(self):
+        self._run_cause_search('low', conflicting=True)
+
     def _focused_plan(self):
         source = ("import assert from 'node:assert/strict';\n"
                   "import { readFileSync } from 'node:fs';\n"
