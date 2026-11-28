@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from workbench import (autonomous_run, autopilot, autopilot_full, cli, delivery, publish,
-                       start, task_replay, task_replay_delivery, workflow)
+                       start, task_replay, task_replay_delivery, workflow, intent_review)
 
 
 class ReplayFixture(unittest.TestCase):
@@ -28,6 +28,7 @@ class ReplayFixture(unittest.TestCase):
             cli.git(self.repo, 'config', key, value)
         (self.repo / 'code').write_text('broken\n')
         (self.repo / 'check.js').write_text('// fixture command\n')
+        self.prepare_sources()
         self.original_base = self.commit('Original fault')
         issue = self.root / 'issue.txt'
         issue.write_text('The user-visible command displays BROKEN.')
@@ -51,6 +52,7 @@ class ReplayFixture(unittest.TestCase):
                                publish_only=self.predicate == 'published', prepare_only=True, log_files=[log],
                                required_ci_workflows=['CI'] if self.predicate == 'merged' else None)
         self.task = Path(info['task'])
+        self.prepare_review()
         plan = autonomous_run.freeze(self.task, self.predicate, self.root / 'individual')
         manifest = self.root / 'manifest.json'
         cli.write(manifest, {'schema': cli.SCHEMA, 'parallelism': 1, 'interval': 1,
@@ -81,6 +83,12 @@ class ReplayFixture(unittest.TestCase):
         for patcher in (model, checks):
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def prepare_sources(self):
+        pass
+
+    def prepare_review(self):
+        pass
 
     def commit(self, message):
         cli.git(self.repo, 'add', '.')
@@ -211,6 +219,73 @@ class TaskReplayTests(ReplayFixture):
         self.assertIn('main changed after fresh verification', refused['reason'])
         self.assertNotIn('review', refused)
         self.assertEqual(cli.read(Path(refused['task']).with_name('autopilot.json'))['phase'], 'delivery')
+
+
+class IntentReviewReplayTests(ReplayFixture):
+    def prepare_sources(self):
+        (self.repo / 'clarification-source').write_text('selected evidence\nunselected context\n')
+
+    def prepare_review(self):
+        evidence = intent_review.collect(mode='sharpen', request=self.task.parent / 'issue.txt',
+                                         out=self.root / 'intent-evidence.json', repo=self.repo,
+                                         revision=self.original_base, source=['clarification-source:1'])
+        claim = {'text': 'The command should show the corrected state.', 'citations': ['U1', 'S1']}
+        answer = {key: [claim] for key in intent_review.SHARPEN}
+        answer.update(experiments=[{'choice': 'Check the command', 'setup': 'Run the command.',
+                                    'observation': 'Read the output.', 'decision_rule': 'It displays FIXED.',
+                                    'citations': ['U1', 'S1']}], draft='Verify the command output.')
+        report = intent_review.review(evidence=evidence['path'], sha256=evidence['sha256'], model='fixture',
+                                      out=self.root / 'intent-review.json', reviewer=lambda *_: answer)
+        self.review_ref = intent_review.attach(self.task, report['path'], report['sha256'])
+        self.intent_evidence = Path(evidence['path'])
+
+    def test_preserves_approved_review_after_unrelated_main_change(self):
+        report = self.verify()
+        self.assertEqual(report['status'], 'verified', report)
+        child = Path(report['task'])
+        record = cli.read(child)
+        state = cli.read(child.with_name('autopilot.json'))
+        self.assertEqual(record['intent_review'], self.review_ref)
+        self.assertEqual(state['intent_review'], self.review_ref)
+        self.assertEqual(report['origin']['intent_review'], self.review_ref)
+        self.assertEqual(record['criteria'], cli.read(self.task)['criteria'])
+        self.assertEqual([call for call in self.calls if call in ('plan', 'edit')], [])
+        self.assertEqual([call[2] for call in self.calls if isinstance(call, tuple) and call[0] == 'reproduction'],
+                         [self.base, self.base])
+        self.assertTrue(any(isinstance(call, tuple) and call[0] != 'reproduction'
+                            and call[2] == report['candidate'] for call in self.calls))
+
+    def test_change_to_uncited_lines_blocks_before_replay_preparation(self):
+        (self.repo / 'clarification-source').write_text('selected evidence\nchanged unselected context\n')
+        new_base = self.commit('Change context outside the cited range')
+        with patch.object(task_replay.phase_replay, 'prepare', wraps=task_replay.phase_replay.prepare) as prepare:
+            report = self.verify(new_base)
+        self.assertEqual(report['status'], 'blocked', report)
+        self.assertIn('clarification source changed', report['reason'])
+        prepare.assert_not_called()
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.root / 'replay' / 'task.json').exists())
+        self.assertFalse((self.root / 'replay' / 'patch').exists())
+
+    def test_changed_mode_cannot_reuse_clarification_even_with_equal_bytes(self):
+        cli.git(self.repo, 'update-index', '--chmod=+x', 'clarification-source')
+        cli.git(self.repo, 'commit', '-qm', 'Change cited file mode')
+        new_base = cli.sha(self.repo, 'HEAD')
+        report = self.verify(new_base)
+        self.assertEqual(report['status'], 'blocked', report)
+        self.assertIn('clarification source changed', report['reason'])
+        self.assertEqual(self.calls, [])
+
+    def test_modified_citation_artifact_invalidates_existing_child(self):
+        report = self.verify()
+        self.assertEqual(report['status'], 'verified', report)
+        child = Path(report['task'])
+        data = cli.read(child)
+        state = cli.read(child.with_name('autopilot.json'))
+        self.intent_evidence.write_bytes(self.intent_evidence.read_bytes() + b' ')
+        with self.assertRaisesRegex(task_replay.ReplayError, 'evidence digest changed'):
+            task_replay.validate_child(child, data, state)
+
 
 class ReplayGitHub:
     branch_name = 'workbench/fixture'

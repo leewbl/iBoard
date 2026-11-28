@@ -36,6 +36,8 @@ GitHub writes for group members sharing a repository are serialized. Each write 
 
 This replay supports ordinary bug and feature tasks using workspace validation or the original source-image build mode. The original source path must remain unchanged, the patch history must be linear, and it may touch up to 20 paths. Tasks with phase, Arena, visual-parity, formal refactoring, legacy adoption, or custom CI skip contracts require their own replay adapters. OpenClaw's explicit local Vitest policy is recreated on the new base. The explicit verifier produces a verdict without GitHub write authority. For queued delivery, the journal is saved before publication and merge. A resumed run rechecks the exact PR and candidate before any new action. If main moves after publication, CI fails, or the original remote head is replaced, the queue reports the blocker and preserves its evidence.
 
+An attached intent review stays bound to its original report and request. For source-backed reviews, the new main must descend from the approved baseline and every cited file must keep its exact contents and Git mode. Changed or missing source blocks replay before a patch or verification starts. The retained replay records the approval digest and verifies it again before delivery.
+
 To verify a specific locally available main without a remote observation, run the explicit verifier:
 
 ```sh

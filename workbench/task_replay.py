@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sys
 
-from workbench import (autonomous_run, autopilot, autopilot_full, cli, delivery, local_gate, model_profiles,
+from workbench import (autonomous_run, autopilot, autopilot_full, cli, delivery, intent_review, local_gate, model_profiles,
                        phase_replay, run_control, stack_rebase, start, workflow)
 from workbench.task_lock import task_lock
 
@@ -19,7 +19,7 @@ ERRORS = (*autonomous_run.ERRORS, local_gate.LocalGateError, stack_rebase.Rebase
 CONTRACT_FIELDS = ('id', 'kind', 'surface', 'source', 'original_source', 'implementer', 'started_at',
                    'limits', 'iterations', 'criteria', 'criterion_changes', 'impact_review',
                    'required_ci_workflows', 'regression_test', 'publish_only', 'root_cause', 'coverage_swarm',
-                   'model_profile')
+                   'model_profile', 'intent_review')
 
 
 def _regular(path):
@@ -55,14 +55,15 @@ def _snapshot(task, data, stage, state, member):
     if (data['status'] != 'paused' or state.get('phase') != 'delivery'
             or not isinstance(old_head, str) or not phase_replay.COMMIT.fullmatch(old_head)
             or stage['phase'] != 'ready' or state.get('issue_digest') != stage['request_digest']
-            or state.get('input_digest') != stage['input_digest'] or not isinstance(state.get('plan'), dict)):
+            or state.get('input_digest') != stage['input_digest'] or not isinstance(state.get('plan'), dict)
+            or state.get('intent_review') != data.get('intent_review')):
         raise ReplayError('replay requires a paused and previously verified delivery candidate')
     settings = stage['run_settings']
     model_profiles.intake(task, data, stage)
     if (data['kind'] not in ('bug', 'feature') or any(data.get(key) for key in (
             'verification_target', 'adoption', 'phase_binding', 'feature_context', 'refactor_contract',
             'visual_baseline', 'ci_skip_policy', 'baseline_replay', 'local_gate_reverify', 'performance_contract',
-            'blast_radius', 'intent_review'))
+            'blast_radius'))
             or settings['candidate_image'] or (settings['source_mode'] == 'image' and not settings['build_source_image'])
             or not member['destination'] or member['predicate'] not in ('published', 'merged')):
         raise ReplayError('this task needs an explicit replay adapter for its existing gates')
@@ -80,7 +81,16 @@ def _snapshot(task, data, stage, state, member):
             'state_sha256': cli.digest(task.with_name('autopilot.json')),
             'plan_sha256': member['sha256'], 'destination': member['destination'],
             'base': data['base_commit'], 'head': head, 'settings': settings,
-            'review': {'path': review['path'], 'sha256': review['sha256']}}
+            'review': {'path': review['path'], 'sha256': review['sha256']},
+            **({'intent_review': data['intent_review']} if data.get('intent_review') is not None else {})}
+
+
+def _intent_context(task, data, from_base):
+    if data.get('intent_review') is not None:
+        try:
+            intent_review.task_context(data, task, replay_from=from_base)
+        except intent_review.ERRORS as error:
+            raise ReplayError(f'replay clarification could not be verified: {error}') from error
 
 
 def _copy_inputs(original, child):
@@ -118,6 +128,8 @@ def validate_child(task, data, state):
             or cli.digest(original.with_name('autopilot.json')) != binding['origin']['state_sha256']
             or cli.digest(_regular(Path(source_review['path']))) != source_review['sha256']
             or any(data.get(key) != old.get(key) for key in CONTRACT_FIELDS)
+            or binding['origin'].get('intent_review') != data.get('intent_review')
+            or state.get('intent_review') != data.get('intent_review')
             or data['base_commit'] != binding['base'] or state['plan'] != old_state['plan']
             or start._read_input_stage(task) != start._read_input_stage(original)
             or (state['phase'] not in ('reproduce', 'implement', 'adopting', 'verify', 'delivery'))
@@ -133,6 +145,7 @@ def validate_child(task, data, state):
             or receipt['old_base'] != binding['origin']['base']
             or str(task.parent / 'worktree') != data['repo']):
         raise ReplayError('replayed worktree no longer matches the exact source patch')
+    _intent_context(task, data, binding['origin']['base'])
 
 
 def _prepare(root, original, old, old_state, stage, binding):
@@ -156,6 +169,8 @@ def _prepare(root, original, old, old_state, stage, binding):
     if data.get('model_profile') is not None:
         model_profiles.intake(child, data, stage)
         state['model_profile'] = data['model_profile']
+    if data.get('intent_review') is not None:
+        state['intent_review'] = data['intent_review']
     cli.write(child.with_name('autopilot.json'), state)
     cli.write(child, data)
     return child
@@ -187,11 +202,12 @@ def _verify(root, original, member, queue_sha, base, *, fetch, execute, resume, 
         active()
         if owner is not None and owner.branch(member['destination'], 'main') != base:
             raise ReplayError('the destination main changed before baseline replay')
+        if not patch_path.exists() and fetch:
+            fetch(old['repo'], member['destination'], base, autopilot._budget_remaining(old))
+        _intent_context(original, {**old, 'base_commit': base}, old['base_commit'])
         if patch_path.exists():
             patch = cli.read(_regular(patch_path))
         else:
-            if fetch:
-                fetch(old['repo'], member['destination'], base, autopilot._budget_remaining(old))
             patch = phase_replay.prepare(old['repo'], **operands, out=patch_path.parent,
                                          timeout=autopilot._budget_remaining(old))
         if patch['status'] != 'replayed':

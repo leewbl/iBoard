@@ -908,6 +908,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
     from workbench import intent_review, phase_contract
     refactor_plan = None
     refactor_binding = data.get('refactor_contract')
+    replay = data.get('baseline_replay')
     intent_note = ''
     try:
         intent_binding = data.get('intent_review')
@@ -917,7 +918,7 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             if issue_path != task.with_name('issue.txt'):
                 raise AutopilotError('intent clarification requires the frozen task request')
             try:
-                clarified = intent_review.task_context(data, task)
+                clarified = intent_review.task_context(data, task, replay_from=replay['origin']['base'] if replay else None)
             except intent_review.ERRORS as error:
                 raise AutopilotError(f'frozen clarification could not be verified: {error}') from error
             intent_note = ('\nSupplemental clarification data. Keep the original request, allowed scope and frozen acceptance '
@@ -1009,7 +1010,6 @@ def _run_locked(task_path, issue_path, image, *, pr_repo=None, pr_number=None,
             raise AutopilotError('cannot resume a legacy task with unbound input snapshots')
         state['input_digest'] = input_digest
     target = data.get('verification_target')
-    replay = data.get('baseline_replay')
     if replay is not None or 'baseline_replay' in state:
         from workbench import task_replay
         try:

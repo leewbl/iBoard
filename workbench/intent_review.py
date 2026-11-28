@@ -334,7 +334,7 @@ def review(*, evidence, sha256, model, out, timeout=200, reviewer=codex_review.r
     return {**_keep(out, report), 'mode': packet['mode'], 'status': answer.get('status', 'complete')}
 
 
-def task_context(data, task_path):
+def task_context(data, task_path, *, replay_from=None):
     report = _load(data['intent_review'], 'intent-review')
     packet = _load(report['evidence'], 'intent-evidence')
     _require(report['mode'] == packet['mode'] and report['mode'] in ('sharpen', 'in-your-own-words', 'reframe'),
@@ -345,10 +345,23 @@ def task_context(data, task_path):
     if packet['repo']:
         def common(path):
             return cli.git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir', timeout=12)
-        _require(packet['revision'] == data['base_commit'] and common(packet['repo']) == common(data['repo']),
+        context_commit, base = packet['revision'], data['base_commit']
+        _require((context_commit == base or context_commit == replay_from)
+                 and common(packet['repo']) == common(data['repo']),
                  'source context belongs to a different repository or baseline')
-        _, _, sources = _env_sources(packet['repo'], packet['revision'], packet['source'])
+        _, _, sources = _env_sources(packet['repo'], context_commit, packet['source'])
         _require(sources == packet['code'], 'the frozen source excerpts changed')
+        if context_commit != base:
+            _require(re.fullmatch(r'[a-f0-9]{40}', base) is not None
+                     and investigate._git(data['repo'], 'merge-base', context_commit, base).decode().strip() == context_commit,
+                     'clarification requires a descendant of the approved baseline')
+            paths = sorted({row['path'] for row in sources.values()})
+
+            def tree_entries(commit):
+                return investigate._git(data['repo'], 'ls-tree', '-z', '--full-tree', commit, '--', *paths)
+
+            _require(tree_entries(context_commit) == tree_entries(base),
+                     'clarification source changed on the new baseline; review the affected files before replay')
     return report['answer']
 
 
