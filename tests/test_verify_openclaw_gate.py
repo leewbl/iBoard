@@ -127,6 +127,20 @@ class GatewayGateTests(unittest.TestCase):
                           'controlKey': 'agent:main:iboard-library-control', 'controlId': 'session-2'}, 'steps': steps},
             {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True},
         ]
+        turns = []
+        for index, (stage, identity, revision, content) in enumerate((
+            ('attached', 'target', a, old_hash), ('after-update', 'target', a, old_hash),
+            ('refreshed', 'target', b, new_hash), ('control', 'control', None, None),
+            ('restarted', 'target', b, new_hash), ('detached', 'target', None, None),
+        )):
+            turns.append({'stage': stage,
+                          'sessionKey': rows[2]['sessions'][identity + 'Key'],
+                          'sessionId': rows[2]['sessions'][identity + 'Id'],
+                          'runId': f'00000000-0000-4000-8000-{index + 1:012d}',
+                          'status': 'ok', 'cliPid': 100 + index,
+                          'skillPath': f'skill-library/skill-1/revisions/{revision}/SKILL.md' if revision else None,
+                          'contentSha': content, 'supportSha': support if revision else None})
+        rows[2]['turns'] = turns
         if fault:
             fault(rows)
         return ''.join(json.dumps(row) + '\n' for row in rows) + 'VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS\n'
@@ -395,7 +409,12 @@ class GatewayGateTests(unittest.TestCase):
         self.assertEqual(verify_openclaw._timeout(journey), 600)
         for path in ('src/cli/skills-cli.ts', 'src/cli/skills-library-cli.ts', 'src/skills/library/store.ts',
                      'src/gateway/server-methods/skills-library.ts', 'src/gateway/gateway-owner-profile.ts',
-                     'packages/gateway-protocol/src/schema/skill-library.ts'):
+                     'packages/gateway-protocol/src/schema/skill-library.ts',
+                     'src/agents/cli-runner/skills-prompt.ts', 'src/agents/cli-runner/prepare.ts',
+                     'src/agents/cli-runner/execute.ts', 'src/agents/cli-runner/execute-process.ts',
+                     'src/agents/cli-runner/helpers.ts', 'src/agents/embedded-agent-runner/skills-prompt.ts',
+                     'src/skills/runtime/session-snapshot.ts', 'src/skills/runtime/embedded-run-entries.ts',
+                     'src/skills/loading/workspace-skill-prompt.ts'):
             self.changed_paths.return_value = path + '\0'
             self.assertIn(journey, verify_openclaw.required_journeys(self.data, self.head))
         self.changed_paths.return_value = 'src/gateway/server-methods/skills-library.ts\0'
@@ -439,6 +458,24 @@ class GatewayGateTests(unittest.TestCase):
             lambda r: r[2]['steps']['detached'].update(pinReadRejected=False),
             lambda r: r[2]['steps']['detached'].update(remaining=False),
             lambda r: r[3].update(scratchRemoved=1),
+            lambda r: r[2]['turns'].pop(),
+            lambda r: r[2]['turns'][0].update(stage='after-update'),
+            lambda r: r[2]['turns'][0].update(sessionKey=r[2]['sessions']['controlKey']),
+            lambda r: r[2]['turns'][0].update(sessionId=r[2]['sessions']['controlId']),
+            lambda r: r[2]['turns'][0].update(runId='not-a-uuid'),
+            lambda r: r[2]['turns'][0].update(runId='00000000-0000-1000-8000-000000000001'),
+            lambda r: r[2]['turns'][1].update(runId=r[2]['turns'][0]['runId']),
+            lambda r: r[2]['turns'][0].update(status='error'),
+            lambda r: r[2]['turns'][0].update(cliPid=True),
+            lambda r: r[2]['turns'][0].update(cliPid=r[0]['gatewayPid']),
+            lambda r: r[2]['turns'][0].update(skillPath=r[2]['turns'][2]['skillPath']),
+            lambda r: r[2]['turns'][1].update(contentSha=r[2]['hashes']['updated']),
+            lambda r: r[2]['turns'][2].update(supportSha='bad'),
+            lambda r: r[2]['turns'][3].update(skillPath=r[2]['turns'][0]['skillPath']),
+            lambda r: r[2]['turns'][3].update(contentSha=r[2]['hashes']['original']),
+            lambda r: r[2]['turns'][4].update(contentSha=r[2]['hashes']['original']),
+            lambda r: r[2]['turns'][5].update(supportSha=r[2]['hashes']['support']),
+            lambda r: r[2]['turns'][0].update(extra=True),
         )
         for fault in faults:
             with self.subTest(fault=fault):

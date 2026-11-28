@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -21,6 +21,7 @@ const config = join(state, 'openclaw.json');
 const log = join(root, 'gateway.log');
 const bundle = join(root, 'skill');
 const revisionFile = join(root, 'edited', 'SKILL.md');
+const receipts = join(root, 'cli-receipts');
 const firstContent = `---\nname: ${slug}\ndescription: Disposable library fixture\n---\n\nFirst approved procedure.\n`;
 const secondContent = firstContent.replace('First approved procedure.', 'Second approved procedure.');
 const supportContent = 'The support file should survive a single-file edit.\n';
@@ -96,6 +97,83 @@ async function cli(args, expectedError) {
 const lib = (args, error) => cli(['skills', 'library', ...args], error);
 const call = (method, params) => cli(['gateway', 'call', method, '--params', JSON.stringify(params)]);
 
+async function localBackendConfig() {
+  const id = 'iboard-library-cli';
+  const plugin = join(home, id);
+  const workspace = join(home, 'fixture-workspace');
+  const backend = join(plugin, 'backend.mjs');
+  await Promise.all([mkdir(plugin), mkdir(workspace), mkdir(receipts)]);
+  const backendConfig = {
+    command: process.execPath, args: [backend, state, receipts], output: 'text', input: 'stdin',
+    sessionMode: 'none', systemPromptWhen: 'always', systemPromptArg: '--system-prompt',
+  };
+  await Promise.all([
+    writeFile(join(plugin, 'package.json'), JSON.stringify({
+      name: id, version: '1.0.0', type: 'module', openclaw: { extensions: ['./index.js'] },
+    })),
+    writeFile(join(plugin, 'openclaw.plugin.json'), JSON.stringify({
+      id, name: id, cliBackends: [id], activation: { onStartup: true },
+      configSchema: { type: 'object', properties: {}, additionalProperties: false },
+    })),
+    writeFile(join(plugin, 'index.js'), `export default {
+      id: ${JSON.stringify(id)},
+      register(api) {
+        api.registerCliBackend({ id: ${JSON.stringify(id)}, config: ${JSON.stringify(backendConfig)} });
+      },
+    };`),
+    writeFile(backend, String.raw`
+      import assert from 'node:assert/strict';
+      import { createHash } from 'node:crypto';
+      import { readFileSync, writeFileSync } from 'node:fs';
+      import { dirname, join, relative } from 'node:path';
+      const [state, receipts, flag, system] = process.argv.slice(2);
+      assert.equal(flag, '--system-prompt');
+      assert.ok(system);
+      let input = '';
+      for await (const chunk of process.stdin) input += chunk;
+      const runId = [...input.matchAll(/\bIBOARD_LIBRARY_TURN:([0-9a-f-]{36})\b/gu)].at(-1)?.[1];
+      assert.ok(runId);
+      const paths = [...system.matchAll(/<location>([^<]+)<\/location>/gu)]
+        .map(match => match[1]).filter(path => path.includes('/skill-library/'));
+      assert.ok(paths.length <= 1);
+      const path = paths[0];
+      const skillPath = path ? relative(state, path) : null;
+      if (path) assert.match(skillPath, /^skill-library\/[^/]+\/revisions\/[0-9a-f]{64}\/SKILL\.md$/u);
+      const sha = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+      writeFileSync(join(receipts, runId + '.json'), JSON.stringify({
+        cliPid: process.pid, skillPath, contentSha: path ? sha(path) : null,
+        supportSha: path ? sha(join(dirname(path), 'reference.txt')) : null,
+      }), { flag: 'wx' });
+      process.stdout.write('Offline CLI completed the library turn.\n');
+    `),
+  ]);
+  return {
+    agents: { defaults: { workspace, model: id + '/proof', timeoutSeconds: 90 }, entries: { main: {} } },
+    plugins: { allow: [id], load: { paths: [plugin] }, entries: { [id]: { enabled: true } }, slots: { memory: 'none' } },
+  };
+}
+
+async function observeTurn(stage, session, skillId, revision, contentSha) {
+  const runId = randomUUID();
+  const sessionKey = session.key;
+  const started = await call('chat.send', {
+    sessionKey, message: `IBOARD_LIBRARY_TURN:${runId}`, idempotencyKey: runId, deliver: false,
+  });
+  assert.equal(started.runId, runId);
+  assert.equal(started.status, 'started');
+  const result = await call('agent.wait', { runId, timeoutMs: 38_000 });
+  assert.equal(result.runId, runId);
+  assert.equal(result.status, 'ok', `The ${stage} CLI turn did not complete: ${JSON.stringify(result)}`);
+  const receipt = JSON.parse(await readFile(join(receipts, `${runId}.json`), 'utf8'));
+  assert.ok(Number.isInteger(receipt.cliPid) && receipt.cliPid > 1 && receipt.cliPid !== gateway.pid);
+  assert.equal(receipt.skillPath, revision ? `skill-library/${skillId}/revisions/${revision}/SKILL.md` : null);
+  assert.equal(receipt.contentSha, contentSha ?? null);
+  assert.equal(receipt.supportSha, revision ? hashes.support : null);
+  const current = await call('sessions.describe', { key: sessionKey, agentId: 'main' });
+  assert.equal(current.session?.sessionId, session.sessionId);
+  return { stage, sessionKey, sessionId: current.session.sessionId, runId, status: result.status, ...receipt };
+}
+
 async function selected(key) {
   const result = await lib(['list', '--scope', 'mine', '--session', key]);
   assert.equal(result.session?.sessionKey, key);
@@ -127,6 +205,7 @@ function contentProof(data, skillId, revision, content) {
 }
 
 async function drive() {
+  const turns = [];
   const initial = await lib(['list', '--scope', 'mine']);
   assert.ok(typeof initial.profileId === 'string' && initial.profileId, 'The CLI did not receive the durable owner profile');
   assert.deepEqual(initial.entries, []);
@@ -168,6 +247,7 @@ async function drive() {
   assert.equal(onlyPin(attached, targetKey, skillId), original);
   contentProof(await lib(['read', skillId, '--session', targetKey, '--revision', original]), skillId, original, firstContent);
   steps.attached = { pin: original, activation: attached.sessionActivation };
+  turns.push(await observeTurn('attached', target, skillId, original, hashes.original));
 
   const changed = await lib(['update', skillId, revisionFile, '--expected-revision', original]);
   assert.equal(changed.state, 'published');
@@ -182,6 +262,7 @@ async function drive() {
   const updatedRead = contentProof(current, skillId, updated, secondContent);
   assert.deepEqual(current.revisions.map(row => row.revision).sort(), [original, updated].sort());
   steps.updated = { revision: updated, pin: pinAfterUpdate, supportSha: updatedRead.supportSha };
+  turns.push(await observeTurn('after-update', target, skillId, original, hashes.original));
 
   const stale = await lib(['update', skillId, join(bundle, 'SKILL.md'), '--expected-revision', original],
     /Skill changed\. Read the current revision/u);
@@ -197,6 +278,8 @@ async function drive() {
   await lib(['read', skillId, '--session', controlKey, '--revision', updated],
     /Session reads require an exact selected skillId and revision/u);
   steps.refreshed = { pin: updated, oldPinRejected: true, controlUnselected: true, controlReadRejected: true };
+  turns.push(await observeTurn('refreshed', target, skillId, updated, hashes.updated));
+  turns.push(await observeTurn('control', control));
 
   const disabled = await lib(['disable', skillId, '--expected-revision', updated]);
   assert.equal(disabled.entry.enabled, false);
@@ -239,6 +322,7 @@ async function drive() {
     skillId, updated, secondContent);
   steps.restarted = { profileId: durable.profileId, revision: durable.entries[0].revision, pin: updated,
     targetId, controlId, pinContentSha: durableRead.contentSha, supportSha: durableRead.supportSha };
+  turns.push(await observeTurn('restarted', target, skillId, updated, hashes.updated));
 
   const removed = await lib(['remove', skillId, '--expected-revision', original]);
   assert.equal(removed.state, 'removed');
@@ -270,7 +354,8 @@ async function drive() {
   await lib(['read', skillId, '--session', targetKey, '--revision', updated],
     /Session reads require an exact selected skillId and revision/u);
   steps.detached = { activation: detached.sessionActivation, remaining: afterDetach.session.selections.length, pinReadRejected: true };
-  return { profileId, skillId, revisions, hashes, sessions, steps };
+  turns.push(await observeTurn('detached', target));
+  return { profileId, skillId, revisions, hashes, sessions, steps, turns };
 }
 
 try {
@@ -278,9 +363,10 @@ try {
   await mkdir(state);
   await mkdir(bundle);
   await mkdir(join(root, 'edited'));
+  const backendConfig = await localBackendConfig();
   await Promise.all([
     writeFile(config, JSON.stringify({
-      plugins: { enabled: false }, cron: { enabled: false }, update: { checkOnStart: false },
+      ...backendConfig, cron: { enabled: false }, update: { checkOnStart: false },
       gateway: { mode: 'local', auth: { mode: 'token', token }, controlUi: { enabled: false } },
     }), { mode: 0o600 }),
     writeFile(join(bundle, 'SKILL.md'), firstContent),

@@ -112,15 +112,15 @@
       "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS",
       "reach": "Start a disposable single-user Gateway and ask the real OpenClaw CLI for the signed-in owner's library.",
       "drive": "Create a private bundle with a supporting file, pin a revision on an existing session, update and reject a stale write, refresh the pin, disable and enable, roll back and restart. Remove the skill and detach the retained pin.",
-      "observe": "Compare profile, skill and session IDs, revision and content hashes, access errors and the unselected control. Removal hides the skill from listings and rejects edits and new pins. The owner can read the marked-removed current revision by ID, while the existing session remains able to read its exact pinned revision until detach.",
-      "gotchas": "This exercises one durable owner, personal listing and explicit selection receipts. It needs a fresh token, no network and no existing Gateway. Team visibility, multi-profile authority, import and actual next-turn execution require their own fixtures.",
+      "observe": "Compare profile, skill and session IDs, revision and content hashes, access errors and the unselected control. Drive six real Gateway chat turns and check the exact skill path and file bytes received by the offline CLI backend after attach, update, refresh, restart and detach, plus the control. Removal hides the skill and rejects edits and new pins; the owner and retained session can still read their allowed revisions.",
+      "gotchas": "This exercises one durable owner and a disposable CLI backend. It needs a fresh token, an offline container and no existing Gateway. The child reads the files named in the actual system prompt. Model adherence, team visibility, multi-profile authority and import require separate fixtures.",
       "source": [
         {"path": "src/gateway/gateway-owner-profile.ts", "contains": "export function shouldUseGatewayOwnerProfile"},
-        {"path": "src/cli/skills-library-cli.ts", "contains": "leaf(\"create\", \"Save a private skill from SKILL.md or a complete local directory\")"},
         {"path": "src/skills/library/store.ts", "contains": "Skill changed. Read the current revision and review your edit before saving again."},
-        {"path": "src/skills/library/store.ts", "contains": "Removed skills cannot be edited or selected again; pinned revisions remain available to their sessions."},
-        {"path": "src/skills/library/service.kernel.ts", "contains": "changes.current_revision = revision;"},
-        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "Session reads require an exact selected skillId and revision."}
+        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "Session reads require an exact selected skillId and revision."},
+        {"path": "src/agents/cli-runner/prepare.ts", "contains": "skillsPrompt: preparedSkills.prompt,"},
+        {"path": "src/agents/cli-runner/skills-prompt.ts", "contains": "return resolveRuntimeSkillsPrompt({"},
+        {"path": "src/skills/library/selection.ts", "contains": "const baseDir = skillLibraryRevisionDir(selection.skillId, selection.revision, env);"}
       ]
     },
     {

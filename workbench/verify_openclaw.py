@@ -223,7 +223,38 @@ def _library_evidence(report):
                 return (isinstance(actual, dict) and set(actual) == set(wanted)
                         and all(matches(actual[key], value) for key, value in wanted.items()))
             return type(actual) is type(wanted) and actual == wanted
-        return matches(steps, expected)
+        if not matches(steps, expected):
+            return False
+        turns = library['turns']
+        if not isinstance(turns, list) or len(turns) != 6:
+            return False
+        expectations = (
+            ('attached', 'target', a, hashes['original']),
+            ('after-update', 'target', a, hashes['original']),
+            ('refreshed', 'target', b, hashes['updated']),
+            ('control', 'control', None, None),
+            ('restarted', 'target', b, hashes['updated']),
+            ('detached', 'target', None, None),
+        )
+        ids = set()
+        for row, (stage, identity, revision, content) in zip(turns, expectations):
+            if not (isinstance(row, dict) and set(row) == {
+                'stage', 'sessionKey', 'sessionId', 'runId', 'status', 'cliPid', 'skillPath', 'contentSha', 'supportSha'
+            }):
+                return False
+            run_id = row['runId']
+            if not (isinstance(run_id, str)
+                    and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', run_id)
+                    and run_id not in ids and type(row['cliPid']) is int and row['cliPid'] > 1
+                    and row['cliPid'] not in (initial_pid, restarted_pid)
+                    and row['stage'] == stage and row['status'] == 'ok'
+                    and row['sessionKey'] == sessions[identity + 'Key']
+                    and row['sessionId'] == sessions[identity + 'Id']
+                    and row['skillPath'] == (f'skill-library/{skill}/revisions/{revision}/SKILL.md' if revision else None)
+                    and row['contentSha'] == content and row['supportSha'] == (support if revision else None)):
+                return False
+            ids.add(run_id)
+        return True
     except (KeyError, ValueError, TypeError, AttributeError):
         return False
 
@@ -487,6 +518,11 @@ def required_journeys(data, head):
     if any(path.startswith('src/skills/library/') or path in (
         'src/cli/skills-cli.ts', 'src/cli/skills-library-cli.ts', 'src/gateway/server-methods/skills-library.ts',
         'src/gateway/gateway-owner-profile.ts', 'packages/gateway-protocol/src/schema/skill-library.ts',
+        'src/agents/cli-runner/skills-prompt.ts', 'src/agents/cli-runner/prepare.ts',
+        'src/agents/cli-runner/execute.ts', 'src/agents/cli-runner/execute-process.ts',
+        'src/agents/cli-runner/helpers.ts', 'src/agents/embedded-agent-runner/skills-prompt.ts',
+        'src/skills/runtime/session-snapshot.ts', 'src/skills/runtime/embedded-run-entries.ts',
+        'src/skills/loading/workspace-skill-prompt.ts',
     ) for path in paths):
         selected.append('skills-library-lifecycle')
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):

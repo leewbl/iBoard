@@ -4,7 +4,7 @@
 | [skills-check](skills-check.md) | Discover workspace skills and see which prerequisites are missing | CLI JSON with and without an environment prerequisite, unchanged fixture files, Docker cleanup |
 | [skills-inspect](skills-inspect.md) | List local skills and view the details of a named skill | CLI JSON for list, detail and an absent name, unchanged fixture files, Docker cleanup |
 | [skills-library-help](skills-library-help.md) | Find library commands and the options for reading a revision | Exact names from bare and explicit parent help, read help, unchanged configuration, Docker cleanup |
-| [skills-library-lifecycle](skills-library-lifecycle.md) | Manage personal library revisions and existing session selections | Authenticated CLI receipts, content hashes, stale-write rejection, restart and control-session readback |
+| [skills-library-lifecycle](skills-library-lifecycle.md) | Manage personal library revisions and use exact pins on the next turn | Authenticated CLI receipts, six Gateway chat turns, instruction and support hashes, stale-write rejection and restart |
 | [workshop-roundtrip](workshop-roundtrip.md) | Archive a learned skill and restore its original content | CLI list before and after archive and restore, archive version, restored content, Docker cleanup |
 | [config-validate](config-validate.md) | Check the validity of a local configuration | Exit codes and JSON for valid and invalid port types, unchanged fixture inputs, Docker cleanup |
 
