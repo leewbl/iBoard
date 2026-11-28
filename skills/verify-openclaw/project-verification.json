@@ -54,7 +54,6 @@
         }
       ],
       "excluded": {
-        "import": "Needs real local bundle and ClawHub import fixtures.",
         "share": "Needs isolated personal and team visibility checks.",
         "unshare": "Needs isolated personal and team visibility checks.",
         "transfer": "Needs an isolated team and administrator profile."
@@ -121,6 +120,25 @@
         {"path": "src/agents/cli-runner/prepare.ts", "contains": "skillsPrompt: preparedSkills.prompt,"},
         {"path": "src/agents/cli-runner/skills-prompt.ts", "contains": "return resolveRuntimeSkillsPrompt({"},
         {"path": "src/skills/library/selection.ts", "contains": "const baseDir = skillLibraryRevisionDir(selection.skillId, selection.revision, env);"}
+      ]
+    },
+    {
+      "id": "skills-library-import",
+      "entrypoints": ["openclaw skills library import"],
+      "helper": "skills-library-lifecycle.mjs",
+      "args": ["import"],
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS",
+      "reach": "Start a fresh single-user Gateway and a loopback-only ClawHub fixture inside the same offline container.",
+      "drive": "Import a local directory named with a .zip suffix, a real ZIP file and a specific version from the loopback registry. Try an invalid ZIP, a duplicate slug and a registry release blocked by its trust verdict.",
+      "observe": "Check private owner receipts, instruction and support file hashes, and the expected order of registry requests. A preexisting session retains its empty selection while a new session can read all three exact revisions. Rejected imports leave the library unchanged.",
+      "gotchas": "The real CLI and Gateway exercise the registry protocol against the supplied local fixture. The public registry, GitHub-backed resolutions and team permissions require separate cases.",
+      "source": [
+        {"path": "src/cli/skills-library-cli.ts", "contains": "leaf(\"import\", \"Privately import a local bundle, ZIP, or ClawHub skill\")"},
+        {"path": "src/skills/library/import.ts", "contains": "Upload is incomplete or its SHA-256 does not match."},
+        {"path": "src/skills/library/import.kernel.ts", "contains": "params.offset !== current.length"},
+        {"path": "src/gateway/server-methods/skills-library.ts", "contains": "(authority, params) => importSkillLibrary(authority, params)"},
+        {"path": "src/infra/clawhub-install-trust.ts", "contains": "ClawHub blocked this release;"},
+        {"path": "src/gateway/server-methods/sessions-create.ts", "contains": "await prepareSkillLibrarySessionCreation("}
       ]
     },
     {

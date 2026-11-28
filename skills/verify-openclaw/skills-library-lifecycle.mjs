@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 const execute = promisify(execFile);
+const importing = process.argv[2] === 'import';
 const entry = ['--import', '/app/node_modules/tsx/dist/loader.mjs', '/app/src/entry.ts'];
 const origin = 'http://127.0.0.1:18789';
 const socket = 'ws://127.0.0.1:18789';
@@ -22,6 +25,11 @@ const log = join(root, 'gateway.log');
 const bundle = join(root, 'skill');
 const revisionFile = join(root, 'edited', 'SKILL.md');
 const receipts = join(root, 'cli-receipts');
+const registry = [];
+const registryOrigin = 'http://127.0.0.1:18790';
+const registrySlug = 'iboard-registry-proof';
+const blockedSlug = 'iboard-registry-blocked';
+const registryVersion = '1.2.3';
 const firstContent = `---\nname: ${slug}\ndescription: Disposable library fixture\n---\n\nFirst approved procedure.\n`;
 const secondContent = firstContent.replace('First approved procedure.', 'Second approved procedure.');
 const supportContent = 'The support file should survive a single-file edit.\n';
@@ -34,8 +42,9 @@ const env = {
   OPENCLAW_SKIP_CRON: '1', OPENCLAW_SKIP_GMAIL_WATCHER: '1', OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: '1',
   OPENCLAW_SKIP_CANVAS_HOST: '1', NO_COLOR: '1',
   GOMAXPROCS: '2', UV_THREADPOOL_SIZE: '2', NODE_OPTIONS: '--v8-pool-size=2 --max-semi-space-size=4',
+  ...(importing ? { OPENCLAW_CLAWHUB_URL: registryOrigin, CLAWHUB_DISABLE_TELEMETRY: '1' } : {}),
 };
-let gateway, closed, exit, launchError, passed = false;
+let gateway, closed, exit, launchError, registryServer, passed = false;
 const refused = error => error.cause?.code === 'ECONNREFUSED';
 const health = path => fetch(origin + path, { signal: AbortSignal.timeout(4000), redirect: 'error' });
 
@@ -204,6 +213,128 @@ function contentProof(data, skillId, revision, content) {
   return { contentSha: digest(data.content), supportSha: digest(support) };
 }
 
+async function fixtureZip(content) {
+  const Zip = createRequire('/app/package.json')('jszip');
+  const zip = new Zip();
+  zip.file('SKILL.md', content);
+  zip.file('reference.txt', supportContent);
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+async function startRegistry(archive) {
+  registryServer = createServer(async (request, response) => {
+    const url = new URL(request.url, registryOrigin);
+    const send = (phase, data) => {
+      registry.push(phase);
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(data));
+    };
+    for (const [source, phase] of [[registrySlug, 'detail'], [blockedSlug, 'blocked-detail']]) {
+      if (request.method === 'GET' && url.pathname === `/api/v1/skills/${source}`) {
+        return send(phase, { skill: { slug: source }, latestVersion: { version: registryVersion } });
+      }
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/skills/-/security-verdicts') {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      const [target] = JSON.parse(body).items;
+      if ([registrySlug, blockedSlug].includes(target?.slug) && target.version === registryVersion) {
+        const blocked = target.slug === blockedSlug;
+        return send(blocked ? 'blocked-trust' : 'trust', {
+          schema: 'clawhub.skill.security-verdicts.v1', items: [{
+            slug: target.slug, requestedSlug: target.slug, version: target.version, requestedVersion: target.version,
+            ok: !blocked, decision: blocked ? 'blocked' : 'pass', reasons: blocked ? ['security.blocked'] : [],
+            security: { status: blocked ? 'malicious' : 'clean', passed: !blocked },
+            overview: 'Deterministic audit result for a synthetic skill.', securityAuditUrl: registryOrigin + '/audit',
+          }],
+        });
+      }
+    }
+    if (request.method === 'GET' && url.searchParams.get('version') === registryVersion) {
+      if (url.pathname === '/api/v1/download' && url.searchParams.get('slug') === registrySlug) {
+        registry.push('download');
+        response.setHeader('content-type', 'application/zip');
+        return response.end(archive);
+      }
+      if (url.pathname === `/api/v1/skills/${registrySlug}/verify`) {
+        return send('verify', { schema: 'clawhub.skill.verification.v1', ok: true, decision: 'pass', reasons: [] });
+      }
+    }
+    registry.push(`${request.method} ${url.pathname}`);
+    response.writeHead(404).end();
+  });
+  await new Promise((resolve, reject) => {
+    registryServer.once('error', reject);
+    registryServer.listen(18790, '127.0.0.1', resolve);
+  });
+}
+
+async function driveImports() {
+  const initial = await lib(['list', '--scope', 'mine']);
+  const profileId = initial.profileId;
+  assert.ok(typeof profileId === 'string' && profileId);
+  assert.deepEqual(initial.entries, []);
+  const existing = await call('sessions.create', { key: targetKey, agentId: 'main' });
+  assert.deepEqual((await selected(targetKey)).session.selections, []);
+  const rows = [];
+  const contents = new Map();
+  for (const source of ['directory', 'zip', 'clawhub']) {
+    const slug = 'iboard-import-' + source;
+    const content = `---\nname: ${slug}\ndescription: Offline import fixture\n---\n\nRead the ${source} procedure.\n`;
+    contents.set(slug, content);
+    const input = join(root, source === 'directory' ? 'bundle-directory.zip' : 'bundle.zip');
+    if (source === 'directory') {
+      await mkdir(input);
+      await writeFile(join(input, 'SKILL.md'), content);
+      await writeFile(join(input, 'reference.txt'), supportContent);
+    } else if (source === 'zip') {
+      await writeFile(input, await fixtureZip(content));
+    } else {
+      await startRegistry(await fixtureZip(content));
+    }
+    const args = source === 'clawhub' ? [registrySlug, '--clawhub', '--version', registryVersion] : [input];
+    const receipt = await lib(['import', ...args, '--slug', slug]);
+    assert.equal(receipt.state, 'published');
+    assert.equal(receipt.target, 'personal');
+    assert.equal(receipt.sessionActivation, 'new-sessions');
+    const { skillId, revision, ownerProfileId, enabled, shared } = receipt.entry;
+    assert.equal(receipt.entry.slug, slug);
+    assert.equal(ownerProfileId, profileId);
+    assert.equal(enabled, true);
+    assert.equal(shared, false);
+    const proof = contentProof(await lib(['read', skillId]), skillId, revision, content);
+    rows.push({ source, slug, skillId, revision, ownerProfileId, enabled, shared, ...proof });
+  }
+
+  const broken = join(root, 'broken.zip');
+  await writeFile(broken, 'This fixture is not a ZIP archive.');
+  const malformed = await lib(['import', broken, '--slug', 'iboard-import-malformed'], /zip|archive|extract/iu);
+  const duplicate = await lib(['import', join(root, 'bundle.zip'), '--slug', rows[0].slug], /already exists/u);
+  const blocked = await lib(['import', blockedSlug, '--clawhub', '--version', registryVersion,
+    '--slug', 'iboard-import-blocked'], /ClawHub blocked this release/u);
+  assert.deepEqual(registry, ['detail', 'trust', 'download', 'verify', 'blocked-detail', 'blocked-trust']);
+  const current = await selected(targetKey);
+  assert.equal(current.profileId, profileId);
+  assert.deepEqual(current.session.selections, []);
+  const order = rows => rows.map(({ skillId, revision }) => ({ skillId, revision }))
+    .sort((a, b) => a.skillId.localeCompare(b.skillId));
+  assert.deepEqual(order(current.entries), order(rows));
+  const existingId = (await call('sessions.describe', { key: targetKey, agentId: 'main' })).session?.sessionId;
+  assert.equal(existingId, existing.sessionId);
+  const fresh = await call('sessions.create', { key: controlKey, agentId: 'main' });
+  assert.ok(fresh.sessionId && fresh.sessionId !== existingId);
+  const newSelections = order((await selected(controlKey)).session.selections);
+  assert.deepEqual(newSelections, order(rows));
+  for (const { slug, skillId, revision } of rows) {
+    contentProof(await lib(['read', skillId, '--session', controlKey, '--revision', revision]),
+      skillId, revision, contents.get(slug));
+  }
+  return { profileId, rows, existingSessionId: existingId, newSessionId: fresh.sessionId,
+    existingSelections: current.session.selections, newSelections,
+    rejected: { malformedZipExit: malformed.exitCode, duplicateExit: duplicate.exitCode,
+      blockedRegistryExit: blocked.exitCode, libraryCount: current.entries.length }, registry };
+}
+
 async function drive() {
   const turns = [];
   const initial = await lib(['list', '--scope', 'mine']);
@@ -363,7 +494,7 @@ try {
   await mkdir(state);
   await mkdir(bundle);
   await mkdir(join(root, 'edited'));
-  const backendConfig = await localBackendConfig();
+  const backendConfig = importing ? { plugins: { enabled: false } } : await localBackendConfig();
   await Promise.all([
     writeFile(config, JSON.stringify({
       ...backendConfig, cron: { enabled: false }, update: { checkOnStart: false },
@@ -374,7 +505,8 @@ try {
     writeFile(revisionFile, secondContent),
   ]);
   emit('doctor', await startGateway());
-  emit('library', await drive());
+  if (importing) emit('imports', await driveImports());
+  else emit('library', await drive());
   passed = true;
 } finally {
   try {
@@ -387,8 +519,9 @@ try {
       process.stderr.write(tail.slice(-3500).replaceAll(token, '[fixture token]'));
     }
   } finally {
+    if (registryServer?.listening) await new Promise(resolve => registryServer.close(resolve));
     await rm(root, { recursive: true, force: true });
     emit('cleanup', { exit: exit ?? null, scratchRemoved: true });
   }
 }
-console.log('VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS');
+console.log(importing ? 'VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS' : 'VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS');

@@ -28,7 +28,7 @@ class GatewayGateTests(unittest.TestCase):
                 browser_receipt=True, same_container=False, restart=None, deletion=None, list_scope='all',
                 filter_fault=None, rename_fields=None, archive=False, archive_fault=None, archive_tree=False,
                 tree_fault=None, archive_sidebar=False, sidebar_fault=None, archive_running=False, running_fault=None,
-                library_image=None, lifecycle_image=None, lifecycle_fault=None):
+                library_image=None, lifecycle_image=None, lifecycle_fault=None, import_image=None, import_fault=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -45,6 +45,8 @@ class GatewayGateTests(unittest.TestCase):
             journeys['skills-library-help'] = library_image
         if lifecycle_image is not None:
             journeys['skills-library-lifecycle'] = lifecycle_image
+        if import_image is not None:
+            journeys['skills-library-import'] = import_image
         if rename:
             journeys[verify_openclaw.SESSION_RENAME] = gateway_image
         if delete:
@@ -68,6 +70,8 @@ class GatewayGateTests(unittest.TestCase):
                 extra = {'stdout': marker + '\n', 'create_stdout': hashlib.sha256(container.encode()).hexdigest()}
                 if journey == 'skills-library-lifecycle':
                     extra['stdout'] = self.lifecycle_stdout(lifecycle_fault)
+                if journey == 'skills-library-import':
+                    extra['stdout'] = self.import_stdout(import_fault)
                 if journey in verify_openclaw.BROWSER_JOURNEYS:
                     png = path.with_suffix('.png')
                     png.write_bytes(name.encode())
@@ -97,6 +101,30 @@ class GatewayGateTests(unittest.TestCase):
             'kind': 'independent-review', 'actor': 'independent-verifier', 'commit': self.head,
             'criteria_digest': cli.criteria_digest(self.data), 'path': str(path), 'sha256': cli.digest(path),
         })
+
+    def import_stdout(self, fault=None):
+        content_hashes = (
+            '9e2faa74838a991c575e68b03f0a0f3f64aba2ab74d3badb9ff0be127de14316',
+            '9f4d6abb570bcb300e0f1dd5b0a8fc518b846d9dbbbfcb29d50a91b2638b4b22',
+            '6b9ccfbb09aface5aff1fa5fa62742b5e411ee4f0cf789778a1610f9cf28d583',
+        )
+        support_hash = 'f66b77e64e5417fe76aecaf0b6859b59e78069a668b6a46377e27edc3abffab4'
+        rows = [{'source': source, 'slug': f'iboard-import-{source}', 'skillId': f'skill-{index}',
+                 'revision': hex(index)[2:] * 64, 'ownerProfileId': 'profile-1', 'enabled': True,
+                 'shared': False, 'contentSha': content_hashes[index - 1], 'supportSha': support_hash}
+                for index, source in enumerate(('directory', 'zip', 'clawhub'), 1)]
+        events = [
+            {'phase': 'doctor', 'gatewayPid': 19, 'ready': True, 'live': True},
+            {'phase': 'imports', 'profileId': 'profile-1', 'rows': rows,
+             'existingSessionId': 'session-1', 'newSessionId': 'session-2', 'existingSelections': [],
+             'newSelections': [{'skillId': row['skillId'], 'revision': row['revision']} for row in rows],
+             'rejected': {'malformedZipExit': 1, 'duplicateExit': 1, 'blockedRegistryExit': 1, 'libraryCount': 3},
+             'registry': ['detail', 'trust', 'download', 'verify', 'blocked-detail', 'blocked-trust']},
+            {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True},
+        ]
+        if fault:
+            fault(events)
+        return ''.join(json.dumps(row) + '\n' for row in events) + 'VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS\n'
 
     def lifecycle_stdout(self, fault=None):
         a, b, old_hash, new_hash, support = (char * 64 for char in 'abcde')
@@ -355,7 +383,7 @@ class GatewayGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'workshop-roundtrip'):
                     verify_openclaw.require(self.data, self.head, self.destination)
                 self.reports(skills_image=image, skills_inspect_image=image, workshop_image=image,
-                             library_image=image, lifecycle_image=image)
+                             library_image=image, lifecycle_image=image, import_image=image)
                 receipts = verify_openclaw.require(self.data, self.head, self.destination)
                 self.assertEqual(len(receipts['workshop-roundtrip']), 2)
 
@@ -375,9 +403,9 @@ class GatewayGateTests(unittest.TestCase):
                 self.assertIn(journey, selected)
                 if path == 'src/cli/skills-cli.ts':
                     self.assertEqual(selected, ['gateway-health', 'skills-check', 'skills-inspect',
-                                                'workshop-roundtrip', journey, 'skills-library-lifecycle'])
+                                                'workshop-roundtrip', journey, 'skills-library-lifecycle', 'skills-library-import'])
                 elif path == 'src/cli/skills-library-cli.ts':
-                    self.assertEqual(selected, ['gateway-health', journey, 'skills-library-lifecycle'])
+                    self.assertEqual(selected, ['gateway-health', journey, 'skills-library-lifecycle', 'skills-library-import'])
                 else:
                     self.assertEqual(selected, ['gateway-health', journey])
                 options = {'skills_image': image, 'skills_inspect_image': image, 'workshop_image': image}
@@ -395,7 +423,7 @@ class GatewayGateTests(unittest.TestCase):
                 self.reports(**options, library_image='sha256:' + 'e' * 64)
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
                     verify_openclaw.require(self.data, self.head, self.destination)
-                self.reports(**options, library_image=image, lifecycle_image=image)
+                self.reports(**options, library_image=image, lifecycle_image=image, import_image=image)
                 self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
                 (self.root / f'{journey}-independent-verifier.json').write_text('{}')
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
@@ -482,7 +510,7 @@ class GatewayGateTests(unittest.TestCase):
                 self.reports(lifecycle_image=image, lifecycle_fault=fault)
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
                     verify_openclaw.require(self.data, self.head, self.destination)
-        self.reports(lifecycle_image=image)
+        self.reports(lifecycle_image=image, import_image=image)
         self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
 
         run = {'exit_code': 0, 'cleanup_confirmed': True, 'container_created': True,
@@ -495,6 +523,70 @@ class GatewayGateTests(unittest.TestCase):
             self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=600, memory_mb=512)['passed'])
             run['stdout'] = 'VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS\n'
             self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=600, memory_mb=512)['passed'])
+
+    def test_library_import_binds_real_sources_rejections_and_new_session_selection(self):
+        journey = 'skills-library-import'
+        image = 'sha256:' + 'f' * 64
+        self.assertEqual(verify_openclaw._journey(journey), ('skills-library-lifecycle.mjs',
+            'VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS', ['node', '/workspace/skills-library-lifecycle.mjs', 'import']))
+        self.assertEqual(verify_openclaw._timeout(journey), 480)
+        for path in ('src/cli/skills-cli.ts', 'src/cli/skills-library-cli.ts', 'src/skills/library/import.ts',
+                     'src/skills/library/import.kernel.ts', 'src/skills/library/bundle.ts',
+                     'src/skills/library/receipt.ts', 'src/gateway/server-methods/skills-library.ts',
+                     'src/gateway/server-methods/sessions-create.ts', 'src/gateway/skill-library-session.ts',
+                     'packages/gateway-protocol/src/schema/skill-library.ts',
+                     'src/infra/clawhub-client.ts', 'src/infra/clawhub-artifacts.ts',
+                     'src/infra/clawhub-install-trust.ts', 'src/skills/lifecycle/clawhub.ts',
+                     'src/skills/lifecycle/clawhub-install-core.ts', 'src/skills/lifecycle/clawhub-install-rollback.ts'):
+            self.changed_paths.return_value = path + '\0'
+            self.assertIn(journey, verify_openclaw.required_journeys(self.data, self.head))
+        self.changed_paths.return_value = 'src/infra/clawhub-client.ts\0'
+        faults = (
+            lambda e: e[0].update(ready=False),
+            lambda e: e[0].update(gatewayPid=True),
+            lambda e: e[1].update(profileId=''),
+            lambda e: e[1].update(newSessionId=e[1]['existingSessionId']),
+            lambda e: e[1].update(existingSelections=[{'skillId': 'unexpected'}]),
+            lambda e: e[1]['rows'].pop(),
+            lambda e: e[1]['rows'].reverse(),
+            lambda e: e[1]['rows'][0].update(slug='other'),
+            lambda e: e[1]['rows'][0].update(ownerProfileId='other'),
+            lambda e: e[1]['rows'][0].update(enabled=1),
+            lambda e: e[1]['rows'][0].update(shared=0),
+            lambda e: e[1]['rows'][1].update(skillId=e[1]['rows'][0]['skillId']),
+            lambda e: e[1]['rows'][1].update(contentSha=e[1]['rows'][0]['contentSha']),
+            lambda e: e[1]['rows'][0].update(revision='invalid'),
+            lambda e: e[1]['rows'][0].update(supportSha='invalid'),
+            lambda e: e[1]['rows'][0].update(supportSha='0' * 64),
+            lambda e: e[1]['rows'][0].update(contentSha='0' * 64),
+            lambda e: e[1]['newSelections'][0].update(revision=e[1]['rows'][1]['revision']),
+            lambda e: e[1]['newSelections'][0].update(skillId='other'),
+            lambda e: e[1]['newSelections'].pop(),
+            lambda e: e[1]['rejected'].update(duplicateExit=0),
+            lambda e: e[1]['rejected'].update(blockedRegistryExit=True),
+            lambda e: e[1]['rejected'].update(libraryCount=4),
+            lambda e: e[1]['rejected'].pop('malformedZipExit'),
+            lambda e: e[1]['registry'].remove('verify'),
+            lambda e: e[1]['registry'].reverse(),
+            lambda e: e[2].update(scratchRemoved=1),
+        )
+        for fault in faults:
+            with self.subTest(fault=fault):
+                self.reports(import_image=image, import_fault=fault)
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+        self.reports(import_image=image, import_fault=lambda e: e[1]['newSelections'].reverse())
+        self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
+        run = {'exit_code': 0, 'cleanup_confirmed': True, 'container_created': True,
+               'workspace_read_only': True, 'stdout': self.import_stdout()}
+        with patch.object(cli, 'sha', return_value=self.head), \
+                patch.object(verify_openclaw.workflow, '_verified_image', return_value=image), \
+                patch.object(verify_openclaw, 'run_sandbox', return_value=run):
+            self.assertTrue(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+            run['stdout'] = self.import_stdout(lambda e: e[1]['rejected'].update(blockedRegistryExit=0))
+            self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
+            run['stdout'] = 'VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS\n'
+            self.assertFalse(verify_openclaw.verify(self.root, image, journey, timeout=480, memory_mb=512)['passed'])
 
     def test_connected_ui_requires_a_bound_screenshot_in_its_own_output(self):
         journey = 'control-ui-connected'

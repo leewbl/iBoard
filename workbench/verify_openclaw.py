@@ -21,6 +21,7 @@ JOURNEYS = {
     "workshop-roundtrip": ("workshop-roundtrip.mjs", "VERIFY_OPENCLAW_WORKSHOP_ROUNDTRIP_PASS"),
     "skills-library-help": ("skills-library-help.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS"),
     "skills-library-lifecycle": ("skills-library-lifecycle.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_LIFECYCLE_PASS"),
+    "skills-library-import": ("skills-library-lifecycle.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_IMPORT_PASS"),
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
 SESSION_RENAME = 'control-ui-session-rename'
@@ -49,6 +50,8 @@ SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 def _timeout(journey):
     if journey == 'skills-library-lifecycle':
         return 600
+    if journey == 'skills-library-import':
+        return 480
     if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR, SESSION_ARCHIVE_RUNNING):
         return 600
     return 480 if journey in SESSION_JOURNEYS else 320
@@ -57,6 +60,8 @@ def _timeout(journey):
 def _journey(journey):
     helper, marker = (BROWSER_JOURNEYS if journey in BROWSER_JOURNEYS else JOURNEYS)[journey]
     command = ['node', f'/workspace/{helper}']
+    if journey == 'skills-library-import':
+        command.append('import')
     if journey in SESSION_JOURNEYS:
         command.append(journey.removeprefix('control-ui-'))
     return helper, marker, command
@@ -259,6 +264,61 @@ def _library_evidence(report):
         return False
 
 
+def _library_import_evidence(report):
+    try:
+        lines = report['stdout'].splitlines()
+        if (report.get('stdout_truncated') or len(lines) != 4
+                or lines[-1] != JOURNEYS['skills-library-import'][1]):
+            return False
+        doctor, imports, cleanup = map(json.loads, lines[:-1])
+        if not (doctor.get('phase') == 'doctor' and doctor.get('ready') is True and doctor.get('live') is True
+                and type(doctor.get('gatewayPid')) is int and doctor['gatewayPid'] > 1
+                and imports.get('phase') == 'imports'
+                and cleanup == {'phase': 'cleanup', 'exit': {'code': 0, 'signal': None}, 'scratchRemoved': True}
+                and cleanup['scratchRemoved'] is True and type(cleanup['exit']['code']) is int):
+            return False
+        profile = imports['profileId']
+        if not (isinstance(profile, str) and profile.strip()
+                and all(isinstance(imports[key], str) and imports[key].strip()
+                        for key in ('existingSessionId', 'newSessionId'))
+                and imports['existingSessionId'] != imports['newSessionId']
+                and imports['existingSelections'] == []
+                and imports['registry'] == ['detail', 'trust', 'download', 'verify', 'blocked-detail', 'blocked-trust']):
+            return False
+        rejected = imports['rejected']
+        if not (isinstance(rejected, dict) and set(rejected) == {
+            'malformedZipExit', 'duplicateExit', 'blockedRegistryExit', 'libraryCount'
+        } and all(type(rejected[key]) is int and rejected[key] == value for key, value in (
+            ('malformedZipExit', 1), ('duplicateExit', 1), ('blockedRegistryExit', 1), ('libraryCount', 3)
+        ))):
+            return False
+        rows = imports['rows']
+        if not isinstance(rows, list) or len(rows) != 3:
+            return False
+        ids, selections = set(), []
+        support_sha = hashlib.sha256(b'The support file should survive a single-file edit.\n').hexdigest()
+        for row, source in zip(rows, ('directory', 'zip', 'clawhub')):
+            slug = f'iboard-import-{source}'
+            content = f'---\nname: {slug}\ndescription: Offline import fixture\n---\n\nRead the {source} procedure.\n'
+            if not (isinstance(row, dict) and set(row) == {
+                'source', 'slug', 'skillId', 'revision', 'ownerProfileId', 'enabled', 'shared', 'contentSha', 'supportSha'
+            } and row['source'] == source and row['slug'] == slug
+                    and isinstance(row['skillId'], str) and row['skillId'].strip() and row['skillId'] not in ids
+                    and row['ownerProfileId'] == profile and row['enabled'] is True and row['shared'] is False
+                    and isinstance(row['revision'], str) and re.fullmatch(r'[0-9a-f]{64}', row['revision'])
+                    and row['contentSha'] == hashlib.sha256(content.encode()).hexdigest()
+                    and row['supportSha'] == support_sha):
+                return False
+            ids.add(row['skillId'])
+            selections.append({'skillId': row['skillId'], 'revision': row['revision']})
+        actual = imports['newSelections']
+        return (isinstance(actual, list) and len(actual) == 3
+                and all(isinstance(row, dict) and set(row) == {'skillId', 'revision'} for row in actual)
+                and sorted(actual, key=lambda row: row['skillId']) == sorted(selections, key=lambda row: row['skillId']))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def _archive_batch_evidence(mutation, readback, pids, *, sidebar=False):
     first = {key: mutation[key] for key in ('key', 'sessionId')}
     second, survivor = mutation['second' if sidebar else 'nested'], mutation['survivor']
@@ -441,6 +501,7 @@ def verify(repo, image, journey, *, timeout, memory_mb, screenshot=None, recordi
         and marker in report.get("stdout", "").splitlines()
         and (not browser or _browser_evidence(report, Path(screenshot)))
         and (journey != 'skills-library-lifecycle' or _library_evidence(report))
+        and (journey != 'skills-library-import' or _library_import_evidence(report))
         and (recording is None or browser_recording.receipt(
             report, recording, report.get('commit'), expected_journey=journey.removeprefix('control-ui-')))
     )
@@ -525,6 +586,20 @@ def required_journeys(data, head):
         'src/skills/loading/workspace-skill-prompt.ts',
     ) for path in paths):
         selected.append('skills-library-lifecycle')
+    if any(path in (
+        'src/cli/skills-cli.ts', 'src/cli/skills-library-cli.ts',
+        'src/skills/library/import.ts', 'src/skills/library/import.kernel.ts', 'src/skills/library/bundle.ts',
+        'src/skills/library/receipt.ts', 'src/gateway/server-methods/skills-library.ts',
+        'src/gateway/server-methods/sessions-create.ts', 'src/gateway/skill-library-session.ts',
+        'packages/gateway-protocol/src/schema/skill-library.ts',
+        'src/infra/clawhub-client.ts', 'src/infra/clawhub-artifacts.ts', 'src/infra/clawhub-integrity.ts',
+        'src/infra/clawhub-install-trust.ts', 'src/infra/clawhub-skill-security.ts', 'src/infra/clawhub-skills.ts',
+        'src/skills/lifecycle/clawhub.ts', 'src/skills/lifecycle/clawhub-store.ts',
+        'src/skills/lifecycle/clawhub-install-core.ts', 'src/skills/lifecycle/clawhub-install-rollback.ts',
+        'src/skills/lifecycle/clawhub-request-error.ts', 'src/skills/lifecycle/install-paths.ts',
+        'src/skills/security/clawhub-verdicts.ts', 'src/infra/install-flow.ts',
+    ) for path in paths):
+        selected.append('skills-library-import')
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
         selected.append('config-validate')
     sessions_ui = any(path == 'ui/src/styles/sessions.css'
@@ -660,6 +735,8 @@ def require(data, head, destination, *, review_item=None):
                         continue
                 if journey == 'skills-library-lifecycle' and not _library_evidence(run):
                     continue
+                if journey == 'skills-library-import' and not _library_import_evidence(run):
+                    continue
                 if (run.get('commit') == head
                         and run.get('helper_sha256') == helpers[journey] and run.get('passed') is True
                         and run.get('exit_code') == 0 and run.get('cleanup_confirmed') is True
@@ -697,7 +774,7 @@ def main(argv=None):
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument('--screenshot', type=Path, help='PNG evidence path for a Control UI browser journey')
     parser.add_argument('--recording', type=Path, help='JSONL recording path for a Control UI browser journey')
-    parser.add_argument("--timeout", type=int, help='seconds (600 for archive/restore, 480 for other Sessions journeys, otherwise 320)')
+    parser.add_argument("--timeout", type=int, help='seconds (defaults to 320, 480 or 600 depending on the journey)')
     parser.add_argument("--memory-mb", type=int, default=3328)
     args = parser.parse_args(argv)
     if (args.journey in BROWSER_JOURNEYS) != (args.screenshot is not None):
