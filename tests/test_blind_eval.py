@@ -1,9 +1,13 @@
 import json
 from pathlib import Path
+import shlex
+import shutil
 import struct
+import subprocess
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import zlib
 
 from model.claude_glm import _trace
@@ -235,6 +239,79 @@ class BlindEvalTests(unittest.TestCase):
         result = self.run_pilot(self.freeze(), codex_editor=editor)
         self.assertEqual(result['status'], 'blocked', result)
         self.assertIn('missing successful file receipts', result['failures']['rich-context'])
+        self.assertEqual(self.witnessed_reviews, [])
+
+    def stage_cursor_turn(self, approval):
+        staged = blind_eval.stage_cursor(**approval, out=self.root / 'desk')
+        work = Path(staged['workspaces']['rich-context'])
+        self.addCleanup(shutil.rmtree, work)
+        project = work.as_posix().lstrip('/').replace('/', '-')
+        session = 'f28aaaba-5786-4a11-b18a-26c632258000'
+        home = self.root / 'cursor-state' / '.cursor'
+        transcript = home / 'projects' / project / 'agent-transcripts' / session / f'{session}.jsonl'
+        transcript.parent.mkdir(parents=True)
+        config = json.loads((work / '.cursor/hooks.json').read_text())
+
+        def hook(name, **fields):
+            command = shlex.split(config['hooks'][name][0]['command'])
+            event = {'hook_event_name': name, 'conversation_id': session, 'generation_id': 'generation-one',
+                     'workspace_roots': [str(work)], 'model_id': 'composer-2.5', **fields}
+            proc = subprocess.run(command, input=json.dumps(event), text=True, capture_output=True, check=True,
+                                  timeout=10)
+            return json.loads(proc.stdout)
+
+        request = staged['request']
+        self.assertEqual(hook('beforeSubmitPrompt', prompt=request, attachments=[]), {'continue': True})
+        tools = [('guide-read', 'Read', 'guide.md'), ('name-write', 'Write', 'src/name.mjs')]
+        content = []
+        for ident, tool, path in tools:
+            fields = {'tool_use_id': ident, 'tool_name': tool, 'tool_input': {'path': path}}
+            self.assertEqual(hook('preToolUse', **fields), {'permission': 'allow'})
+            if tool == 'Write':
+                (work / path).write_text('export const label = "compact";\n')
+            hook('postToolUse', **fields)
+            content.append({'type': 'tool_use', 'id': ident, 'name': tool, 'input': {'path': path}})
+        rows = [
+            {'role': 'user', 'message': {'content': [{'type': 'text', 'text': request}]}},
+            {'role': 'assistant', 'message': {'content': content}},
+        ]
+        transcript.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        hook('stop', status='completed')
+        return staged, work, home
+
+    def test_staged_cursor_uses_native_calls_and_offline_independent_proofs(self):
+        self.spec['arms'][1].update(host='cursor-editor', model='composer-2.5')
+        self.barrier = threading.Barrier(1)
+        approval = self.freeze()
+        staged, work, home = self.stage_cursor_turn(approval)
+        capture = blind_eval.cursor_eval_trace.capture
+        with patch.object(blind_eval.cursor_eval_trace, 'capture',
+                          side_effect=lambda *args, **kwargs: capture(*args, cursor_home=home, **kwargs)):
+            result = blind_eval.run(**approval, out=self.root / 'proof', cursor_stage=staged['stage'],
+                                    cursor_stage_sha256=staged['sha256'], editor=self.edit,
+                                    reviewer=self.review, sandbox=self.run_sandbox)
+        self.assertEqual(result['status'], 'recommended', result)
+        row = cli.read(self.root / 'proof' / result['lanes']['rich-context']['file'])
+        self.assertEqual(row['host'], 'cursor-editor')
+        self.assertEqual(row['project'], str(work))
+        self.assertFalse(row['removed'])
+        self.assertEqual(blind_eval.audit(**approval, report=result['report'],
+                                         report_sha256=result['sha256'])['promotion'], 'rich-context')
+
+    def test_post_turn_edit_blocks_before_any_model_call(self):
+        self.spec['arms'][1].update(host='cursor-editor', model='composer-2.5')
+        approval = self.freeze()
+        staged, work, home = self.stage_cursor_turn(approval)
+        (work / 'src/name.mjs').write_text('export const label = "another";\n')
+        capture = blind_eval.cursor_eval_trace.capture
+        with patch.object(blind_eval.cursor_eval_trace, 'capture',
+                          side_effect=lambda *args, **kwargs: capture(*args, cursor_home=home, **kwargs)):
+            result = blind_eval.run(**approval, out=self.root / 'proof', cursor_stage=staged['stage'],
+                                    cursor_stage_sha256=staged['sha256'], editor=self.edit,
+                                    reviewer=self.review, sandbox=self.run_sandbox)
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertIn('changed after the terminal hook', result['error'])
+        self.assertEqual(self.witnessed_inputs, [])
         self.assertEqual(self.witnessed_reviews, [])
 
     def test_model_route_must_match_host_and_be_distinct_from_reviewers(self):

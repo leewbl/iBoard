@@ -16,7 +16,7 @@ import time
 
 from model import claude_glm, codex_edit, codex_review
 from runner.sandbox import MAX_SCREENSHOT, run_sandbox
-from workbench import autopilot, cli, stack_rebase, swarm, visual_pixels
+from workbench import autopilot, cli, cursor_eval_stage, cursor_eval_trace, stack_rebase, swarm, visual_pixels
 
 
 SOURCE = 'skills/poteto-mode/playbooks/eval.md'
@@ -97,13 +97,15 @@ def _contract(data):
                  and re.fullmatch(r'[a-z][a-z0-9-]{3,47}', arm['name']) and arm['name'] not in names
                  and swarm.SHA.fullmatch(arm['revision'])
                  and ((host == 'claude-code' and re.fullmatch(r'glm-[a-z0-9][a-z0-9.-]{0,64}', arm['model']))
-                      or (host == 'codex' and codex_edit.MODEL.fullmatch(arm['model'])))
+                      or (host == 'codex' and codex_edit.MODEL.fullmatch(arm['model']))
+                      or (host == 'cursor-editor' and cursor_eval_stage.MODEL.fullmatch(arm['model'])
+                          and arm['model'] not in ('auto', 'default')))
                  and isinstance(arm['observe'], list) and 1 <= len(arm['observe']) <= 10
                  and len(set(arm['observe'])) == len(arm['observe']) and set(arm['observe']) <= set(files),
                  'each arm needs an exact revision, a compatible host and model, and observable project files')
         names.add(arm['name'])
-    _require(len({(row['revision'], row['model']) for row in arms}) == len(arms),
-             'vary a model or the committed project context for each arm')
+    routes = {(row['revision'], row.get('host', 'claude-code'), row['model']) for row in arms}
+    _require(len(routes) == len(arms), 'vary a host, a model, or the committed project context for each arm')
     _require(isinstance(criteria, list) and 3 <= len(criteria) <= 6, 'freeze three to six criteria')
     ids, kinds = set(), []
     for row in criteria:
@@ -148,6 +150,8 @@ def _identity_pattern(data, repo, paths=()):
     names = [arm[key] for arm in data['arms'] for key in ('name', 'revision', 'model')]
     if any(arm.get('host') == 'codex' for arm in data['arms']):
         names.extend(('Codex', 'Claude Code', 'Claude-Code'))
+    if any(arm.get('host') == 'cursor-editor' for arm in data['arms']):
+        names.extend(('Cursor', 'Cursor Editor', 'Cursor-Editor'))
     names += [str(repo), *map(str, paths)]
     return re.compile('|'.join(r'(?<![a-z0-9])' + re.escape(name) + r'(?![a-z0-9])' for name in names), re.I)
 
@@ -194,10 +198,15 @@ def _materialize(work, files):
         path.write_bytes(body.encode())
 
 
-def _collect(work, original, editable):
+def _collect(work, original, editable, *, hooks_sha256=None):
     files = {}
     for path in work.rglob('*'):
         name = path.relative_to(work).as_posix()
+        if hooks_sha256 and name == '.cursor' and not path.is_symlink() and path.is_dir():
+            continue
+        if hooks_sha256 and name == '.cursor/hooks.json':
+            cursor_eval_stage.verify_hooks(path, hooks_sha256)
+            continue
         if path.is_dir() and not path.is_symlink() and any(
                 Path(path_name).is_relative_to(name) for path_name in original):
             continue
@@ -266,19 +275,18 @@ def _captures(output, index):
     return (output / f'capture-{index}-primary.png', output / f'capture-{index}-replay.png')
 
 
-def _codex_writes(trace, files, original):
+def _tool_writes(trace, files, original, host):
     writes = set(_reads(trace, files, tool='Write'))
     _require({path for path in files if files[path] != original[path]} <= writes,
-             'Codex candidate changes are missing successful file receipts')
+             host + ' candidate changes are missing successful file receipts')
 
 
-def _lane(arm, data, original, driver, deadline, editor, codex_editor, sandbox, captures, proof_lock):
-    host = arm.get('host', 'claude-code')
+def _edit(arm, data, original, deadline, editor, codex_editor):
     with TemporaryDirectory(prefix='studio-') as folder:
         work = Path(folder).resolve()
         _require(not META.search(str(work)), 'temporary project root reveals the experiment')
         _materialize(work, original)
-        if host == 'codex':
+        if arm.get('host') == 'codex':
             reply = codex_editor(work, data['request'], _remaining(deadline), requested_model=arm['model'],
                                  files=data['files'], editable=data['editable'])
         else:
@@ -286,19 +294,48 @@ def _lane(arm, data, original, driver, deadline, editor, codex_editor, sandbox, 
                            requested_model=arm['model'], private_workspace=True)
         _require(reply.get('exit_code') == 0 and not reply.get('timed_out') and reply.get('trace_completed') is True
                  and not reply.get('trace_truncated') and isinstance(reply.get('model'), str)
-                 and reply.get('host', 'claude-code') == host
+                 and reply.get('host', 'claude-code') == arm.get('host', 'claude-code')
                  and claude_glm.reported_model_id(reply['model']) == arm['model'], 'model run failed or trace is incomplete')
         files = _collect(work, original, data['editable'])
+    _require(not work.exists(), 'worker workspace was not removed')
+    return work, files, reply
+
+
+def _cursor_candidates(data, projects, stages):
+    ready = {}
+    for name, stage in stages.items():
+        work = stage['workspace']
+        arm = next(arm for arm in data['arms'] if arm['name'] == name)
+        _require(not META.search(str(work)), 'temporary project root reveals the experiment')
+        receipt = cursor_eval_trace.capture(stage['log'], work, requested_model=arm['model'],
+                                            request_sha256=_sha(data['request']), files=data['files'],
+                                            editable=data['editable'])
+        files = _collect(work, projects[name], data['editable'], hooks_sha256=stage['hooks_sha256'])
+        _require(receipt['files'] == {path: _sha(body) for path, body in files.items()},
+                 'Cursor specimen changed after the terminal hook')
+        ready[name] = (work, files, receipt)
+    return ready
+
+
+def _lane(arm, data, original, driver, deadline, editor, codex_editor, sandbox, captures, proof_lock, ready):
+    host = arm.get('host', 'claude-code')
+    native = {}
+    if host == 'cursor-editor':
+        work, files, reply = ready
+        native = {'cursor_capture': {key: value for key, value in reply.items() if key != 'trace'}}
+    else:
+        work, files, reply = _edit(arm, data, original, deadline, editor, codex_editor)
     trace = [{k: v for k, v in item.items() if k in ('type', 'tool', 'id', 'path', 'error')}
              for item in reply['trace'] if item.get('type') in ('tool_use', 'tool_result')]
     _reads(trace, original)
-    if host == 'codex':
-        _codex_writes(trace, files, original)
+    if host in ('codex', 'cursor-editor'):
+        _tool_writes(trace, files, original, host)
     with proof_lock:
         checks = [_check(original, data, driver, deadline, sandbox)]
         checks.extend(_check(files, data, driver, deadline, sandbox, path) for path in captures)
     return {'schema': cli.SCHEMA, 'host': host, 'model': reply['model'], 'request_sha256': _sha(data['request']),
-            'project': str(work), 'removed': not work.exists(), 'trace': trace, 'artifact': files, 'checks': checks}
+            'project': str(work), 'removed': host != 'cursor-editor', 'trace': trace, 'artifact': files,
+            'checks': checks, **native}
 
 
 def _screen(path, run):
@@ -322,12 +359,18 @@ def _blind(record, data, repo, projects, driver, lanes, output):
         host = arm.get('host', 'claude-code')
         _require(claude_glm.reported_model_id(lane['model']) == arm['model'] and lane['request_sha256'] == _sha(data['request'])
                  and lane.get('host', 'claude-code') == host
-                 and lane['removed'] is True and set(files) == set(original)
+                 and lane['removed'] is (host != 'cursor-editor') and set(files) == set(original)
                  and all(isinstance(v, str) and len(v.encode()) <= MAX_FILE and '\0' not in v for v in files.values())
                  and all(files[p] == original[p] for p in files if p not in data['editable'])
                  and any(files[p] != original[p] for p in data['editable']), 'worker evidence changed')
-        if host == 'codex':
-            _codex_writes(lane['trace'], files, original)
+        if host in ('codex', 'cursor-editor'):
+            _tool_writes(lane['trace'], files, original, host)
+        if host == 'cursor-editor':
+            capture = lane['cursor_capture']
+            _require(capture['model'] == arm['model'] and capture['files'] == {p: _sha(v) for p, v in files.items()}
+                     and all(re.fullmatch(r'[0-9a-f]{64}', capture[key])
+                             for key in ('hook_sha256', 'transcript_sha256')),
+                     'Cursor source and final specimen receipt disagree')
         raw_checks = lane['checks']
         _require(len(raw_checks) == 3 and len({run['workspace'] for run in raw_checks}) == 3
                  and lane['project'] not in {run['workspace'] for run in raw_checks},
@@ -393,10 +436,17 @@ def _summary(record, scores):
     return {'status': 'recommended', 'promotion': record['order'][int(first[0].split()[-1]) - 1]}
 
 
-def run(plan, sha256, out, *, editor=claude_glm.execute, codex_editor=codex_edit.execute,
+def stage_cursor(plan, sha256, out):
+    record, data, repo, projects, _driver = _load(plan, sha256)
+    return cursor_eval_stage.prepare(record, data, repo, projects, sha256, out, _materialize)
+
+
+def run(plan, sha256, out, *, cursor_stage=None, cursor_stage_sha256=None,
+        editor=claude_glm.execute, codex_editor=codex_edit.execute,
         reviewer=codex_review.review, sandbox=run_sandbox):
     record, data, repo, projects, driver = _load(plan, sha256)
-    deadline = time.monotonic() + data['seconds']
+    stages, seconds = cursor_eval_stage.load(cursor_stage, cursor_stage_sha256, sha256, data, projects)
+    deadline = time.monotonic() + seconds
     output = Path(out).expanduser().resolve()
     _require(not output.is_relative_to(repo), 'store evidence outside the evaluated checkout')
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -404,13 +454,14 @@ def run(plan, sha256, out, *, editor=claude_glm.execute, codex_editor=codex_edit
     state = {'schema': cli.SCHEMA, 'plan_sha256': sha256, 'status': 'running', 'lanes': {}, 'failures': {}, 'reviews': []}
     cli.write(path, state)
     try:
+        ready = _cursor_candidates(data, projects, stages)
         lanes = {}
         visual = data['check'].get('screenshot', False)
         proof_lock = Lock() if visual else nullcontext()
         with ThreadPoolExecutor(max_workers=len(data['arms'])) as pool:
             work = {pool.submit(_lane, arm, data, projects[arm['name']], driver, deadline, editor, codex_editor, sandbox,
                                 _captures(output, record['order'].index(arm['name']) + 1) if visual else (None, None),
-                                proof_lock): arm['name']
+                                proof_lock, ready.get(arm['name'])): arm['name']
                     for arm in data['arms']}
             for future in as_completed(work):
                 name = work[future]
@@ -472,13 +523,17 @@ def audit(plan, sha256, report, report_sha256):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for action, fields in [('freeze', ('manifest', 'repo', 'out')), ('run', ('plan', 'sha256', 'out')),
+    for action, fields in [('freeze', ('manifest', 'repo', 'out')), ('stage-cursor', ('plan', 'sha256', 'out')),
+                           ('run', ('plan', 'sha256', 'out')),
                            ('audit', ('plan', 'sha256', 'report', 'report-sha256'))]:
         command = sub.add_parser(action)
         for field in fields:
             command.add_argument('--' + field, required=True)
+        if action == 'run':
+            command.add_argument('--cursor-stage')
+            command.add_argument('--cursor-stage-sha256')
     args = vars(parser.parse_args(argv))
-    method = {'freeze': freeze, 'run': run, 'audit': audit}[args.pop('action')]
+    method = {'freeze': freeze, 'stage-cursor': stage_cursor, 'run': run, 'audit': audit}[args.pop('action')]
     try:
         result = method(**args)
     except ERRORS as error:

@@ -118,7 +118,7 @@ SCENARIOS = {
         'Compare task variants under the same request and a hidden rubric', 'skills/poteto-mode/playbooks/eval.md',
         'skills/blind-eval/SKILL.md', 'blind_eval freeze',
         'Observed input reads, offline execution receipts, cited scorecards and an auditable recommendation',
-        'The runner uses selected committed files, separate GLM workspaces, and two blinded OpenAI review sessions.'),
+        'The runner uses selected committed files, separate candidate workspaces and two blind reviews. Cursor Editor requires a staged turn.'),
     'correct': Scenario(
         'Prevent a repository mistake that has happened at least twice', 'skills/correct/SKILL.md',
         'skills/correct/SKILL.md', 'correct freeze',
