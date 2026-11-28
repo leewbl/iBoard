@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -13,7 +13,7 @@ const socketOrigin = 'ws://127.0.0.1:18789';
 const token = 'iboard-disposable-local-ui-token';
 const [journey = 'connected', ...extra] = process.argv.slice(2);
 assert.ok(['connected', 'session-rename', 'session-delete', 'session-status-filter', 'session-archive-restore',
-  'session-archive-subtree-undo', 'session-sidebar-archive-automations'].includes(journey),
+  'session-archive-subtree-undo', 'session-sidebar-archive-automations', 'session-archive-running'].includes(journey),
   'Unknown Control UI journey');
 const rename = journey === 'session-rename';
 const deleting = journey === 'session-delete';
@@ -21,10 +21,11 @@ const filtering = journey === 'session-status-filter';
 const archiving = journey === 'session-archive-restore';
 const archiveTree = journey === 'session-archive-subtree-undo';
 const archiveSidebar = journey === 'session-sidebar-archive-automations';
+const archiveRunning = journey === 'session-archive-running';
 const archiveBatch = archiveTree || archiveSidebar;
-const tracksArchiveWrites = archiving || archiveBatch;
-const tracksListReads = filtering || archiveBatch;
-const defaultStatus = deleting || archiveBatch ? 'all' : undefined;
+const tracksArchiveWrites = archiving || archiveBatch || archiveRunning;
+const tracksListReads = filtering || archiveBatch || archiveRunning;
+const defaultStatus = deleting || archiveBatch || archiveRunning ? 'all' : undefined;
 const visualState = extra[1];
 assert.ok(!extra.length || (
   extra.length === 2 && extra[0] === '--visual-state' &&
@@ -65,6 +66,8 @@ const home = join(root, 'home');
 const state = join(root, 'state');
 const config = join(state, 'openclaw.json');
 const log = join(root, 'gateway.log');
+const runMarker = 'iboard-archive-running-fixture';
+const finalAnswerMarker = 'IBOARD_OFFLINE_FIXTURE_COMPLETED';
 let browser, child, closed, exit, launchError, passed = false;
 let visualBrowser;
 const deleteTrace = deleting ? { step: 'start-gateway' } : null;
@@ -79,6 +82,9 @@ const fixtureEnv = {
   OPENCLAW_DISABLE_BONJOUR: '1',
   OPENCLAW_SKIP_CHANNELS: '1', OPENCLAW_SKIP_PROVIDERS: '1', OPENCLAW_SKIP_GMAIL_WATCHER: '1',
   OPENCLAW_SKIP_CRON: '1', OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: '1', OPENCLAW_SKIP_CANVAS_HOST: '1',
+  // Multiple compiler and Node workers share the sandbox's PID limit with Chromium.
+  ...(archiveRunning || archiveSidebar
+    ? { GOMAXPROCS: '2', UV_THREADPOOL_SIZE: '2', NODE_OPTIONS: '--v8-pool-size=2' } : {}),
 };
 
 class BrowserRecording {
@@ -176,11 +182,66 @@ class BrowserRecording {
 
 const recorder = recording ? new BrowserRecording(recording) : undefined;
 
+async function localRunConfig() {
+  const plugin = join(home, 'archive-fixture-plugin');
+  const workspace = join(home, 'fixture-workspace');
+  const backend = join(plugin, 'backend.mjs');
+  const id = 'iboard-archive-cli';
+  await mkdir(plugin);
+  await mkdir(workspace);
+  await Promise.all([
+    writeFile(join(plugin, 'package.json'), JSON.stringify({
+      name: id, version: '1.0.0', type: 'module', openclaw: { extensions: ['./index.js'] },
+    })),
+    writeFile(join(plugin, 'openclaw.plugin.json'), JSON.stringify({
+      id, name: id, cliBackends: [id], activation: { onStartup: true },
+      configSchema: { type: 'object', properties: {}, additionalProperties: false },
+    })),
+    writeFile(join(plugin, 'index.js'), `export default {
+      id: ${JSON.stringify(id)},
+      register(api) {
+        api.registerCliBackend({ id: ${JSON.stringify(id)}, config: ${JSON.stringify({
+          command: process.execPath, args: [backend, root], output: 'text', input: 'stdin',
+          sessionMode: 'none', serialize: false,
+          reliability: { watchdog: { fresh: { minMs: 210_000, maxMs: 210_000 } } },
+        })} });
+      },
+    };`),
+    writeFile(backend, `
+      import { existsSync, writeFileSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { setTimeout as delay } from 'node:timers/promises';
+      const state = process.argv[2];
+      let prompt = '';
+      for await (const chunk of process.stdin) prompt += chunk;
+      if (!prompt.includes(${JSON.stringify(runMarker)})) throw new Error('Unexpected fixture input');
+      for (const signal of ['SIGTERM', 'SIGINT']) {
+        process.once(signal, () => {
+          writeFileSync(join(state, 'run-stopped.json'), JSON.stringify({ pid: process.pid, signal }));
+          process.exit(signal === 'SIGTERM' ? 143 : 130);
+        });
+      }
+      writeFileSync(join(state, 'run-started.json'), JSON.stringify({ pid: process.pid }));
+      const deadline = Date.now() + 200000;
+      while (!existsSync(join(state, 'run-release'))) {
+        if (Date.now() >= deadline) throw new Error('Offline fixture exceeded its hold time');
+        await delay(50);
+      }
+      writeFileSync(join(state, 'run-completed'), '');
+      process.stdout.write(${JSON.stringify(finalAnswerMarker + '\n')});
+    `),
+  ]);
+  return {
+    agents: { defaults: { workspace, model: id + '/proof', timeoutSeconds: 240 }, entries: { main: {} } },
+    plugins: { allow: [id], load: { paths: [plugin] }, entries: { [id]: { enabled: true } }, slots: { memory: 'none' } },
+  };
+}
+
 async function prepareFixture() {
   await mkdir(home);
   await mkdir(state);
   await writeFile(config, JSON.stringify({
-    plugins: { enabled: false },
+    ...(archiveRunning ? await localRunConfig() : { plugins: { enabled: false } }),
     cron: { enabled: false },
     ...(deleting || tracksArchiveWrites ? { update: { checkOnStart: false } } : {}),
     gateway: {
@@ -204,7 +265,10 @@ async function launchGateway() {
       cwd: '/app',
       // The archived fixture loads multiple Gateway workers before Chromium.
       // Smaller young generations leave room for both in the same container.
-      env: filtering || tracksArchiveWrites ? { ...fixtureEnv, NODE_OPTIONS: '--max-semi-space-size=4' } : fixtureEnv,
+      env: filtering || tracksArchiveWrites ? {
+        ...fixtureEnv,
+        NODE_OPTIONS: ['--max-semi-space-size=4', fixtureEnv.NODE_OPTIONS].filter(Boolean).join(' '),
+      } : fixtureEnv,
       stdio: ['ignore', stream.fd, stream.fd],
     });
     child.once('error', error => { launchError = error; });
@@ -252,25 +316,49 @@ async function observe(read, message, timeout = 30_000) {
   throw new Error(message);
 }
 
-async function prepareSessions(fixtures = [], archiveKey = null, status = defaultStatus,
-  { jobKeys = [], inspectJobs = [] } = {}) {
-  // Start the Gateway's session-list workers before Chromium's initial parallel reads.
-  // Only Chromium performs the mutation being checked.
+async function localGateway(body, values, scopes = ['operator.admin', 'operator.read', 'operator.write']) {
   const program = `
     import { GatewayClient } from '/app/src/gateway/client.ts';
+    import { writeFile } from 'node:fs/promises';
     const [url, input] = process.argv.slice(1);
-    const { seeds, query, archiveKey, warmUpdateStatus, jobKeys, inspectJobs } = JSON.parse(input);
+    const { values, scopes } = JSON.parse(input);
     let connect, fail;
     const connected = new Promise((resolve, reject) => { connect = resolve; fail = reject; });
+    const terminal = Promise.withResolvers();
     const client = new GatewayClient({ url, token: process.env.OPENCLAW_GATEWAY_TOKEN,
       clientName: 'cli', mode: 'cli', role: 'operator', caps: ['ultrafast'],
-      scopes: inspectJobs.length ? ['operator.read'] : ['operator.admin', 'operator.read', 'operator.write'],
+      scopes,
       onHelloOk: connect, onConnectError: fail,
+      onEvent: ({ event, payload }) => {
+        if (values.watchRun && event === 'chat' && payload?.runId === values.watchRun
+            && payload.sessionKey === values.key && ['aborted', 'final', 'error'].includes(payload.state)) {
+          const { runId, sessionKey, state, stopReason } = payload;
+          terminal.resolve({ runId, sessionKey, state, stopReason });
+        }
+      },
       onClose: code => fail(new Error('Fixture connection closed: ' + code)) });
     const timer = setTimeout(() => fail(new Error('Fixture gateway handshake timed out')), 45_000);
     try {
       client.start();
       await connected;
+      ${body}
+    } finally {
+      clearTimeout(timer);
+      await client.stopAndWait();
+    }`;
+  const proc = await promisify(execFile)(process.execPath, [
+    '--max-old-space-size=256', ...nodeSource, '--input-type=module', '-e', program,
+    socketOrigin, JSON.stringify({ values, scopes }),
+  ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 140_000 });
+  return JSON.parse(proc.stdout.trim().split('\n').at(-1));
+}
+
+async function prepareSessions(fixtures = [], archiveKey = null, status = defaultStatus,
+  { jobKeys = [], inspectJobs = [] } = {}) {
+  // Start the Gateway's session-list workers before Chromium's initial parallel reads.
+  // Only Chromium performs the mutation being checked.
+  const program = `
+      const { seeds, query, archiveKey, warmUpdateStatus, jobKeys, inspectJobs } = values;
       const fixtures = [];
       for (const [key, label, parentSessionKey] of seeds) {
         const result = await client.request('sessions.create', { agentId: 'main', key, label,
@@ -307,23 +395,38 @@ async function prepareSessions(fixtures = [], archiveKey = null, status = defaul
           enabled: job.enabled, neverRun: job.state?.lastRunAtMs === undefined });
       }
       console.log(JSON.stringify(inspectJobs.length ? jobs : fixtures));
-    } finally {
-      clearTimeout(timer);
-      await client.stopAndWait();
-    }`;
+    `;
   const query = { source: 'sessions-page', rowMode: 'compact', agentId: 'main', configuredAgentsOnly: true,
     includeGlobal: true, includeUnknown: true, excludeDock: true, limit: 50,
     ...(status ? { archived: status === 'archived' ? true : status } : {}) };
-  const proc = await promisify(execFile)(process.execPath, [
-    '--max-old-space-size=256', ...nodeSource, '--input-type=module', '-e', program,
-    socketOrigin, JSON.stringify({ seeds: fixtures, query, archiveKey, jobKeys, inspectJobs,
-      warmUpdateStatus: deleting || tracksArchiveWrites }),
-  ], { cwd: '/app', env: { ...fixtureEnv, OPENCLAW_GATEWAY_TOKEN: token }, timeout: 140_000 });
-  const seeded = JSON.parse(proc.stdout.trim().split('\n').at(-1));
+  const seeded = await localGateway(program, { seeds: fixtures, query, archiveKey, jobKeys, inspectJobs,
+    warmUpdateStatus: deleting || tracksArchiveWrites }, inspectJobs.length ? ['operator.read'] : undefined);
   if (inspectJobs.length) return seeded;
   assert.deepEqual(seeded.map(({ key, label }) => [key, label]), fixtures.map(([key, label]) => [key, label]));
   for (const { sessionId } of seeded) assert.ok(typeof sessionId === 'string' && sessionId, 'Fixture has no session ID');
   return seeded;
+}
+
+function fixtureRequest(method, params, scopes, timeoutMs = 45_000) {
+  return localGateway(`
+    const { method, params, timeoutMs } = values;
+    console.log(JSON.stringify(await client.request(method, params, { timeoutMs })));
+  `, { method, params, timeoutMs }, scopes);
+}
+
+function watchArchiveEvent(key, runId) {
+  return localGateway(`
+    const subscription = await client.request('sessions.messages.subscribe',
+      { key: values.key, agentId: 'main' }, { timeoutMs: 35_000 });
+    if (subscription?.subscribed !== true || subscription.key !== values.key) {
+      throw new Error('Unable to observe the expected session');
+    }
+    await writeFile(values.readyPath, JSON.stringify({ runId: values.watchRun }), { flag: 'wx' });
+    const timeout = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('No terminal chat event for the offline worker')), 85_000).unref();
+    });
+    console.log(JSON.stringify(await Promise.race([terminal.promise, timeout])));
+  `, { key, watchRun: runId, readyPath: join(root, 'run-listener.json') }, ['operator.read']);
 }
 
 function expandSessionRows(sessions, sharedFacts) {
@@ -605,6 +708,25 @@ async function restartSessions(status = defaultStatus) {
   return openSessions(status);
 }
 
+async function awaitArchivePatch(view, target, archived) {
+  const write = await observe(() => view.writes.find(item => item.received),
+    'Gateway did not answer the archive patch', 90_000);
+  assert.equal(view.writes.length, 1, 'Expected one browser mutation for the selected row');
+  assert.equal(write.socket, view.proof.socket);
+  assert.equal(write.method, 'sessions.patch');
+  assert.equal(write.params.key, target.key);
+  assert.equal(write.params.expectedSessionId, target.sessionId);
+  assert.equal(write.params.archived, archived);
+  assert.equal(write.accepted, true, 'Gateway rejected archive or restore');
+  assert.equal(write.responseKey, target.key);
+  assert.equal(write.responseSessionId, target.sessionId);
+  assert.equal(write.responseArchived, archived);
+  return { method: write.method, requestId: write.requestId, key: write.params.key,
+    expectedSessionId: write.params.expectedSessionId, archived, accepted: write.accepted,
+    responseSessionId: write.responseSessionId, responseKey: write.responseKey,
+    responseArchived: write.responseArchived };
+}
+
 async function verifyArchiveRestore(target, survivor, active) {
   const steps = [];
   async function roster(view, state, expected) {
@@ -629,24 +751,10 @@ async function verifyArchiveRestore(target, survivor, active) {
     await row.getByRole('button', { name: `Open session menu: ${target.key}`, exact: true }).click();
     const action = archived ? 'Archive session' : 'Restore session';
     await view.page.getByRole('menuitem', { name: action, exact: true }).click();
-    const write = await observe(() => view.writes.find(item => item.received),
-      `Gateway did not answer the ${action} write`, 90_000);
-    assert.equal(view.writes.length, 1, 'Expected one browser mutation for the selected row');
-    assert.equal(write.socket, view.proof.socket);
-    assert.equal(write.method, 'sessions.patch');
-    assert.equal(write.params.key, target.key);
-    assert.equal(write.params.expectedSessionId, target.sessionId);
-    assert.equal(write.params.archived, archived);
-    assert.equal(write.accepted, true, 'Gateway rejected archive or restore');
-    assert.equal(write.responseKey, target.key);
-    assert.equal(write.responseSessionId, target.sessionId);
-    assert.equal(write.responseArchived, archived);
+    const write = await awaitArchivePatch(view, target, archived);
     await row.waitFor({ state: 'hidden' });
     await recorder?.checkpoint();
-    return { method: write.method, requestId: write.requestId, key: write.params.key,
-      expectedSessionId: write.params.expectedSessionId, archived, accepted: write.accepted,
-      responseSessionId: write.responseSessionId, responseKey: write.responseKey,
-      responseArchived: write.responseArchived };
+    return write;
   }
 
   await roster(active, 'active', [target, survivor]);
@@ -660,6 +768,138 @@ async function verifyArchiveRestore(target, survivor, active) {
     writes: [archive, restore], steps, survivor: { key: survivor.key, sessionId: survivor.sessionId } } });
 }
 
+async function freshSessionsRead(view) {
+  const sequence = view.latestFilterSequence();
+  // A keyboard click preserves the pointer position when an Undo toast is hovered.
+  await view.page.getByRole('button', { name: 'Refresh', exact: true })
+    .and(view.page.locator('.sessions-toolbar__refresh')).press('Enter');
+  return observe(() => view.filterProofAfter(sequence, 'all'),
+    'Sessions did not return a fresh authenticated roster', 90_000);
+}
+
+async function verifyArchiveRunning(target, survivor, view) {
+  const fixtures = [target, survivor];
+  const steps = [];
+  const readIds = new Set();
+  const readonly = ['operator.read'];
+
+  async function marker(name) {
+    const raw = await readFile(join(root, name), 'utf8').catch(error => {
+      if (error.code !== 'ENOENT') throw error;
+      return null;
+    });
+    return raw && JSON.parse(raw);
+  }
+
+  async function roster(browserView, proof, stage, targetArchived) {
+    browserView.assertConnectedPage();
+    assert.equal(proof.socket, browserView.proof.socket);
+    assert.equal(proof.source, 'sessions-page');
+    assert.equal(proof.archived, 'all');
+    assert.ok(typeof proof.requestId === 'string' && proof.requestId && !readIds.has(proof.requestId));
+    readIds.add(proof.requestId);
+    assert.deepEqual(proof.sessions.map(row => row.key).sort(), fixtures.map(row => row.key).sort());
+    const rows = [];
+    for (const fixture of fixtures) {
+      const expected = targetArchived && fixture === target;
+      const row = proof.sessions.find(entry => entry.key === fixture.key);
+      assert.equal(row?.sessionId, fixture.sessionId);
+      assert.equal(row.archived === true, expected);
+      const visible = rowFor(browserView, fixture.key);
+      await visible.getByText(fixture.label, { exact: true }).waitFor({ state: 'visible' });
+      await observe(() => visible.evaluate(element => element.classList.contains('session-data-row--archived'))
+        .then(value => value === expected), 'UI and Gateway differ on archive state');
+      rows.push({ key: row.key, sessionId: row.sessionId, archived: expected });
+    }
+    steps.push({ stage, gatewayPid: child.pid, requestId: proof.requestId, rows });
+    await recorder?.checkpoint();
+  }
+
+  async function describe() {
+    const { session } = await fixtureRequest('sessions.describe', { key: target.key, agentId: 'main' }, readonly);
+    assert.equal(session?.sessionId, target.sessionId);
+    return session;
+  }
+
+  async function dialog() {
+    await rowFor(view, target.key).getByRole('button', { name: `Open session menu: ${target.key}`, exact: true }).click();
+    await view.page.getByRole('menuitem', { name: 'Archive session', exact: true }).click();
+    const modal = view.page.locator('openclaw-modal-dialog dialog[open]')
+      .filter({ hasText: 'Active work in this session will be stopped.' });
+    await modal.getByRole('button', { name: 'Archive session', exact: true }).waitFor({ state: 'visible' });
+    return modal;
+  }
+
+  const idempotencyKey = randomUUID();
+  const started = await fixtureRequest('chat.send', {
+    sessionKey: target.key, message: runMarker, idempotencyKey, deliver: false,
+  }, ['operator.write']);
+  assert.equal(started.status, 'started');
+  assert.equal(started.runId, idempotencyKey);
+  const { pid } = await observe(() => marker('run-started.json'), 'Local worker never started', 70_000)
+    .catch(async error => {
+      const outcome = await fixtureRequest('agent.wait', { runId: idempotencyKey, timeoutMs: 0 },
+        ['operator.write'], 10_000).catch(() => null);
+      if (outcome) process.stderr.write(JSON.stringify({ phase: 'worker-start-diagnostic', outcome }) + '\n');
+      throw error;
+    });
+  assert.ok(Number.isInteger(pid) && pid > 1 && pid !== child.pid && pid !== process.pid);
+  assert.equal(process.kill(pid, 0), true);
+  assert.equal((await describe()).hasActiveRun, true);
+  await roster(view, await freshSessionsRead(view), 'initial', false);
+  const cancel = await dialog();
+  await recorder?.checkpoint();
+  await cancel.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await cancel.waitFor({ state: 'hidden' });
+  await roster(view, await freshSessionsRead(view), 'after-cancel', false);
+  assert.equal(view.writes.length, 0, 'Cancel sent a session write');
+  assert.equal(process.kill(pid, 0), true, 'Cancel stopped the worker');
+  assert.equal(await marker('run-stopped.json'), null);
+  assert.equal((await describe()).hasActiveRun, true);
+
+  const confirm = await dialog();
+  const archiveResult = watchArchiveEvent(target.key, idempotencyKey);
+  void archiveResult.catch(() => {});
+  await observe(async () => (await marker('run-listener.json'))?.runId === idempotencyKey,
+    'The archive event listener did not subscribe to the running session', 50_000);
+  await confirm.getByRole('button', { name: 'Archive session', exact: true }).click();
+  const write = await awaitArchivePatch(view, target, true);
+  const stop = await observe(() => marker('run-stopped.json'), 'Archive did not signal the local worker', 30_000);
+  assert.equal(stop.pid, pid);
+  assert.ok(['SIGTERM', 'SIGINT'].includes(stop.signal));
+  await observe(() => {
+    try { process.kill(pid, 0); } catch (error) {
+      if (error.code === 'ESRCH') return true;
+      throw error;
+    }
+    return false;
+  }, 'Archived worker did not exit');
+  const archiveEvent = await archiveResult;
+  assert.deepEqual(archiveEvent, { runId: idempotencyKey, sessionKey: target.key,
+    state: 'aborted', stopReason: 'archive' });
+  const outcome = await fixtureRequest('agent.wait', { runId: idempotencyKey, timeoutMs: 5_000 }, ['operator.write']);
+  assert.equal(outcome.runId, idempotencyKey);
+  assert.equal(outcome.status, 'error');
+  assert.ok(['archive', 'aborted'].includes(outcome.stopReason));
+  const wait = { runId: outcome.runId, status: outcome.status, stopReason: outcome.stopReason };
+  assert.notEqual((await describe()).hasActiveRun, true, 'Archived session still has active work');
+  await recorder?.checkpoint();
+  const fresh = await restartSessions();
+  await roster(fresh, fresh.proof, 'after-archive-restart', true);
+  const history = await fixtureRequest('chat.history', { sessionKey: target.key, limit: 20 }, readonly);
+  assert.ok(Array.isArray(history.messages));
+  assert.ok(JSON.stringify(history.messages).includes(runMarker), 'The restored transcript is missing the submitted work');
+  assert.ok(!JSON.stringify(history.messages).includes(finalAnswerMarker), 'An archived worker emitted a final answer');
+  await assert.rejects(readFile(join(root, 'run-completed')), { code: 'ENOENT' });
+  assert.equal(view.writes.length, 1);
+  assert.equal(fresh.writes.length, 0);
+  await capture(fresh, { mutation: { key: target.key, sessionId: target.sessionId,
+    survivor: { key: survivor.key, sessionId: survivor.sessionId }, canceledWithoutWrite: true, write, steps,
+    run: { id: idempotencyKey, childPid: pid, activeBefore: true, activeAfterCancel: true,
+      archiveEvent, wait, childExitSignal: stop.signal, childExited: true, noCompletion: true },
+  } });
+}
+
 async function verifyArchiveBatchUndo(first, second, survivor, view) {
   const fixtures = [first, second, survivor];
   const targetIdentity = ({ key, sessionId }) => ({ key, expectedSessionId: sessionId, agentId: 'main' });
@@ -668,8 +908,6 @@ async function verifyArchiveBatchUndo(first, second, survivor, view) {
   const selections = [];
   const automationReads = [];
   const readIds = new Set();
-  const refresh = view.page.getByRole('button', { name: 'Refresh', exact: true })
-    .and(view.page.locator('.sessions-toolbar__refresh'));
   const sidebarRow = (browserView, key) =>
     browserView.page.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
 
@@ -709,12 +947,7 @@ async function verifyArchiveBatchUndo(first, second, survivor, view) {
   }
 
   async function freshRead(stage, flags) {
-    const sequence = view.latestFilterSequence();
-    // Keep the pointer over the Undo toast while pressing the real refresh control.
-    await refresh.press('Enter');
-    const result = await observe(() => view.filterProofAfter(sequence, 'all'),
-      'Sessions did not return a fresh authenticated roster', 90_000);
-    await roster(view, result, stage, flags);
+    await roster(view, await freshSessionsRead(view), stage, flags);
   }
 
   async function dialog() {
@@ -1018,7 +1251,7 @@ async function drive() {
   if (deleteTrace) deleteTrace.step = 'prepare-fixtures';
   const seeds = archiveSidebar ? [[fixtureKey, originalLabel], [secondKey, secondLabel], [survivorKey, survivorLabel]]
     : archiveTree ? [[fixtureKey, originalLabel], [nestedKey, nestedLabel, fixtureKey], [survivorKey, survivorLabel]]
-    : deleting || archiving ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
+    : deleting || archiving || archiveRunning ? [[fixtureKey, originalLabel], [survivorKey, survivorLabel]]
     : filtering ? [[fixtureKey, originalLabel], [archivedKey, archivedLabel]]
       : rename ? [[fixtureKey, originalLabel]] : [];
   const fixtures = seeds.length ? await prepareSessions(seeds, filtering ? archivedKey : null, defaultStatus,
@@ -1034,6 +1267,8 @@ async function drive() {
     await verifySessionStatusFilter(...fixtures, view);
   } else if (archiving) {
     await verifyArchiveRestore(...fixtures, view);
+  } else if (archiveRunning) {
+    await verifyArchiveRunning(...fixtures, view);
   } else if (archiveBatch) {
     await verifyArchiveBatchUndo(...fixtures, view);
   } else {

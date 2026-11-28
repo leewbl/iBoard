@@ -27,7 +27,9 @@ SESSION_FILTER = 'control-ui-session-status-filter'
 SESSION_ARCHIVE = 'control-ui-session-archive-restore'
 SESSION_ARCHIVE_TREE = 'control-ui-session-archive-subtree-undo'
 SESSION_ARCHIVE_SIDEBAR = 'control-ui-session-sidebar-archive-automations'
-SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE, SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR)
+SESSION_ARCHIVE_RUNNING = 'control-ui-session-archive-running'
+SESSION_WRITES = (SESSION_RENAME, SESSION_DELETE, SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR,
+                  SESSION_ARCHIVE_RUNNING)
 SESSION_JOURNEYS = (*SESSION_WRITES, SESSION_FILTER)
 BROWSER_JOURNEYS = {
     'control-ui-connected': ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_CONNECTED_PASS'),
@@ -37,12 +39,13 @@ BROWSER_JOURNEYS = {
     SESSION_ARCHIVE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RESTORE_PASS'),
     SESSION_ARCHIVE_TREE: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_SUBTREE_UNDO_PASS'),
     SESSION_ARCHIVE_SIDEBAR: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_SIDEBAR_ARCHIVE_AUTOMATIONS_PASS'),
+    SESSION_ARCHIVE_RUNNING: ('control-ui-connected.mjs', 'VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RUNNING_PASS'),
 }
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "verify-openclaw"
 
 
 def _timeout(journey):
-    if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR):
+    if journey in (SESSION_ARCHIVE, SESSION_ARCHIVE_TREE, SESSION_ARCHIVE_SIDEBAR, SESSION_ARCHIVE_RUNNING):
         return 600
     return 480 if journey in SESSION_JOURNEYS else 320
 
@@ -118,6 +121,48 @@ def _archive_evidence(mutation, readback, pids):
     expected = (('active', [target, survivor]), ('archived', [target]), ('active', [target, survivor]))
     return all(step['state'] == state and step['gatewayPid'] == pid and step['rows'] == rows
                for step, (state, rows), pid in zip(steps, expected, pids))
+
+
+def _archive_running_evidence(mutation, readback, pids):
+    target = {key: mutation[key] for key in ('key', 'sessionId')}
+    survivor = mutation['survivor']
+    run, write, steps = mutation['run'], mutation['write'], mutation['steps']
+    if not (readback.get('archived') == 'all' and readback['count'] == 2
+            and mutation['canceledWithoutWrite'] is True
+            and survivor['key'] == 'agent:main:iboard-browser-survivor'
+            and isinstance(survivor['sessionId'], str) and survivor['sessionId'].strip()
+            and survivor['sessionId'] != target['sessionId']):
+        return False
+    run_id = run['id']
+    if not (isinstance(run_id, str) and run_id.strip()
+            and type(run['childPid']) is int and run['childPid'] > 1 and run['childPid'] not in pids
+            and run['activeBefore'] is True and run['activeAfterCancel'] is True
+            and run['archiveEvent'] == {'runId': run_id, 'sessionKey': target['key'],
+                                        'state': 'aborted', 'stopReason': 'archive'}
+            and isinstance(run['wait'], dict) and set(run['wait']) == {'runId', 'status', 'stopReason'}
+            and run['wait']['runId'] == run_id and run['wait']['status'] == 'error'
+            and run['wait']['stopReason'] in ('aborted', 'archive')
+            and run['childExitSignal'] in ('SIGTERM', 'SIGINT')
+            and run['childExited'] is True and run['noCompletion'] is True):
+        return False
+    if not (write['method'] == 'sessions.patch' and write['key'] == target['key']
+            and write['expectedSessionId'] == target['sessionId'] and write['archived'] is True
+            and write['accepted'] is True and write['responseKey'] == target['key']
+            and write['responseSessionId'] == target['sessionId'] and write['responseArchived'] is True
+            and isinstance(steps, list) and len(steps) == 3):
+        return False
+    requests = [write['requestId'], *(step['requestId'] for step in steps)]
+    if not all(isinstance(req, str) and req.strip() for req in requests) or len(set(requests)) != 4:
+        return False
+    for index, (step, stage) in enumerate(zip(steps, ('initial', 'after-cancel', 'after-archive-restart'))):
+        if (step['stage'] != stage or step['gatewayPid'] != pids[int(index == 2)]
+                or not isinstance(step['rows'], list) or len(step['rows']) != 2):
+            return False
+        for row, fixture, archived in zip(step['rows'], (target, survivor), (index == 2, False)):
+            if (row['key'] != fixture['key'] or row['sessionId'] != fixture['sessionId']
+                    or row['archived'] is not archived):
+                return False
+    return True
 
 
 def _archive_batch_evidence(mutation, readback, pids, *, sidebar=False):
@@ -234,6 +279,8 @@ def _browser_evidence(report, screenshot):
             return False
         if report['journey'] == SESSION_ARCHIVE:
             return _archive_evidence(mutation, readback, pids)
+        if report['journey'] == SESSION_ARCHIVE_RUNNING:
+            return _archive_running_evidence(mutation, readback, pids)
         if report['journey'] == SESSION_ARCHIVE_TREE:
             return _archive_batch_evidence(mutation, readback, pids)
         if report['journey'] == SESSION_ARCHIVE_SIDEBAR:
@@ -410,6 +457,19 @@ def required_journeys(data, head):
         'src/gateway/server-methods/sessions-patch-effects.ts',
     ) for path in paths):
         selected.append(SESSION_ARCHIVE_SIDEBAR)
+    if archive_paths or any(path.startswith(('ui/src/components/session-organizer-operations.',
+                                           'ui/src/components/session-organizer-patch.')) or path in (
+        'ui/src/components/confirm-dialog-view.tsx',
+        'ui/src/components/session-automation-confirm.ts',
+        'src/gateway/server-methods/sessions-patch-effects.ts',
+        'src/gateway/server-methods/sessions-lifecycle-drain.ts',
+        'src/gateway/server-methods/chat-abort-runtime.ts',
+        'src/gateway/server-methods/sessions-subscriptions.ts', 'src/gateway/chat-abort.ts',
+        'src/gateway/chat-abort-ops.ts', 'src/gateway/chat-abort-lifecycle-internal.ts',
+        'src/sessions/session-controller.lifecycle.ts', 'src/sessions/session-controller.settlement.ts',
+        'src/agents/run-termination.ts', 'src/agents/cli-runner/execute-process.ts',
+    ) for path in paths):
+        selected.append(SESSION_ARCHIVE_RUNNING)
     return selected
 
 

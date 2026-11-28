@@ -338,6 +338,25 @@
         {"path": "src/gateway/server-methods/sessions-patch-effects.ts", "contains": "await disableCronJobsBoundToSessions({"},
         {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "restoreArchivedSessions(undoHost, archived, scope)"}
       ]
+    },
+    {
+      "id": "control-ui-session-archive-running",
+      "helper": "control-ui-connected.mjs",
+      "marker": "VERIFY_OPENCLAW_CONTROL_UI_SESSION_ARCHIVE_RUNNING_PASS",
+      "browser": true,
+      "screenshot": true,
+      "args": ["session-archive-running"],
+      "reach": "Start one real Gateway run against a local CLI backend, then open Archive session from the running row in All Sessions.",
+      "drive": "Cancel the active-work warning, verify the same worker is still running, then reopen the warning. Subscribe via a separate read-only connection before confirming. Check the native archive event, run settlement and child exit before restarting the Gateway.",
+      "observe": "Cancel issues no session write and leaves the work active. Confirm archives only the selected session and produces an archive abort for the original run ID. The actual worker exits without a final answer. A fresh browser and Gateway preserve both session IDs and archive only the selected row.",
+      "gotchas": "Use the isolated CLI test plugin rather than cloud credentials. A timeout or a worker stopped by sandbox cleanup cannot prove archive cancellation. Keep a separate idle control session.",
+      "source": [
+        {"path": "ui/src/components/session-organizer-archive.runtime.ts", "contains": "export async function confirmRunningSessionsArchive"},
+        {"path": "ui/src/i18n/locales/en-session-organization.ts", "contains": "Active work in this session will be stopped."},
+        {"path": "src/gateway/server-methods/sessions-lifecycle-drain.ts", "contains": "stopReason: params.action"},
+        {"path": "src/gateway/chat-abort.ts", "contains": "state: \"aborted\" as const"},
+        {"path": "src/agents/cli-runner/execute-process.ts", "contains": "supervisor.cancel(runParams.runId, \"manual-cancel\")"}
+      ]
     }
   ]
 }
