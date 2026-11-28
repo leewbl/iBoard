@@ -258,6 +258,7 @@ def _image(value):
 
 def _skill(record, digest):
     spec = record["spec"]
+    count_label = "proof obligations" if spec["method"] == "proof" else "explored cases"
     generated = [
         "---", f'name: verify-formal-{spec["id"]}',
         f'description: Run the source-anchored property check for {spec["id"]}.',
@@ -265,7 +266,7 @@ def _skill(record, digest):
         f'# Verify {spec["id"]}', "", spec["property"], "", f'User impact. {spec["harm"]}', "",
         f'Synchronized Git commit. `{record["sync"]}`', "",
         f'Method and tool version. `{spec["method"]}`, {spec["tool_version"]}. '
-        f'Passing requires at least {spec["minimum_explored"]} explored cases.', "",
+        f'Passing requires at least {spec["minimum_explored"]} {count_label}.', "",
     ]
     for key in ("bounds", "assumptions", "exclusions"):
         generated.extend([f"## {key.title()}", "", *(f"- {item}" for item in spec[key]), ""])

@@ -37,3 +37,18 @@ python3 -m workbench.statechart check "$model/CommandLane.tla" \
 ```
 
 [模型验证契约](manifest-model.json) 还可用于 `workbench.formal_verify create`。用同一个准备命令在 OpenClaw 源码镜像上叠加工具，再将上面的有界检查示例改为 `--manifest "$model/manifest-model.json"`。适配器读实际的容量判断来选择模型配置。修改判断后由 TLC 找出反例，再由独立的 Node 驱动操作真实队列复现。这个映射只覆盖该判断和示例声明的行为，其他队列实现变化仍需检查模型是否同步。
+
+## 用 Z3 证明容量约束
+
+[证明契约](manifest-proof.json) 检查固定容量的单条队列。`proof.mjs` 从源码读取接纳比较符，并核对空队列初始化、接纳先记账和同一 generation 结算释放的顺序。Z3 对数学整数检查初始化、接纳和结算三个归纳义务。在任务 ID 各不相同、容量和 generation 固定的前提下，队列执行任意有限步，活跃计数始终在零和容量之间。调整容量、重置、组合队列和 JavaScript 任务 ID 精度另行验证。
+
+将 [Debian Z3 4.13.3-1](https://packages.debian.org/trixie/z3) 安装到与 OpenClaw 提交 `54710b123fe94a2139930c1d7c038e7623345a5e` 一致的 Debian trixie 源码镜像中。以安装后镜像的不可变 ID 运行验证。联网只用于准备工具镜像，后续求解和回放由 iBoard 在断网容器执行。
+
+```sh
+model=examples/formal/openclaw-command-lane
+python3 -m workbench.formal_verify create --repo "$OPENCLAW_REPO" \
+  --revision 54710b123fe94a2139930c1d7c038e7623345a5e --image "$OPENCLAW_Z3_IMAGE_ID" \
+  --manifest "$model/manifest-proof.json" --helpers "$model" --out "$EVIDENCE_DIR"
+```
+
+正常版本的三个反例查询应为 `unsat`。把 `<` 改成 `<=` 后，接纳义务应为 `sat`。求解器另查容量为 1 且已有一条命令占用时的具体反例。独立 Node 驱动提交两条暂不结束的真实命令，核对活动计数和回调同时运行的峰值。工作台删除临时工作树后再证明未改动版本，并在输出目录保留项目技能和每次原始回执。

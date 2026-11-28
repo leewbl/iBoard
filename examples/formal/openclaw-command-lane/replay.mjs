@@ -13,6 +13,8 @@ async function replay(path) {
   const lane = 'session:probe-independent-formal';
   setCommandLaneConcurrency(lane, 1);
   const waiters = new Map();
+  const running = new Set();
+  let peak = 0;
   let overlap = false;
   for (const step of steps.slice(0, -1)) {
     const match = /^(Enqueue|Resolve|Reject) command ([1-3])$/.exec(step);
@@ -21,7 +23,15 @@ async function replay(path) {
     if (action === 'Enqueue') {
       const pending = Promise.withResolvers();
       waiters.set(id, pending);
-      void enqueueCommandInLane(lane, () => pending.promise).catch(() => {});
+      void enqueueCommandInLane(lane, async () => {
+        running.add(id);
+        peak = Math.max(peak, running.size);
+        try {
+          await pending.promise;
+        } finally {
+          running.delete(id);
+        }
+      }).catch(() => {});
     } else if (action === 'Resolve') {
       waiters.get(id).resolve();
     } else {
@@ -32,6 +42,10 @@ async function replay(path) {
   }
   for (const pending of waiters.values()) pending.resolve();
   await tick();
+  if ((peak > 1) !== overlap) {
+    throw new Error('The live callbacks and the reported active count disagreed');
+  }
+  console.log(`Peak overlapping callbacks: ${peak}`);
   return { status: overlap ? 'violated' : 'holds', explored: 1, counterexample: overlap ? steps : [] };
 }
 
