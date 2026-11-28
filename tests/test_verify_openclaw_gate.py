@@ -27,7 +27,8 @@ class GatewayGateTests(unittest.TestCase):
                 skills_inspect_image=None, config_image=None, workshop_image=None, rename=False, delete=False, status_filter=False,
                 browser_receipt=True, same_container=False, restart=None, deletion=None, list_scope='all',
                 filter_fault=None, rename_fields=None, archive=False, archive_fault=None, archive_tree=False,
-                tree_fault=None, archive_sidebar=False, sidebar_fault=None, archive_running=False, running_fault=None):
+                tree_fault=None, archive_sidebar=False, sidebar_fault=None, archive_running=False, running_fault=None,
+                library_image=None):
         refs = {}
         self.data['evidence'] = []
         gateway_image = 'sha256:' + 'f' * 64
@@ -40,6 +41,8 @@ class GatewayGateTests(unittest.TestCase):
             journeys['config-validate'] = config_image
         if workshop_image is not None:
             journeys['workshop-roundtrip'] = workshop_image
+        if library_image is not None:
+            journeys['skills-library-help'] = library_image
         if rename:
             journeys[verify_openclaw.SESSION_RENAME] = gateway_image
         if delete:
@@ -300,9 +303,51 @@ class GatewayGateTests(unittest.TestCase):
                 self.reports(skills_image=image, skills_inspect_image=image, workshop_image='sha256:' + 'e' * 64)
                 with self.assertRaisesRegex(verify_openclaw.GatewayGateError, 'workshop-roundtrip'):
                     verify_openclaw.require(self.data, self.head, self.destination)
-                self.reports(skills_image=image, skills_inspect_image=image, workshop_image=image)
+                self.reports(skills_image=image, skills_inspect_image=image, workshop_image=image, library_image=image)
                 receipts = verify_openclaw.require(self.data, self.head, self.destination)
                 self.assertEqual(len(receipts['workshop-roundtrip']), 2)
+
+    def test_library_help_requires_both_independent_receipts_on_the_same_image(self):
+        image = 'sha256:' + 'f' * 64
+        journey = 'skills-library-help'
+        helper, marker, command = verify_openclaw._journey(journey)
+        self.assertEqual((helper, marker, command, verify_openclaw._timeout(journey)),
+                         ('skills-library-help.mjs', 'VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS',
+                          ['node', '/workspace/skills-library-help.mjs'], 320))
+        self.assertNotIn(journey, verify_openclaw.BROWSER_JOURNEYS)
+        for path in ('src/cli/skills-library-cli.ts', 'src/cli/skills-cli.ts',
+                     'src/cli/program/parent-default-help.ts'):
+            with self.subTest(path=path):
+                self.changed_paths.return_value = path + '\0'
+                selected = verify_openclaw.required_journeys(self.data, self.head)
+                self.assertIn(journey, selected)
+                if path == 'src/cli/skills-cli.ts':
+                    self.assertEqual(selected, ['gateway-health', 'skills-check', 'skills-inspect',
+                                                'workshop-roundtrip', journey])
+                else:
+                    self.assertEqual(selected, ['gateway-health', journey])
+                options = {'skills_image': image, 'skills_inspect_image': image, 'workshop_image': image}
+                self.reports(**options)
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+                github = Mock()
+                with patch.object(cli, 'read', return_value=self.data), \
+                        patch.object(cli, 'gate', return_value=(self.head, [])), \
+                        patch.object(publish.delivery, '_independent_verification'):
+                    for call, extra in ((publish.publish, ()), (publish.republish, (1, 'b' * 40))):
+                        with self.assertRaisesRegex(publish.PublishError, journey):
+                            call(self.task, self.destination, *extra, github=github)
+                self.assertEqual(github.mock_calls, [])
+                self.reports(**options, library_image='sha256:' + 'e' * 64)
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+                self.reports(**options, library_image=image)
+                self.assertEqual(len(verify_openclaw.require(self.data, self.head, self.destination)[journey]), 2)
+                (self.root / f'{journey}-independent-verifier.json').write_text('{}')
+                with self.assertRaisesRegex(verify_openclaw.GatewayGateError, journey):
+                    verify_openclaw.require(self.data, self.head, self.destination)
+        self.changed_paths.return_value = 'src/cli/skills-library-cli.test.ts\0'
+        self.assertNotIn(journey, verify_openclaw.required_journeys(self.data, self.head))
 
     def test_connected_ui_requires_a_bound_screenshot_in_its_own_output(self):
         journey = 'control-ui-connected'

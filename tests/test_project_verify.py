@@ -26,7 +26,7 @@ class ProjectVerificationTests(unittest.TestCase):
         self.helpers = self.root / 'helpers'
         self.helpers.mkdir()
         self.sequence = []
-        self.fail = set()
+        self.failed_checks = set()
         self.no_cleanup = set()
         checks = []
         for name in ('doctor', 'first', 'second'):
@@ -58,7 +58,7 @@ class ProjectVerificationTests(unittest.TestCase):
         self.sequence.append(key)
         return {'image': image, 'command': command, 'workspace_read_only': True,
                 'container_created': True, 'cleanup_confirmed': key not in self.no_cleanup,
-                'exit_code': int(key in self.fail), 'stdout': f'JOURNEY_{key.upper()}_PASS\n'}
+                'exit_code': int(key in self.failed_checks), 'stdout': f'JOURNEY_{key.upper()}_PASS\n'}
 
     def run_mode(self, mode, name, **kwargs):
         return project_verify.run(mode, repo=self.repo, revision=self.revision, image='local-image',
@@ -88,14 +88,14 @@ class ProjectVerificationTests(unittest.TestCase):
         self.assertEqual(blocked['outcome'], 'blocked')
         self.assertEqual(blocked['map_drift'], ['features/README.md'])
         self.assertEqual(blocked['features'], {'first': 'passed', 'second': 'passed'})
-        self.fail.add('first')
+        self.failed_checks.add('first')
         failed = self.run_mode('maintain', 'failed-fix', skill=bundle, manifest=self.manifest, helpers=self.helpers)
         self.assertEqual(failed['outcome'], 'blocked')
         self.assertEqual(failed['bundle'], 'draft')
         self.assertEqual(failed['features'], {'first': 'behavior-unverified', 'second': 'passed'})
         self.assertEqual(self.sequence[-4:], ['doctor', 'first', 'doctor', 'second'])
         self.assertFalse((self.root / 'failed-fix' / 'changes.patch').exists())
-        self.fail.clear()
+        self.failed_checks.clear()
         passed = self.run_mode('maintain', 'fixed', skill=bundle, manifest=self.manifest, helpers=self.helpers)
         self.assertEqual(passed['outcome'], 'changed')
         self.assertEqual(passed['replaces_unsafe_entries'], [])
@@ -356,6 +356,120 @@ class ProjectVerificationTests(unittest.TestCase):
                                      [f'{namespace} info', f'{namespace} status'])
                     self.assertEqual({(row['path'], row['blob'], row['line']) for row in inventory['errors']},
                                      {('register.ts', blob, line)})
+
+    def use_commander_factory_inventory(self):
+        namespace = 'fixture library'
+        self.contract['entrypoint_inventory'] = [{
+            'namespace': namespace,
+            'sources': [{'kind': 'commander-factory', 'path': 'register.ts', 'owner': 'registerLibrary',
+                         'receiver': 'library', 'factory': 'leaf', 'wrapper': 'withOptions'}],
+            'excluded': {},
+        }]
+        self.contract['features'][0]['entrypoints'] = [f'{namespace} read', f'{namespace} r']
+        self.contract['features'][1]['entrypoints'] = [f'{namespace} list']
+        self.manifest.write_text(json.dumps(self.contract))
+        return namespace
+
+    @staticmethod
+    def commander_factory_source(calls=None, declaration=None):
+        return (
+            'export function registerLibrary(library: Command): void {\n'
+            + (declaration or '  const leaf = (name: string, description: string) => '
+               'withOptions(library.command(name).description(description)).option("--json");\n')
+            + (calls or '  leaf("read", "Read it").alias("r");\n  leaf("list", "List it");\n')
+            + '}\n'
+        )
+
+    def test_factory_inventory_tracks_calls_aliases_committed_blob_and_revision_diff(self):
+        namespace = self.use_commander_factory_inventory()
+        before = self.commander_factory_source()
+        path = self.commit_commander_source(before)
+        old = self.revision
+        old_report = project_verify.discover(repo=self.repo, revision=old,
+                                              out=self.root / 'factory-old', manifest=self.manifest)
+        self.assertEqual(old_report['outcome'], 'mapped')
+        self.assertEqual(old_report['entrypoints']['errors'], [])
+        after = before.replace('leaf("list", "List it")', 'leaf("show", "Show it")')
+        self.commit_commander_source(after)
+        path.write_text(after.replace('leaf("show", "Show it")', 'leaf("worktree", "Uncommitted")'))
+        result = project_verify.discover(repo=self.repo, revision=self.revision, since=old,
+                                         out=self.root / 'factory-new', manifest=self.manifest)
+        self.assertEqual(result['outcome'], 'review-required')
+        self.assertEqual(result['comparison']['errors'], [])
+        self.assertEqual(result['comparison']['added'], [f'{namespace} show'])
+        self.assertEqual(result['comparison']['removed'], [f'{namespace} list'])
+        self.assertEqual(result['entrypoints']['errors'], [])
+        self.assertEqual(result['entrypoints']['unmapped'], [f'{namespace} show'])
+        self.assertEqual(result['entrypoints']['stale'], [f'{namespace} list'])
+        entries = {row['command']: row for row in result['entrypoints']['entries']}
+        self.assertEqual(set(entries), {f'{namespace} read', f'{namespace} r', f'{namespace} show'})
+        blob = cli.git(self.repo, 'rev-parse', f'{self.revision}:register.ts')
+        for name, line in (('read', 3), ('r', 3), ('show', 4)):
+            self.assertEqual(entries[f'{namespace} {name}'].get('kind', 'command'), 'command')
+            self.assertEqual(entries[f'{namespace} {name}']['locations'],
+                             [{'path': 'register.ts', 'blob': blob, 'line': line, 'registration_line': 2}])
+
+    def test_unresolved_factory_usage_blocks_green_create_and_maintenance(self):
+        self.use_commander_factory_inventory()
+        self.commit_commander_source(self.commander_factory_source())
+        initial = self.run_mode('create', 'created', manifest=self.manifest, helpers=self.helpers, journey='second')
+        if initial['outcome'] != 'verified':
+            raise AssertionError(f"factory baseline was not verified: {initial}")
+        bundle = self.root / 'created' / initial['bundle']
+        cases = {
+            'dynamic-name': self.commander_factory_source(calls='  leaf(resolveName(), "Read");\n  leaf("list", "List");\n'),
+            'dynamic-alias': self.commander_factory_source(calls='  leaf("read", "Read").alias(resolveAlias());\n  leaf("list", "List");\n'),
+            'escaped-factory': self.commander_factory_source(calls='  const escaped = leaf;\n  escaped("read", "Read");\n  leaf("list", "List");\n'),
+            'receiver-reassigned': self.commander_factory_source(calls='  library = getOther();\n  leaf("read", "Read").alias("r");\n  leaf("list", "List");\n'),
+            'unsupported-wrapper': self.commander_factory_source(declaration='  const leaf = (name: string, description: string) => otherWrapper(library.command(name).description(description));\n'),
+            'conditionally-skipped-loop': self.commander_factory_source(calls=
+                '  leaf("read", "Read").alias("r");\n'
+                '  for (const name of ["list"] as const) {\n'
+                '    if (skip()) { continue; }\n'
+                '    const command = leaf(name, "List");\n'
+                '  }\n'),
+            'renamed-factory-result': self.commander_factory_source(calls=
+                '  leaf("read", "Read").alias("r");\n'
+                '  for (const name of ["list"] as const) {\n'
+                '    const command = leaf(name, "List");\n'
+                '    command.name(resolveName());\n'
+                '  }\n'),
+            'duplicate-name': self.commander_factory_source(calls=
+                '  leaf("read", "Read").alias("r");\n'
+                '  leaf("list", "List");\n'
+                '  leaf("r", "Conflicting command");\n'),
+        }
+        for case, source in cases.items():
+            with self.subTest(case=case):
+                self.commit_commander_source(source)
+                report = project_verify.discover(repo=self.repo, revision=self.revision,
+                                                 out=self.root / f'factory-{case}', manifest=self.manifest)
+                self.assertEqual(report['outcome'], 'review-required')
+                self.assertTrue(report['entrypoints']['errors'])
+                for mode, options in (('create', {'manifest': self.manifest, 'helpers': self.helpers}),
+                                      ('maintain', {'skill': bundle})):
+                    result = self.run_mode(mode, f'factory-{mode}-{case}', **options)
+                    self.assertEqual(result['outcome'], 'blocked')
+                    self.assertTrue(result['entrypoints']['errors'])
+                    self.assertIn('inventory needs map corrections', result['reason'])
+
+    def test_factory_inventory_resolves_assigned_calls_from_fixed_loops(self):
+        namespace = self.use_commander_factory_inventory()
+        source = self.commander_factory_source(calls=
+            '  leaf("read", "Read").alias("r");\n'
+            '  for (const action of ["list", "refresh"] as const) {\n'
+            '    const command = leaf(action, "Use command");\n'
+            '    command.action(() => {});\n'
+            '  }\n')
+        self.commit_commander_source(source)
+        report = project_verify.discover(repo=self.repo, revision=self.revision,
+                                         out=self.root / 'factory-loop', manifest=self.manifest)
+        self.assertEqual(report['entrypoints']['errors'], [])
+        self.assertEqual(report['entrypoints']['stale'], [])
+        self.assertEqual(report['entrypoints']['unmapped'], [f'{namespace} refresh'])
+        for entry in report['entrypoints']['entries']:
+            if entry['command'] in {f'{namespace} list', f'{namespace} refresh'}:
+                self.assertEqual((entry['locations'][0]['line'], entry['locations'][0]['registration_line']), (5, 2))
 
     def use_session_status_inventory(self):
         namespace = 'fixture sessions status'

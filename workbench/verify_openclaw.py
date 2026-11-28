@@ -19,6 +19,7 @@ JOURNEYS = {
     "skills-check": ("skills-check.mjs", "VERIFY_OPENCLAW_SKILLS_CHECK_PASS"),
     "skills-inspect": ("skills-inspect.mjs", "VERIFY_OPENCLAW_SKILLS_INSPECT_PASS"),
     "workshop-roundtrip": ("workshop-roundtrip.mjs", "VERIFY_OPENCLAW_WORKSHOP_ROUNDTRIP_PASS"),
+    "skills-library-help": ("skills-library-help.mjs", "VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS"),
     "config-validate": ("config-validate.mjs", "VERIFY_OPENCLAW_CONFIG_VALIDATE_PASS"),
 }
 SESSION_RENAME = 'control-ui-session-rename'
@@ -417,6 +418,9 @@ def required_journeys(data, head):
         selected.extend(('skills-check', 'skills-inspect'))
     if any(path == 'src/cli/skills-cli.ts' or path.startswith('src/skills/workshop/') for path in paths):
         selected.append('workshop-roundtrip')
+    if any(path in ('src/cli/skills-library-cli.ts', 'src/cli/skills-cli.ts',
+                    'src/cli/program/parent-default-help.ts') for path in paths):
+        selected.append('skills-library-help')
     if any(path.startswith(('src/config/', 'src/cli/config-cli.', 'src/cli/config-cli-')) for path in paths):
         selected.append('config-validate')
     sessions_ui = any(path == 'ui/src/styles/sessions.css'

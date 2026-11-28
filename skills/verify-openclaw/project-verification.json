@@ -42,6 +42,37 @@
       }
     },
     {
+      "namespace": "openclaw skills library",
+      "sources": [
+        {
+          "kind": "commander-factory",
+          "path": "src/cli/skills-library-cli.ts",
+          "owner": "registerSkillsLibraryCli",
+          "receiver": "library",
+          "factory": "leaf",
+          "wrapper": "addGatewayClientOptions",
+          "receiver_calls": ["applyParentDefaultHelpAction"]
+        }
+      ],
+      "excluded": {
+        "list": "Needs an authenticated Gateway fixture to verify personal and team list scopes.",
+        "read": "Needs a fixture with retained revisions and session pins.",
+        "create": "Needs a disposable writable profile and a saved bundle.",
+        "update": "Needs exact revision and stale-write behavior checks on a disposable skill.",
+        "import": "Needs real local bundle and ClawHub import fixtures.",
+        "remove": "Needs disposable data and removal readback.",
+        "share": "Needs isolated personal and team visibility checks.",
+        "unshare": "Needs isolated personal and team visibility checks.",
+        "transfer": "Needs an isolated team and administrator profile.",
+        "enable": "Needs a disposable skill and actual eligibility readback.",
+        "disable": "Needs a disposable skill and actual eligibility readback.",
+        "rollback": "Needs an isolated library with multiple retained revisions.",
+        "attach": "Needs a disposable session and next-turn selection readback.",
+        "detach": "Needs a disposable session and next-turn selection readback.",
+        "refresh": "Needs an updated library skill and next-turn selection readback."
+      }
+    },
+    {
       "namespace": "openclaw control-ui session-status",
       "sources": [
         {
@@ -65,6 +96,21 @@
     "source": [{"path": "package.json", "contains": "\"name\": \"openclaw\""}, {"path": "src/entry.ts", "contains": "process.argv"}]
   },
   "features": [
+    {
+      "id": "skills-library-help",
+      "helper": "skills-library-help.mjs",
+      "marker": "VERIFY_OPENCLAW_SKILLS_LIBRARY_HELP_PASS",
+      "reach": "Open the library command from a local OpenClaw terminal.",
+      "drive": "Run library with and without --help and run library read --help in an isolated home.",
+      "observe": "Both parent invocations show the exact 15 registered subcommands. Read help shows the skill ID, revision and session arguments. The isolated configuration is unchanged.",
+      "gotchas": "This checks user-visible registration and help. Each authenticated library operation has its own inventory exclusion until a behavioral fixture exercises it.",
+      "source": [
+        {"path": "src/cli/skills-cli.ts", "contains": "registerSkillsLibraryCli(skills);"},
+        {"path": "src/cli/skills-library-cli.ts", "contains": "addGatewayClientOptions(library.command(name).description(description))"},
+        {"path": "src/cli/skills-library-cli.ts", "contains": "applyParentDefaultHelpAction(library);"},
+        {"path": "src/cli/program/parent-default-help.ts", "contains": "parent.outputHelp();"}
+      ]
+    },
     {
       "id": "gateway-health",
       "helper": "gateway.mjs",
